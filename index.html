@@ -54594,6 +54594,103 @@ class PresetManager {
         this._activeIdx = -1;
         this._onPresetChange = null;
     }
+
+    // ── V52-preset-io: Export / Import to file ───────────────────────────
+    //
+    // Export captures the current chart state (indicators + panel layout +
+    // all settings) as a JSON blob and downloads it as a .json file.
+    // Import reads a .json file (from file picker) and applies it as a
+    // preset — replacing all current indicators + panels.
+    //
+    // The file format is the same as a preset snapshot, wrapped in a
+    // versioned envelope:
+    //   { v: 1, type: 'cryptochart-preset', name: '...', createdAt: ts, snapshot: {...} }
+
+    /**
+     * Export the current chart state as a JSON file download.
+     * @param {string} [name] — filename (without extension)
+     */
+    exportToFile(name) {
+        const snapshot = this._captureSnapshot();
+        const preset = {
+            v: 1,
+            type: 'cryptochart-preset',
+            name: name || `Export ${new Date().toISOString().slice(0, 10)}`,
+            createdAt: Date.now(),
+            snapshot,
+        };
+        const json = JSON.stringify(preset, null, 2);
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = (name || 'cryptochart-preset').replace(/[^a-zA-Z0-9_-]/g, '_') + '.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        return preset;
+    }
+
+    /**
+     * Open a file picker and import a preset from the selected JSON file.
+     * Returns a Promise that resolves to true if imported successfully.
+     * @returns {Promise<boolean>}
+     */
+    importFromFile() {
+        return new Promise((resolve) => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json,application/json';
+            input.onchange = (e) => {
+                const file = e.target.files?.[0];
+                if (!file) { resolve(false); return; }
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    try {
+                        const text = ev.target.result;
+                        const parsed = JSON.parse(text);
+                        // Accept both bare snapshots and wrapped presets
+                        let snapshot, name;
+                        if (parsed.snapshot) {
+                            snapshot = parsed.snapshot;
+                            name = parsed.name || 'Imported preset';
+                        } else if (parsed.indicators || parsed.panels) {
+                            snapshot = parsed;
+                            name = 'Imported preset';
+                        } else {
+                            throw new Error('Invalid file format — expected a preset JSON');
+                        }
+                        // Validate minimal structure
+                        if (!Array.isArray(snapshot.indicators)) {
+                            throw new Error('Invalid snapshot — missing indicators array');
+                        }
+                        // Apply the snapshot (replaces all current indicators + panels)
+                        this._applySnapshot(snapshot);
+                        // Also save as a new preset so it appears in the list
+                        const preset = {
+                            id: `preset-imported-${Date.now()}`,
+                            name: name,
+                            createdAt: Date.now(),
+                            snapshot,
+                        };
+                        this._presets.push(preset);
+                        this._activeIdx = this._presets.length - 1;
+                        this._save();
+                        if (this._onPresetChange) this._onPresetChange(preset, this._activeIdx);
+                        resolve(true);
+                    } catch (err) {
+                        console.warn('[PresetManager] import failed:', err);
+                        alert('Import failed: ' + (err.message || err));
+                        resolve(false);
+                    }
+                };
+                reader.onerror = () => { resolve(false); };
+                reader.readAsText(file);
+            };
+            input.click();
+        });
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -56069,6 +56166,11 @@ class ChartFactory {
                             '<button class="ind-preset-save-btn">Save</button>' +
                         '</div>' +
                         '<div class="ind-presets-list">' + itemsHtml + '</div>' +
+                        // V52-preset-io: Export / Import buttons
+                        '<div class="ind-presets-io-row" style="display:flex; gap:4px; padding:6px 0; border-top:1px solid rgba(255,255,255,0.06); margin-top:4px;">' +
+                            '<button class="ind-preset-export-btn" style="flex:1; background:rgba(88,166,255,0.12); color:#58a6ff; border:1px solid rgba(88,166,255,0.3); border-radius:4px; padding:6px 8px; font-size:11px; font-weight:600; cursor:pointer; font-family:inherit;">↓ Export to file</button>' +
+                            '<button class="ind-preset-import-btn" style="flex:1; background:rgba(63,185,80,0.12); color:#3fb950; border:1px solid rgba(63,185,80,0.3); border-radius:4px; padding:6px 8px; font-size:11px; font-weight:600; cursor:pointer; font-family:inherit;">↑ Import from file</button>' +
+                        '</div>' +
                         '<div class="ind-presets-swipe-row">' +
                             '<label>' +
                                 '<input type="checkbox" class="ind-preset-swipe-toggle" ' + (swipeEnabled ? 'checked' : '') + ' />' +
@@ -56200,6 +56302,26 @@ class ChartFactory {
                         debugLog(swipeToggle.checked
                             ? 'Swipe cycling enabled — pan/zoom disabled on indicator panels'
                             : 'Swipe cycling disabled — pan/zoom restored');
+                    };
+                }
+                // V52-preset-io: wire Export / Import buttons
+                const exportBtn = backdrop.querySelector('.ind-preset-export-btn');
+                if (exportBtn) {
+                    exportBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        const name = prompt('Export filename (optional):', '');
+                        presetMgr.exportToFile(name || undefined);
+                    };
+                }
+                const importBtn = backdrop.querySelector('.ind-preset-import-btn');
+                if (importBtn) {
+                    importBtn.onclick = async (e) => {
+                        e.stopPropagation();
+                        const ok = await presetMgr.importFromFile();
+                        if (ok) {
+                            rerender();
+                            showToast('Preset imported successfully');
+                        }
                     };
                 }
             }
