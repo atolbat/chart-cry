@@ -60549,6 +60549,51 @@ const ChartStatePersistence = (() => {
                 //   are persisted for the next load.
                 const layout = engine.layout;
                 if (layout) {
+                    // V52-layout-persist: apply saved panel ratios + order from
+                    //   state.layout BEFORE recalculate. addIndicator creates
+                    //   panels with default ratio (0.25) and appends to the end
+                    //   of _panelOrder. Without this, the user's custom panel
+                    //   sizes and reorderings are lost on every reload.
+                    if (state.layout) {
+                        // Restore panel ratios
+                        if (state.layout.ratios) {
+                            for (const id in state.layout.ratios) {
+                                const r = state.layout.ratios[id];
+                                if (typeof r === 'number' && isFinite(r) && r >= 0 && r <= 1) {
+                                    layout.panelRatios[id] = r;
+                                }
+                            }
+                        }
+                        // Restore panel order (only for panels that exist now)
+                        if (Array.isArray(state.layout.order)) {
+                            // Start with saved order, then append any new panels
+                            // (created by addIndicator but not in saved state)
+                            const saved = state.layout.order.filter(id => id in layout.panelRatios);
+                            const existing = [...layout._panelOrder];
+                            // Reorder: saved order first (in saved sequence),
+                            // then any panels not in saved order (new indicators)
+                            const newOrder = [];
+                            for (const id of saved) {
+                                if (existing.includes(id)) newOrder.push(id);
+                            }
+                            for (const id of existing) {
+                                if (!newOrder.includes(id)) newOrder.push(id);
+                            }
+                            layout._panelOrder = newOrder;
+                        }
+                        // Restore axis modes
+                        if (typeof state.layout.axisYMode === 'string' &&
+                            ['margin', 'overlay', 'none'].includes(state.layout.axisYMode)) {
+                            layout.axisYMode = state.layout.axisYMode;
+                        }
+                        if (typeof state.layout.axisXMode === 'string' &&
+                            ['regular', 'collapsed'].includes(state.layout.axisXMode)) {
+                            layout.axisXMode = state.layout.axisXMode;
+                        }
+                        if (typeof state.layout.overlayAxisCount === 'number') {
+                            layout._overlayAxisCount = state.layout.overlayAxisCount;
+                        }
+                    }
                     layout.recalculate(layout.width, layout.height);
                     try { layout.saveToStorage(engine.config.instanceId); } catch (e) {}
                 }
@@ -60848,6 +60893,22 @@ const ChartStatePersistence = (() => {
                 save();
                 return r;
             };
+        } catch (e) {}
+
+        // V52-layout-persist: patch resizePanel / resizePanelPair / reorderPanel
+        //   so StatePersistence saves layout changes (panel sizes + order).
+        //   Without this, state.layout in chartEngine_state goes stale after
+        //   the user resizes or reorders panels — the saved ratios/order are
+        //   lost on reload even though chartEngine_layout_* has them.
+        try {
+            const origResize = api.resizePanel?.bind(api);
+            const origResizePair = api.resizePanelPair?.bind(api);
+            const origReorder = api.reorderPanel?.bind(api);
+            const origSwap = api.swapPanels?.bind(api);
+            if (origResize) api.resizePanel = function(...args) { const r = origResize(...args); save(); return r; };
+            if (origResizePair) api.resizePanelPair = function(...args) { const r = origResizePair(...args); save(); return r; };
+            if (origReorder) api.reorderPanel = function(...args) { const r = origReorder(...args); save(); return r; };
+            if (origSwap) api.swapPanels = function(...args) { const r = origSwap(...args); save(); return r; };
         } catch (e) {}
 
         // Overlay changes — patch api.addObject / api.removeObject / api.updateObject
