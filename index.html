@@ -52792,14 +52792,28 @@ class SourceUIController {
                 //   without this, this._symbol stays 'BTCUSDT' after reload
                 //   and the first swipe jumps to BTC's neighbor (ETH).
                 this._symbol = evt.payload.value;
-                // V49n-quote-currency: update symbol button in ratio mode
+                // V52-active-fix: clear the pending flag — source:param has
+                //   now applied the new symbol, so future source:connected
+                //   events can safely update this._symbol again.
+                this._pendingSymbol = false;
+                // V52-symbol-btn: update symbol button for ALL source modes,
+                //   not just ratio. Previously, selecting a coin on Bybit
+                //   (when already on Bybit) emitted source:param {symbol}
+                //   but the button wasn't updated — it kept showing the old
+                //   symbol (e.g. "BTC/USDT" when the chart was actually on
+                //   SOLUSDT). This made the user think the wrong coin was
+                //   active when reopening the picker.
                 const symBtn = this._el('btn-symbol');
-                if (symBtn && this._srcMode === 'ratio') {
-                    const orch = window._chart?.orchestrator;
-                    const denom = orch?._ratioConfig?.denominator || 'USDT';
-                    const quote = denom.replace(/USDT$|USD$/i, '') || 'USDT';
-                    const num = evt.payload.value.replace(/USDT$|USD$/i, '') || evt.payload.value;
-                    symBtn.textContent = num + '/' + quote;
+                if (symBtn) {
+                    if (this._srcMode === 'ratio') {
+                        const orch = window._chart?.orchestrator;
+                        const denom = orch?._ratioConfig?.denominator || 'USDT';
+                        const quote = denom.replace(/USDT$|USD$/i, '') || 'USDT';
+                        const num = evt.payload.value.replace(/USDT$|USD$/i, '') || evt.payload.value;
+                        symBtn.textContent = num + '/' + quote;
+                    } else {
+                        symBtn.textContent = evt.payload.value.replace('USDT', '/USDT');
+                    }
                 }
             }
         });
@@ -52839,8 +52853,14 @@ class SourceUIController {
         //   network fetch if coins are already cached.
         this._el('btn-symbol')?.addEventListener('click', (e) => {
             const srcInfo = this.api?.getSourceInfo?.() || {};
-            const currentSymbol = srcInfo.symbol || 'BTCUSDT';
-            const currentExchange = (srcInfo.exchange || 'binance').toLowerCase();
+            // V52-active-fix: prefer this._symbol (updated immediately on
+            //   coin selection) over srcInfo.symbol (which lags because
+            //   source:param {symbol} is delayed by 300ms after
+            //   source:connected on exchange switch). This ensures the
+            //   picker shows the CORRECT active coin even if reopened
+            //   before the source:param fires.
+            const currentSymbol = this._symbol || srcInfo.symbol || 'BTCUSDT';
+            const currentExchange = (srcInfo.exchange || this._srcMode || 'binance').toLowerCase();
             // V49n-fix: reuse cached picker instance. The onSelect callback is
             //   stable (doesn't capture `e` — finds the symbol button by role).
             if (!this._cachedPicker) {
@@ -52859,6 +52879,17 @@ class SourceUIController {
                     }
                     const src = exchange === 'bybit' ? 'bybit' : exchange === 'coinbase' ? 'coinbase' : 'binance';
                     if (symBtn) symBtn.textContent = symbol.replace('USDT', '/USDT');
+                    // V52-active-fix: immediately update this._symbol so that
+                    //   if the user reopens the picker before source:connected
+                    //   fires, the picker shows the CORRECT active coin (not the
+                    //   old one). Previously, source:param {symbol} was delayed
+                    //   by 300ms after source:connected — so reopening the
+                    //   picker within that window showed the old symbol as active.
+                    this._symbol = symbol;
+                    // V52-active-fix: set _pendingSymbol flag so _onConnected
+                    //   doesn't overwrite this._symbol with the old value from
+                    //   source:connected (which fires BEFORE source:param).
+                    this._pendingSymbol = true;
                     const currentSrc = (this.api?.getSourceInfo?.()?.exchange || '').toLowerCase();
                     if (currentSrc === src) {
                         this.bus.emit('source:param', { param: 'isPerp', value: isPerp }, 'CoinPicker');
@@ -53755,7 +53786,16 @@ class SourceUIController {
     _onConnected(evt) {
         const { src, symbol, timeframe } = evt.payload;
         this._srcMode   = src;
-        this._symbol    = symbol;
+        // V52-active-fix: don't overwrite this._symbol if onSelect already
+        //   set it. source:connected fires with the OLD symbol (before
+        //   source:param {symbol} applies the new one). If we overwrite,
+        //   reopening the picker between source:connected and source:param
+        //   shows the old symbol as active. The _pendingSymbol flag is set
+        //   by onSelect when the user selects a coin, and cleared after
+        //   source:param {symbol} fires.
+        if (!this._pendingSymbol) {
+            this._symbol = symbol;
+        }
         this._timeframe = timeframe;
         const srcBtn = this._el('btn-src');
         if (srcBtn) srcBtn.textContent = `Src: ${this.SRC_LABELS[src]}`;
@@ -58847,9 +58887,14 @@ class CoinPicker {
         let activeSym = String(this._activeSymbol);
         if (activeSym.includes('/')) activeSym = activeSym.split('/')[0];
         const activeLower = activeSym.toLowerCase();
+        // V52-active-fix: use EXACT match only. The old endsWith checks caused
+        //   the picker to scroll to the wrong coin (e.g. USDT instead of BTC
+        //   when active=BTCUSDT, because "btcusdt".endsWith("usdt") is true
+        //   and USDT sorts before BTC by volume). Exact match ensures we find
+        //   the actual active coin.
         const idx = this._filtered.findIndex(c => {
             const sym = (c.base + c.quote).toLowerCase();
-            return sym === activeLower || activeLower.endsWith(sym) || sym.endsWith(activeLower);
+            return sym === activeLower;
         });
         if (idx < 0) return;
         requestAnimationFrame(() => {
@@ -59374,16 +59419,18 @@ class CoinPicker {
 
     _renderRow(coin, idx) {
         const key = coin.base + ':' + coin.quote;
-        // V49n-fix: _activeSymbol is the full market symbol (e.g. "BTCUSDT"),
-        //   while key is "base:quote" (e.g. "BTC:USDT"). Match by concatenating
-        //   base+quote and comparing case-insensitively, same logic as
-        //   _centerActiveRow. Without this fix, the active row was never
-        //   highlighted because "BTC:USDT" !== "BTCUSDT".
+        // V52-active-fix: use EXACT match only (case-insensitive). The old
+        //   `endsWith` checks caused multiple rows to highlight at once
+        //   (e.g. BTCUSDT active → both BTC and USDT rows highlighted because
+        //   "btcusdt".endsWith("usdt") and "btcusdt".endsWith("btc") are true).
+        //   It also caused _centerActiveRow to scroll to the wrong coin
+        //   (USDT instead of BTC) because findIndex returned the first
+        //   `endsWith` match. The ratio-mode "/" stripping is already handled
+        //   in _centerActiveRow, so endsWith is no longer needed here.
         const fullSym = (coin.base + coin.quote).toLowerCase();
-        const activeLower = String(this._activeSymbol || '').toLowerCase();
-        const isActive = fullSym === activeLower
-            || activeLower.endsWith(fullSym)
-            || fullSym.endsWith(activeLower);
+        let activeSym = String(this._activeSymbol || '');
+        if (activeSym.includes('/')) activeSym = activeSym.split('/')[0];
+        const isActive = fullSym === activeSym.toLowerCase();
         // Use the displayed market (respects filter kind) for price/change/extra
         // so the row reflects the spot price when filter=spot, perp price when
         // filter=perp, etc. Previously this used `coin.change24h`/`coin.price`
