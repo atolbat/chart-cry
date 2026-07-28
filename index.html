@@ -24349,6 +24349,383 @@ class OUBandsBrick extends IndicatorBrick {
 brickRegistry.register('ou_bands', OUBandsBrick);
 
 
+// ─── Historical POC Support/Resistance ───────────────────────────────────
+// Scans a rolling window across the chart, finds the POC (Point of Control)
+// at each window position, then clusters nearby POCs into support/resistance
+// zones. Zones are drawn as semi-transparent rectangles extending right from
+// the last candle, with optional volume labels.
+//
+// The window slides with a configurable step (delta). At each position, a
+// volume-profile histogram is built using the market-profile overlap method
+// (same as VolumeProfileRenderer). The POC bin = highest-volume price bin.
+//
+// After collecting all POC levels, they are clustered: POCs within 2× the
+// average node height are merged into a "wide" zone. Isolated POCs become
+// thin zones (width = 1 node height). Each zone's total volume is the sum
+// of all contributing POC bin volumes.
+
+class HistoricalPocBrick extends IndicatorBrick {
+    static META = {
+        type: 'hpoc',
+        label: 'Historical POC S/R',
+        description: 'Rolling-window POC scan. Finds Point of Control at each window position, clusters nearby POCs into support/resistance zones, draws rectangles to the right of the last candle.',
+        category: 'composite',
+        tags: ['poc', 'support', 'resistance', 'volume', 'profile', 'cluster'],
+        panelMode: 'overlay',
+        params: [
+            new BrickParam({ name: 'windowBars', label: 'Window (bars)', default: 42, min: 6, max: 500, step: 1, group: 'Window' }),
+            new BrickParam({ name: 'stepBars',  label: 'Step (bars)',    default: 4,  min: 1, max: 100, step: 1, group: 'Window' }),
+            new BrickParam({ name: 'lookback',  label: 'Lookback (0=all)', default: 0, min: 0, max: 20000, step: 100, group: 'Window' }),
+            new BrickParam({ name: 'nodeCount', label: 'Bins per window', default: 24, min: 8, max: 128, step: 4, group: 'Histogram' }),
+            new BrickParam({ name: 'clusterMult', label: 'Cluster mult (×nodeH)', default: 2.0, min: 0.5, max: 5, step: 0.5, group: 'Clustering' }),
+            new BrickParam({ name: 'maxZones',  label: 'Max zones',      default: 15, min: 1, max: 50, step: 1, group: 'Clustering' }),
+            new BrickParam({ name: 'extendPx',  label: 'Extend right (px)', default: 30, min: 5, max: 400, step: 5, group: 'Visual' }),
+            new BrickParam({ name: 'offsetPx',  label: 'Offset from candle (px)', default: 10, min: 0, max: 200, step: 5, group: 'Visual' }),
+            new BrickParam({ name: 'zoneAlpha', label: 'Zone alpha',     default: 0.12, min: 0.02, max: 0.8, step: 0.02, group: 'Visual' }),
+            new BrickParam({ name: 'zoneColor', label: 'Zone color',     type: 'select', default: '#58a6ff',
+                options: [
+                    { value: '#58a6ff', label: 'Blue' },
+                    { value: '#3fb950', label: 'Green' },
+                    { value: '#f85149', label: 'Red' },
+                    { value: '#d29922', label: 'Yellow' },
+                    { value: '#bc8cff', label: 'Purple' },
+                    { value: '#ffffff', label: 'White' },
+                ] }),
+            new BrickParam({ name: 'showBorder', label: 'Show zone borders', type: 'bool', default: false, group: 'Zones' }),
+            new BrickParam({ name: 'borderAlpha', label: 'Border alpha', default: 0.5, min: 0, max: 1, step: 0.05, group: 'Zones' }),
+            new BrickParam({ name: 'showZones', label: 'Show zone fill', type: 'bool', default: true, group: 'Zones' }),
+            new BrickParam({ name: 'showVolBar', label: 'Volume bar on right edge', type: 'bool', default: true, group: 'Vol Bar' }),
+            new BrickParam({ name: 'volBarWidth', label: 'Vol bar width (px)', default: 3, min: 1, max: 10, step: 1, group: 'Vol Bar' }),
+            new BrickParam({ name: 'volBarAlpha', label: 'Vol bar alpha', default: 0.8, min: 0.1, max: 1, step: 0.05, group: 'Vol Bar' }),
+            new BrickParam({ name: 'showMaxVolLine', label: 'Show max-volume line', type: 'bool', default: true, group: 'Max Vol Line' }),
+            new BrickParam({ name: 'maxVolLineStyle', label: 'Line style', type: 'select', default: 'solid',
+                options: [
+                    { value: 'solid', label: 'Solid' },
+                    { value: 'dash', label: 'Dashed' },
+                    { value: 'dot', label: 'Dotted' },
+                    { value: 'dashdot', label: 'Dash-dot' },
+                ] }),
+            new BrickParam({ name: 'maxVolLineWidth', label: 'Line width', default: 1.5, min: 0.5, max: 5, step: 0.5, group: 'Max Vol Line' }),
+            new BrickParam({ name: 'maxVolLineAlpha', label: 'Line alpha', default: 0.8, min: 0.1, max: 1, step: 0.05, group: 'Max Vol Line' }),
+            new BrickParam({ name: 'showVolume', label: 'Show volume label', type: 'bool', default: true, group: 'Labels' }),
+            new BrickParam({ name: 'volFontSize', label: 'Label font size', default: 9, min: 6, max: 16, step: 1, group: 'Labels' }),
+            new BrickParam({ name: 'volAlpha',   label: 'Label alpha',    default: 0.7, min: 0.1, max: 1, step: 0.05, group: 'Labels' }),
+            new BrickParam({ name: 'minVolume',  label: 'Min volume filter (0=none)', default: 0, min: 0, max: 1000000000, step: 100000, group: 'Filtering' }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'line', label: 'POC Zones', type: 'line', color: '#58a6ff', optional: true, defaultVisible: false }),
+        ],
+    };
+
+    constructor(cfg) {
+        super(cfg);
+        this.needsOHLC = true;
+        // V52-hpoc: exclude from auto-fit by default — POC zones are within
+        // the visible price range, so no need to expand Y.
+        this.excludeFromAutoFit = true;
+    }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        if (!ohlc || count < 10) return { line: new Float64Array(0), count, visibleRange };
+
+        const windowBars = Math.max(6, Math.floor(this.params.windowBars || 42));
+        const stepBars   = Math.max(1, Math.floor(this.params.stepBars  || 4));
+        const lookback   = this.params.lookback || 0;
+        const nodeCount  = Math.max(8, Math.floor(this.params.nodeCount || 24));
+        const clusterMult = this.params.clusterMult || 2.0;
+        const maxZones   = Math.max(1, Math.floor(this.params.maxZones || 15));
+        const minVolume  = this.params.minVolume || 0;
+
+        const startIdx = lookback > 0 ? Math.max(0, count - lookback) : 0;
+        if (count - startIdx < windowBars) {
+            return { line: new Float64Array(count).fill(NaN), zones: [], count, visibleRange };
+        }
+
+        const O = ohlc.open, H = ohlc.high, L = ohlc.low, C = ohlc.close, V = ohlc.vol;
+
+        // ── Slide the window and collect POC levels ──
+        // V52-hpoc-fix: stop when remaining bars < windowBars. Previously the
+        //   loop condition `winStart + windowBars <= count` already prevented
+        //   partial windows, but the LAST window could still end exactly at
+        //   `count` (the current forming candle). We want to exclude the
+        //   forming candle — use `count - 1` as the upper bound so the last
+        //   window ends at the last CLOSED candle.
+        const pocLevels = [];  // [{price, volume, nodeHeight}]
+        let totalNodeHeight = 0, windowCount = 0;
+        const lastClosedIdx = count - 1;  // last fully-formed candle
+
+        for (let winStart = startIdx; winStart + windowBars <= lastClosedIdx; winStart += stepBars) {
+            const winEnd = winStart + windowBars;
+
+            // Find price range for this window
+            let yMin = Infinity, yMax = -Infinity;
+            for (let i = winStart; i < winEnd; i++) {
+                if (!isFinite(L[i]) || !isFinite(H[i])) continue;
+                if (L[i] < yMin) yMin = L[i];
+                if (H[i] > yMax) yMax = H[i];
+            }
+            if (!isFinite(yMin) || !isFinite(yMax) || yMax <= yMin) continue;
+
+            // Build bins
+            const binStep = (yMax - yMin) / nodeCount;
+            const binVol = new Float64Array(nodeCount);
+            const binLo = new Float64Array(nodeCount);
+            const binHi = new Float64Array(nodeCount);
+            for (let i = 0; i < nodeCount; i++) {
+                binLo[i] = yMin + i * binStep;
+                binHi[i] = yMin + (i + 1) * binStep;
+            }
+
+            // Accumulate volume per bin (market-profile overlap method)
+            for (let i = winStart; i < winEnd; i++) {
+                const o = O[i], h = H[i], l = L[i], c = C[i], v = V[i];
+                if (!isFinite(o) || !isFinite(c) || !isFinite(v) || v <= 0) continue;
+                const barLo = Math.min(o, c, l);
+                const barHi = Math.max(o, c, h);
+                if (barHi <= barLo) continue;
+                for (let li = 0; li < nodeCount; li++) {
+                    const ovLo = Math.max(barLo, binLo[li]);
+                    const ovHi = Math.min(barHi, binHi[li]);
+                    if (ovHi > ovLo) {
+                        binVol[li] += v * (ovHi - ovLo) / (barHi - barLo);
+                    }
+                }
+            }
+
+            // Find POC bin
+            let pocIdx = 0, maxVol = 0;
+            for (let li = 0; li < nodeCount; li++) {
+                if (binVol[li] > maxVol) { maxVol = binVol[li]; pocIdx = li; }
+            }
+            if (maxVol <= 0) continue;
+
+            const pocPrice = (binLo[pocIdx] + binHi[pocIdx]) / 2;
+            pocLevels.push({ price: pocPrice, volume: maxVol, nodeHeight: binStep });
+            totalNodeHeight += binStep;
+            windowCount++;
+        }
+
+        if (pocLevels.length === 0) {
+            return { line: new Float64Array(count).fill(NaN), zones: [], count, visibleRange };
+        }
+
+        // ── Average node height ──
+        const avgNodeHeight = totalNodeHeight / windowCount;
+        const clusterThreshold = avgNodeHeight * clusterMult;
+
+        // ── Sort POC levels by price ──
+        pocLevels.sort((a, b) => a.price - b.price);
+
+        // ── Cluster: merge POCs within clusterThreshold ──
+        const clusters = [];  // [{lo, hi, totalVol, count}]
+        let currentCluster = null;
+
+        for (const poc of pocLevels) {
+            const halfNode = poc.nodeHeight / 2;
+            if (currentCluster && (poc.price - currentCluster.hi) <= clusterThreshold) {
+                // Merge into current cluster
+                currentCluster.hi = Math.max(currentCluster.hi, poc.price + halfNode);
+                currentCluster.lo = Math.min(currentCluster.lo, poc.price - halfNode);
+                currentCluster.totalVol += poc.volume;
+                currentCluster.count++;
+                currentCluster.prices.push(poc.price);
+                // V52-maxvol-line: track the POC with the highest single-window
+                //   volume inside this cluster. This is the "max volume line" —
+                //   the strongest single POC within the zone.
+                if (poc.volume > currentCluster.maxVolValue) {
+                    currentCluster.maxVolValue = poc.volume;
+                    currentCluster.maxVolPrice = poc.price;
+                }
+            } else {
+                // Start new cluster
+                currentCluster = {
+                    lo: poc.price - halfNode,
+                    hi: poc.price + halfNode,
+                    totalVol: poc.volume,
+                    count: 1,
+                    prices: [poc.price],
+                    maxVolValue: poc.volume,
+                    maxVolPrice: poc.price,
+                };
+                clusters.push(currentCluster);
+            }
+        }
+
+        // ── Filter by min volume + sort by volume (descending) + limit ──
+        let zones = clusters.filter(c => c.totalVol >= minVolume);
+        zones.sort((a, b) => b.totalVol - a.totalVol);
+        if (zones.length > maxZones) zones = zones.slice(0, maxZones);
+
+        // Sort final zones by price for rendering
+        zones.sort((a, b) => a.lo - b.lo);
+
+        // V52-volbar: compute max zone volume for volume bar scaling
+        let maxZoneVol = 0;
+        for (const z of zones) { if (z.totalVol > maxZoneVol) maxZoneVol = z.totalVol; }
+
+        this._computed = {
+            line: new Float64Array(count).fill(NaN),
+            zones,
+            avgNodeHeight,
+            maxZoneVol,
+            count, visibleRange,
+        };
+        return this._computed;
+    }
+
+    render(ctx, xScale, yScale, xData, computed, visibleRange, layout) {
+        if (!computed || !computed.zones || computed.zones.length === 0) return;
+        const [iMin, iMax] = visibleRange;
+        const plotRight = layout?.plotRight ?? 0;
+        const plotLeft  = layout?.plotLeft ?? 0;
+
+        const extendPx = this.params.extendPx ?? 30;
+        const offsetPx = this.params.offsetPx ?? 10;
+        const zoneAlpha = this.params.zoneAlpha ?? 0.12;
+        const zoneColor = this.params.zoneColor || '#58a6ff';
+        const showBorder = this.params.showBorder === true;
+        const borderAlpha = this.params.borderAlpha ?? 0.5;
+        const showZones = this.params.showZones !== false;
+        const showVolBar = this.params.showVolBar !== false;
+        const volBarWidth = this.params.volBarWidth || 3;
+        const volBarAlpha = this.params.volBarAlpha ?? 0.8;
+        const showMaxVolLine = this.params.showMaxVolLine !== false;
+        const maxVolLineStyle = this.params.maxVolLineStyle || 'solid';
+        const maxVolLineWidth = this.params.maxVolLineWidth || 1.5;
+        const maxVolLineAlpha = this.params.maxVolLineAlpha ?? 0.8;
+        const showVolume = this.params.showVolume !== false;
+        const volFontSize = this.params.volFontSize || 9;
+        const volAlpha = this.params.volAlpha ?? 0.7;
+        const maxZoneVol = computed.maxZoneVol || 1;
+        // V52-volbar: volume bar extends beyond rectEnd by a few px so it's
+        //   visually separate from the zone fill.
+        const volBarOffset = 2;
+
+        // Dash pattern for max-vol line
+        const dashPatterns = { solid: [], dash: [6, 3], dot: [2, 3], dashdot: [6, 3, 2, 3] };
+        const dash = dashPatterns[maxVolLineStyle] || [];
+
+        // Last visible candle X
+        const lastX = xScale.valToPix(xData[iMax - iMin]);
+        const rectStart = lastX + offsetPx;
+        const rectEnd = Math.min(plotRight, rectStart + extendPx);
+        const rectWidth = rectEnd - rectStart;
+        if (rectWidth < 2) return;
+
+        // Convert hex color to rgba
+        const hexToRgba = (hex, alpha) => {
+            const m = hex?.match(/^#?([a-f0-9]{2})([a-f0-9]{2})([a-f0-9]{2})$/i);
+            if (!m) return `rgba(88,166,255,${alpha})`;
+            return `rgba(${parseInt(m[1],16)},${parseInt(m[2],16)},${parseInt(m[3],16)},${alpha})`;
+        };
+
+        ctx.save();
+
+        // V52-layout: compute labelX — depends on what's shown.
+        //   Zones on + vol bar on  → label after vol bar
+        //   Zones on + vol bar off → label after zone rect
+        //   Zones off               → label after max-vol line
+        let labelXOffset;
+        if (showZones && showVolBar) labelXOffset = volBarOffset + volBarWidth + 3;
+        else if (showZones) labelXOffset = 3;
+        else labelXOffset = 3;  // max-vol line only
+
+        for (const zone of computed.zones) {
+            const yTop = yScale.valToPix(zone.hi);
+            const yBot = yScale.valToPix(zone.lo);
+            const rectH = Math.max(1, yBot - yTop);
+
+            // V52-zones: zone fill + border (independently toggleable)
+            if (showZones) {
+                // Fill
+                ctx.fillStyle = hexToRgba(zoneColor, zoneAlpha);
+                ctx.fillRect(rectStart, yTop, rectWidth, rectH);
+
+                // V52-border: zone borders (top + bottom lines). Disabled
+                //   by default — can be toggled on with showBorder.
+                if (showBorder) {
+                    ctx.strokeStyle = hexToRgba(zoneColor, borderAlpha);
+                    ctx.lineWidth = 1;
+                    ctx.setLineDash([]);
+                    ctx.beginPath();
+                    ctx.moveTo(rectStart, yTop);
+                    ctx.lineTo(rectEnd, yTop);
+                    ctx.moveTo(rectStart, yBot);
+                    ctx.lineTo(rectEnd, yBot);
+                    ctx.stroke();
+                }
+            }
+
+            // V52-volbar: volume bar on right edge, starting from BOTTOM.
+            //   Only shown when zones are enabled (per user request).
+            if (showZones && showVolBar && zone.totalVol > 0 && maxZoneVol > 0) {
+                const volPct = zone.totalVol / maxZoneVol;  // 0..1
+                const barH = rectH * volPct;
+                const barY = yBot - barH;  // starts from bottom
+                const barX = rectEnd + volBarOffset;
+                ctx.fillStyle = hexToRgba(zoneColor, volBarAlpha);
+                ctx.fillRect(barX, barY, volBarWidth, Math.max(1, barH));
+            }
+
+            // V52-maxvol-line: horizontal line at the POC with the highest
+            //   single-window volume inside this zone. Same width as the
+            //   zone rectangle. Independently toggleable — can show with
+            //   or without zones.
+            let lineEndX = rectEnd;  // default: same width as zone
+            if (showMaxVolLine && isFinite(zone.maxVolPrice)) {
+                const lineY = yScale.valToPix(zone.maxVolPrice);
+                if (isFinite(lineY)) {
+                    ctx.strokeStyle = hexToRgba(zoneColor, maxVolLineAlpha);
+                    ctx.lineWidth = maxVolLineWidth;
+                    ctx.setLineDash(dash);
+                    ctx.beginPath();
+                    ctx.moveTo(rectStart, lineY);
+                    ctx.lineTo(rectEnd, lineY);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                    lineEndX = rectEnd;
+                }
+            }
+
+            // V52-label: volume label always next to the max-vol line (or
+            //   zone if line is off). Position depends on what's shown.
+            if (showVolume && zone.totalVol > 0) {
+                const volStr = this._formatVolume(zone.totalVol);
+                ctx.font = volFontSize + 'px -apple-system, sans-serif';
+                ctx.textBaseline = 'middle';
+                ctx.textAlign = 'left';
+                ctx.fillStyle = hexToRgba(zoneColor, volAlpha);
+                // Label Y = at the max-vol line if shown, else zone center
+                const labelY = (showMaxVolLine && isFinite(zone.maxVolPrice))
+                    ? yScale.valToPix(zone.maxVolPrice)
+                    : (yTop + yBot) / 2;
+                const labelX = (showZones ? rectEnd : rectStart) + labelXOffset;
+                // Only draw if there's enough vertical space
+                if (rectH >= volFontSize || showMaxVolLine) {
+                    ctx.fillText(volStr, labelX, labelY);
+                }
+            }
+        }
+
+        ctx.restore();
+    }
+
+    /** Format volume for display: 1.2K, 3.4M, 5.6B */
+    _formatVolume(v) {
+        if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+        if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+        if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+        return v.toFixed(0);
+    }
+
+    getAutoFitRange(computed, count, visibleRange) { return null; }
+}
+
+brickRegistry.register('hpoc', HistoricalPocBrick);
+
+
+
 // ─── Hodrick-Prescott Residual ────────────────────────────────────────────
 // Decomposes the price series into trend (smooth) + cycle (residual) using
 // the HP filter. The residual (cycle) is what's left after removing the
@@ -28450,10 +28827,10 @@ class VolumeProfileRenderer {
 
 
 // ── V39: явный экспорт в window (обратная совместимость) ──
-Object.assign(window, { MA_SPECS, createMABrick, OSCILLATOR_SPECS, createOscillatorBrick, AUX_DATA_SPECS, createAuxBrick, IndicatorBase, EMACloudIndicator, AOIndicator, EMABufferPool, INDICATOR_TYPES, IndicatorManager, BrickParam, BrickOutput, ColorScheme, _darkenHex, BrickInput, BrickLevel, BrickBand, IndicatorBrick, BrickRegistry, brickRegistry, _maSMA, _maEMA, _maWMA, _maLSMA, _maHMA, _maJMA, _maTEMA, _maDEMA, _maTMA, _maVAMA, _maMF, _maEDSMA, _maKijun, _resolveSrc, MACDBrick, StochasticBrick, BandsBrick, AOBrick, ZigZagBrick, SupportResistanceBrick, OrderBlockBrick, GapDetectorBrick, VolRevFractalsBrick, ZScoreBrick, OUBandsBrick, HPResidualBrick, KNNAnomalyBrick, VolNormCandlesBrick, AuxDataManager, AuxSeriesBrick, FundingRateBrick, OpenInterestBrick, RelPerfBrick, GammaExposureBrick, EconEventsBrick, DivergenceDetector, VolumeProfileRenderer });
+Object.assign(window, { MA_SPECS, createMABrick, OSCILLATOR_SPECS, createOscillatorBrick, AUX_DATA_SPECS, createAuxBrick, IndicatorBase, EMACloudIndicator, AOIndicator, EMABufferPool, INDICATOR_TYPES, IndicatorManager, BrickParam, BrickOutput, ColorScheme, _darkenHex, BrickInput, BrickLevel, BrickBand, IndicatorBrick, BrickRegistry, brickRegistry, _maSMA, _maEMA, _maWMA, _maLSMA, _maHMA, _maJMA, _maTEMA, _maDEMA, _maTMA, _maVAMA, _maMF, _maEDSMA, _maKijun, _resolveSrc, MACDBrick, StochasticBrick, BandsBrick, AOBrick, ZigZagBrick, SupportResistanceBrick, OrderBlockBrick, GapDetectorBrick, VolRevFractalsBrick, ZScoreBrick, OUBandsBrick, HistoricalPocBrick, HPResidualBrick, KNNAnomalyBrick, VolNormCandlesBrick, AuxDataManager, AuxSeriesBrick, FundingRateBrick, OpenInterestBrick, RelPerfBrick, GammaExposureBrick, EconEventsBrick, DivergenceDetector, VolumeProfileRenderer });
 
 // ── V39: регистрация в реестре модулей ──
-CE.registerModule('ce-indicators', ['ce-data-layer', 'ce-math-utils', 'ce-renderers'], ['MA_SPECS', 'createMABrick', 'IndicatorBase', 'EMACloudIndicator', 'AOIndicator', 'EMABufferPool', 'INDICATOR_TYPES', 'IndicatorManager', 'BrickParam', 'BrickOutput', 'ColorScheme', '_darkenHex', 'BrickInput', 'BrickLevel', 'BrickBand', 'IndicatorBrick', 'BrickRegistry', 'brickRegistry', '_maSMA', '_maEMA', '_maWMA', '_maLSMA', '_maHMA', '_maJMA', '_maTEMA', '_maDEMA', '_maTMA', '_maVAMA', '_maMF', '_maEDSMA', '_maKijun', 'SMABrick', 'EMABrick', '_resolveSrc', 'WMABrick', 'DEMABrick', 'TEMABrick', 'TMABrick', 'LSMABrick', 'HMABrick', 'JMABrick', 'VAMABrick', 'MFBrick', 'EDSMABrick', 'KijunBrick', 'RSIBrick', 'BollingerBrick', 'MACDBrick', 'ATRBrick', 'StochasticBrick', 'BandsBrick', 'AOBrick', 'ALMABrick', 'KalmanBrick', 'ZigZagBrick', 'SupportResistanceBrick', 'OrderBlockBrick', 'GapDetectorBrick', 'MFIBrick', 'DPOBrick', 'VolRevFractalsBrick', 'ZScoreBrick', 'OUBandsBrick', 'HPResidualBrick', 'KNNAnomalyBrick', 'VolNormCandlesBrick', 'AuxDataManager', 'AuxSeriesBrick', 'AUX_DATA_SPECS', 'createAuxBrick', 'FundingRateBrick', 'OpenInterestBrick', 'RelPerfBrick', 'GammaExposureBrick', 'EconEventsBrick', 'DivergenceDetector', 'VolumeProfileRenderer'], 'WORKER-SAFE');
+CE.registerModule('ce-indicators', ['ce-data-layer', 'ce-math-utils', 'ce-renderers'], ['MA_SPECS', 'createMABrick', 'IndicatorBase', 'EMACloudIndicator', 'AOIndicator', 'EMABufferPool', 'INDICATOR_TYPES', 'IndicatorManager', 'BrickParam', 'BrickOutput', 'ColorScheme', '_darkenHex', 'BrickInput', 'BrickLevel', 'BrickBand', 'IndicatorBrick', 'BrickRegistry', 'brickRegistry', '_maSMA', '_maEMA', '_maWMA', '_maLSMA', '_maHMA', '_maJMA', '_maTEMA', '_maDEMA', '_maTMA', '_maVAMA', '_maMF', '_maEDSMA', '_maKijun', 'SMABrick', 'EMABrick', '_resolveSrc', 'WMABrick', 'DEMABrick', 'TEMABrick', 'TMABrick', 'LSMABrick', 'HMABrick', 'JMABrick', 'VAMABrick', 'MFBrick', 'EDSMABrick', 'KijunBrick', 'RSIBrick', 'BollingerBrick', 'MACDBrick', 'ATRBrick', 'StochasticBrick', 'BandsBrick', 'AOBrick', 'ALMABrick', 'KalmanBrick', 'ZigZagBrick', 'SupportResistanceBrick', 'OrderBlockBrick', 'GapDetectorBrick', 'MFIBrick', 'DPOBrick', 'VolRevFractalsBrick', 'ZScoreBrick', 'OUBandsBrick', 'HistoricalPocBrick', 'HPResidualBrick', 'KNNAnomalyBrick', 'VolNormCandlesBrick', 'AuxDataManager', 'AuxSeriesBrick', 'AUX_DATA_SPECS', 'createAuxBrick', 'FundingRateBrick', 'OpenInterestBrick', 'RelPerfBrick', 'GammaExposureBrick', 'EconEventsBrick', 'DivergenceDetector', 'VolumeProfileRenderer'], 'WORKER-SAFE');
 })(window.CE, window);
 
 (function CE$module$ce$main$overlay$renderer(CE, window) {
@@ -47438,6 +47815,23 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
         if (typeof document === 'undefined') return;
         const visible = !document.hidden;
         if (visible) {
+            // V52-visibility-resize: force a canvas resize when the tab becomes
+            //   visible again. On mobile, when the phone is locked and the
+            //   browser is backgrounded, the canvas can shrink to a tiny size
+            //   (or 0×0). The ResizeObserver may not fire reliably in this
+            //   scenario (the browser throttles/pauses observers while the
+            //   tab is hidden). Without an explicit resize, the chart renders
+            //   into the tiny canvas and stays that way until a manual page
+            //   reload. Calling engine.resize() here ensures the canvas is
+            //   re-measured and re-sized to the current wrapper dimensions.
+            try {
+                if (this.api && this.api.engine) {
+                    this.api.engine.resize();
+                    this.api.engine._rendering?.markAllDirty?.();
+                    this.api.engine._rendering?.requestRender?.();
+                }
+            } catch (_) { /* ignore */ }
+
             // V51-rAF-fix: when the tab becomes visible again, force a full
             //   re-render. requestAnimationFrame was paused while the tab was
             //   hidden, so the chart shows stale data. The adapter's
@@ -47446,12 +47840,22 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
             //   We do this BEFORE the adapter catch-up so the chart at least
             //   shows the data it already has, then the adapter catch-up
             //   will trigger another re-render when new data arrives.
-            try {
-                if (this.api && this.api.engine) {
-                    this.api.engine._rendering?.markAllDirty?.();
-                    this.api.engine._rendering?.requestRender?.();
-                }
-            } catch (_) { /* ignore */ }
+
+            // V52-visibility-resize: deferred second resize. On mobile, the
+            //   browser may not have restored the full viewport dimensions
+            //   yet when visibilitychange fires (especially after a long
+            //   sleep). A second resize after 300ms catches the corrected
+            //   dimensions. The height-poll interval (2s) would eventually
+            //   fix this, but 300ms is fast enough to be invisible to the user.
+            setTimeout(() => {
+                try {
+                    if (this.api && this.api.engine) {
+                        this.api.engine.resize();
+                        this.api.engine._rendering?.markAllDirty?.();
+                        this.api.engine._rendering?.requestRender?.();
+                    }
+                } catch (_) { /* ignore */ }
+            }, 300);
 
             const now = Date.now();
             const hiddenForMs = now - this._lastVisibleTime;
@@ -53661,6 +54065,15 @@ class SourceUIController {
                 const latest = Math.max(0, ...Object.values(favRec));
                 if (!latest || now - latest > w) return false;
             }
+            // V52-tag-swipe: apply tag filter (was missing — swipe ignored tags).
+            //   Uses _paprikaService.heuristicTags for tag resolution, same as
+            //   CoinPicker._applyFilters. papEntry is not available here (it's
+            //   cached on the CoinPicker instance), so pass null — the service
+            //   falls back to hardcoded CATS tags which cover most coins.
+            if (filters.tags && filters.tags.length > 0) {
+                const tags = _paprikaService.heuristicTags(c.base, null, null);
+                if (!filters.tags.some(t => tags.includes(t))) return false;
+            }
             return true;
         });
 
@@ -59251,6 +59664,25 @@ class CoinPicker {
             const aVol = totalVol(a), bVol = totalVol(b);
             return bVol - aVol;  // desc by volume
         });
+
+        // V52-search-priority: when a search query is active, re-sort so that
+        //   prefix matches (coin base STARTS WITH query) come first, sorted by
+        //   base length (shorter = higher priority). E.g. typing "w" puts "W"
+        //   (Wormhole) before "WIF" before "WLD" before "AERGO" (which contains
+        //   "w" in its paprika name). Non-prefix matches stay in their original
+        //   sort order after all prefix matches.
+        if (q) {
+            list.sort((a, b) => {
+                const aBase = a.base.toLowerCase();
+                const bBase = b.base.toLowerCase();
+                const aPrefix = aBase.startsWith(q);
+                const bPrefix = bBase.startsWith(q);
+                if (aPrefix && !bPrefix) return -1;
+                if (!aPrefix && bPrefix) return 1;
+                if (aPrefix && bPrefix) return aBase.length - bBase.length;
+                return 0;  // keep original order for non-prefix matches
+            });
+        }
 
         this._filtered = list;
         // Invalidate the rendered-window cache so _renderVisible does a full
