@@ -43378,10 +43378,24 @@ class PanelMaximizer {
         const prevId = this._maximizedId;
 
         if (this._savedRatios) {
+            // Normal case: restore the saved pre-maximize ratios.
             for (const id in this._savedRatios) {
                 if (id in layout.panelRatios) {
                     layout.panelRatios[id] = this._savedRatios[id];
                 }
+            }
+        } else {
+            // V52-maximize-restore: _savedRatios was lost (page was reloaded
+            //   while a panel was maximized). We can't restore the exact
+            //   pre-maximize ratios, so use a sensible fallback: give the
+            //   main panel 50% and split the rest equally among indicator
+            //   panels. This is much better than being stuck maximized.
+            const ids = layout._panelOrder || Object.keys(layout.panelRatios);
+            const mainId = ids.includes('main') ? 'main' : ids[0];
+            const otherIds = ids.filter(id => id !== mainId);
+            const otherRatio = otherIds.length > 0 ? 0.5 / otherIds.length : 0;
+            for (const id of ids) {
+                layout.panelRatios[id] = id === mainId ? 0.5 : otherRatio;
             }
         }
 
@@ -61197,6 +61211,28 @@ const ChartStatePersistence = (() => {
                     }
                     layout.recalculate(layout.width, layout.height);
                     try { layout.saveToStorage(engine.config.instanceId); } catch (e) {}
+                    
+                    // V52-maximize-restore: detect if a panel was maximized
+                    //   when the state was saved. In maximized state, one panel
+                    //   has ratio=1.0 and all others have ratio=0. We need to
+                    //   restore the PanelMaximizer's internal _maximizedId so
+                    //   that toggle() correctly minimizes (restores) instead
+                    //   of re-maximizing (which would save the broken 1.0/0
+                    //   ratios as the "pre-maximize" snapshot).
+                    const maximizer = api.getPanelMaximizer?.();
+                    if (maximizer) {
+                        const allIds = Object.keys(layout.panelRatios);
+                        const nonZeroIds = allIds.filter(id => layout.panelRatios[id] > 0);
+                        if (nonZeroIds.length === 1 && layout.panelRatios[nonZeroIds[0]] >= 0.99) {
+                            // One panel has ~100% ratio, all others are 0 →
+                            // this is a maximized state. Restore it.
+                            maximizer._maximizedId = nonZeroIds[0];
+                            // _savedRatios is lost (was in-memory only) —
+                            // minimizePanel will use fallback if null.
+                            maximizer._savedRatios = null;
+                            console.log('[StatePersistence] restored maximized state for panel:', nonZeroIds[0]);
+                        }
+                    }
                 }
                 // V49n-fix: apply per-indicator settings that the constructor
                 //   doesn't read from cfg. The constructor reads anchorTimeframe
