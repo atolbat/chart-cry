@@ -5629,6 +5629,7 @@ const TIMEFRAME_MS_MAP = {
     '1d': 86400000,
     '3d': 259200000,
     '1w': 604800000,
+    '2w': 1209600000,
     '1M': 2592000000,
 };
 function tfToMs(tf) {
@@ -18484,7 +18485,7 @@ class IndicatorBrick extends IndicatorBase {
         //   by default — this matches what most users expect. Users who
         //   want strict "use only fully closed HTF bars" behavior can
         //   uncheck the option in the indicator settings UI.
-        this.extendPartial = cfg.extendPartial !== false;  // default true
+        this.extendPartial = false;  // V53-remove-extendPartial: virtual-candle tail removed
     }
 
     /**
@@ -18973,116 +18974,17 @@ class IndicatorBrick extends IndicatorBase {
         let anchorCount = anchorCandles.length;
         if (anchorCount === 0) return null;
 
-        // V51-extend-partial: when true and the anchor TF is HTF (e.g. 1d
-        //   anchor on a 1h chart), the indicator line extends through the
-        //   CURRENT (still-forming) anchor bar instead of stopping at its
-        //   open time.
-        //
-        //   Two cases:
-        //
-        //   Case A — anchor store already contains the forming bar:
-        //     anchorCandles[last]._x is the OPEN time of the still-forming
-        //     anchor bar (e.g. today 00:00 for a 1d anchor). The chart's
-        //     latest LTF bar (e.g. today 20:00) is INSIDE [anchorX[last],
-        //     anchorX[last] + anchorIntervalMs). The last anchor candle's
-        //     close is the CLOSE of the most recent CLOSED LTF bar at the
-        //     time the anchor store was last fetched — typically stale.
-        //     We REPLACE the last anchor candle's close with the latest LTF
-        //     close so the indicator picks up the partial progress.
-        //
-        //   Case B — anchor store does NOT contain the forming bar (only
-        //     closed bars):
-        //     anchorCandles[last]._x is the open time of the LAST CLOSED
-        //     anchor bar (e.g. yesterday 00:00). The chart's latest LTF
-        //     bar (e.g. today 20:00) is INSIDE [anchorX[last] +
-        //     anchorIntervalMs, anchorX[last] + 2*anchorIntervalMs). We
-        //     APPEND a virtual anchor candle at _x = anchorX[last] +
-        //     anchorIntervalMs with close = latest LTF close.
-        //
-        //   Detection: compare lastLtfX with anchorX[last] + anchorIntervalMs.
-        //     If lastLtfX < anchorX[last] + anchorIntervalMs → Case A.
-        //     If lastLtfX >= anchorX[last] + anchorIntervalMs → Case B.
-        //
-        //   Without this, the anchor line goes flat at the last closed
-        //   anchor bar's value (e.g. freezes at today 00:00 on a 1d-anchored
-        //   4h chart, even though LTF price has moved through the day).
+        // V53-remove-extendPartial: previously this block built a virtual
+        //   "forming" HTF candle from the latest LTF bars and fed it to the
+        //   indicator so its line would extend through the in-progress HTF
+        //   period (e.g. show today's partial 1d EMA on a 4h chart). The
+        //   user reported this "tail of the incomplete candle" looked wrong
+        //   on anchored indicators, so the whole virtual-candle path is now
+        //   removed. The indicator only ever sees fully closed HTF candles,
+        //   matching TradingView's strict `lookahead=off` semantics.
         const anchorIntervalMs = tfToMs(anchorTf);
         const isHtfAnchor = anchorIntervalMs > chartIntervalMs;
-        let extendedCandles = anchorCandles;
-        if (this.extendPartial && isHtfAnchor && ohlc?._x && ohlc?.close && anchorCount > 0) {
-            const lastAnchorX = anchorCandles[anchorCount - 1]._x;
-            const lastLtfX = ohlc._x[count - 1];
-            const lastLtfClose = ohlc.close[count - 1];
-            if (isFinite(lastLtfX) && isFinite(lastLtfClose)) {
-                // V51-extend-partial-hl: compute the REAL high/low of the
-                //   forming anchor period from LTF bars, instead of using
-                //   lastLtfClose for all four OHLC values. This is critical
-                //   for ZigZag and other OHLC-based indicators — using
-                //   high=low=close makes the last pivot's Y position wrong
-                //   (e.g. a low pivot appears above the real low because
-                //   the virtual candle's low = current price, not the
-                //   period's actual low).
-                //   We scan all LTF bars whose _x falls inside the current
-                //   anchor period and compute max(high) + min(low).
-                //   open = first LTF bar's open in the period (approx),
-                //   close = lastLtfClose (current price).
-                const computePartialOHLC = (periodStart) => {
-                    let maxHigh = -Infinity;
-                    let minLow = Infinity;
-                    let firstOpen = NaN;
-                    let totalVol = 0;
-                    for (let i = 0; i < count; i++) {
-                        const bx = ohlc._x[i];
-                        if (bx >= periodStart && bx < periodStart + anchorIntervalMs) {
-                            const h = ohlc.high?.[i];
-                            const l = ohlc.low?.[i];
-                            const o = ohlc.open?.[i];
-                            const v = ohlc.vol?.[i] ?? 0;
-                            if (isFinite(h) && h > maxHigh) maxHigh = h;
-                            if (isFinite(l) && l < minLow) minLow = l;
-                            if (!isFinite(firstOpen) && isFinite(o)) firstOpen = o;
-                            if (isFinite(v)) totalVol += v;
-                        }
-                    }
-                    if (!isFinite(maxHigh)) maxHigh = lastLtfClose;
-                    if (!isFinite(minLow)) minLow = lastLtfClose;
-                    if (!isFinite(firstOpen)) firstOpen = lastLtfClose;
-                    return { open: firstOpen, high: maxHigh, low: minLow, close: lastLtfClose, vol: totalVol };
-                };
-                // Case A: lastLtfX is inside [lastAnchorX, lastAnchorX + anchorIntervalMs).
-                if (lastLtfX >= lastAnchorX && lastLtfX < lastAnchorX + anchorIntervalMs) {
-                    const partial = computePartialOHLC(lastAnchorX);
-                    const replaced = anchorCandles.slice(0, -1);
-                    replaced.push({
-                        _x: lastAnchorX,
-                        open: partial.open,
-                        high: partial.high,
-                        low: partial.low,
-                        close: partial.close,
-                        vol: partial.vol,
-                        _isVirtualPartial: true,
-                    });
-                    extendedCandles = replaced;
-                    anchorCount = extendedCandles.length;
-                }
-                // Case B: lastLtfX is in [lastAnchorX + anchorIntervalMs, ...)
-                else if (lastLtfX >= lastAnchorX + anchorIntervalMs &&
-                         lastLtfX < lastAnchorX + 2 * anchorIntervalMs) {
-                    const periodStart = lastAnchorX + anchorIntervalMs;
-                    const partial = computePartialOHLC(periodStart);
-                    extendedCandles = anchorCandles.concat([{
-                        _x: periodStart,
-                        open: partial.open,
-                        high: partial.high,
-                        low: partial.low,
-                        close: partial.close,
-                        vol: partial.vol,
-                        _isVirtualPartial: true,
-                    }]);
-                    anchorCount = extendedCandles.length;
-                }
-            }
-        }
+        const extendedCandles = anchorCandles;
 
         // FIX V49n-perf: cache anchor arrays + proxy Sources.
         // FIX V49n-anchorX: declare anchorX BEFORE using it in cache key.
@@ -22510,8 +22412,13 @@ class ZigZagBrick extends IndicatorBrick {
      *   last pivot's X + offset, extending right by `fibLength` pixels.
      *   Labels (price + fib %) are drawn at the right end of each line.
      *
-     *   Works for both linear and log Y-scales because yScale.valToPix()
-     *   handles the mapping per-level.
+     *   V55-fib-log-scale: works for BOTH linear and log Y-scales. When the
+     *   Y-scale is logarithmic, fib levels are interpolated in log-space
+     *   (geometric progression) so they appear visually equally spaced on
+     *   the chart. Without this, the levels were linearly interpolated in
+     *   price space and visually bunched-up near the lower pivot on log charts
+     *   — e.g. on Brett weekly, the 0.236 / 0.382 levels sat too close to the
+     *   swing low while 0.786 / 1.0 stretched far away.
      */
     _drawZigZagFibs(ctx, xScale, yScale, pivotTs, pivots, layout, computed, xData, iMin, iMax) {
         if (pivots.length < 2) return;
@@ -22532,6 +22439,21 @@ class ZigZagBrick extends IndicatorBrick {
         const fibEnd = last2.price;     // 100% = previous pivot (start of swing)
         const range = Math.abs(fibEnd - fibStart);
         if (!isFinite(range) || range <= 0) return;
+
+        // V55-fib-log-scale: detect log Y-scale and interpolate levels in
+        //   log-space so they appear visually equally spaced on log charts.
+        //   Linear:  price(r) = fibStart + (fibEnd - fibStart) * r
+        //   Log:     price(r) = exp(log(fibStart) + (log(fibEnd) - log(fibStart)) * r)
+        //   Both pivots must be positive for log interpolation to be valid.
+        const isLogScale = (yScale?.mode === 'log');
+        const canLogInterp = isLogScale && fibStart > 0 && fibEnd > 0 &&
+            isFinite(fibStart) && isFinite(fibEnd);
+        const logFibStart = canLogInterp ? Math.log(fibStart) : 0;
+        const logFibEnd   = canLogInterp ? Math.log(fibEnd)   : 0;
+        // Helper: price at fib ratio r (0 = fibStart, 1 = fibEnd).
+        const fibPriceAt = (r) => canLogInterp
+            ? Math.exp(logFibStart + (logFibEnd - logFibStart) * r)
+            : (fibStart + (fibEnd - fibStart) * r);
 
         // V51-fib-pricepct: get current price for % from current price.
         const ohlcClose = computed?._ohlcClose;
@@ -22592,7 +22514,7 @@ class ZigZagBrick extends IndicatorBrick {
             if (isFinite(extremePrice)) {
                 for (const fib of fibLevels) {
                     if (fib === 0 || fib > 1.0) continue;
-                    const fibPrice = fibStart + (fibEnd - fibStart) * fib;
+                    const fibPrice = fibPriceAt(fib);
                     if (isLowPivot) {
                         if (extremePrice >= fibPrice) {
                             if (hitFibLevel === null || fib > hitFibLevel) hitFibLevel = fib;
@@ -22611,7 +22533,7 @@ class ZigZagBrick extends IndicatorBrick {
             //   Start from bar AFTER pivot (not pivot itself) — the pivot bar
             //   is the extreme, its close doesn't count as "crossing" a level.
             if (hitFibLevel !== null) {
-                const fibPrice = fibStart + (fibEnd - fibStart) * hitFibLevel;
+                const fibPrice = fibPriceAt(hitFibLevel);
                 for (let bi = lastPivotIdx + 1; bi < scanCount; bi++) {
                     let crossed = false;
                     if (isLowPivot) {
@@ -22635,7 +22557,7 @@ class ZigZagBrick extends IndicatorBrick {
             if (__dbgHit && !this._fibHitDbgLogged) {
                 const fibPrices = {};
                 for (const fib of [0.236, 0.382, 0.5, 0.618, 0.786, 1.0]) {
-                    fibPrices[fib] = (fibStart + (fibEnd - fibStart) * fib).toFixed(2);
+                    fibPrices[fib] = fibPriceAt(fib).toFixed(2);
                 }
                 devLog('[fib-hit]', this.id, {
                     isLowPivot,
@@ -22703,7 +22625,7 @@ class ZigZagBrick extends IndicatorBrick {
             //   iteration. Previously, the hit dot code set globalAlpha = 1
             //   at the end, so levels AFTER the hit level lost their alpha.
             ctx.globalAlpha = fibAlpha;
-            const price = fibStart + (fibEnd - fibStart) * fib;
+            const price = fibPriceAt(fib);
             const py = yScale.valToPix(price);
             if (!isFinite(py)) continue;
 
@@ -47237,6 +47159,66 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
     /** Transform exchange-specific kline data to internal format. */
     _transformKlines(klines) { throw new Error('Not implemented'); }
 
+    /**
+     * V55-tf-aggregate: map a (possibly non-native) timeframe to a NATIVE
+     *   exchange interval and an aggregation factor.
+     *
+     *   Default: assume the adapter supports every tf natively (factor=1).
+     *   Override in subclasses (BinanceAdapter, ByBitAdapter) to map
+     *   non-native TFs like '2w' to a native sub-TF (e.g. '1w' with factor=2).
+     *
+     * @param {string} tf
+     * @returns {{nativeTf: string, factor: number}}
+     */
+    _nativeTfFor(tf) {
+        return { nativeTf: tf, factor: 1 };
+    }
+
+    /**
+     * V55-tf-aggregate: aggregate an array of native-TF candles into the
+     *   target TF. Groups consecutive `factor` candles into one candle
+     *   whose OHLC spans the entire period.
+     *
+     *   For '2w' (factor=2): pair two '1w' candles.
+     *   The aggregated candle's _x is the FIRST sub-candle's _x (so it
+     *   represents the start of the 2-week period).
+     *
+     *   If the source array has a trailing partial group (length not
+     *   divisible by factor), the partial group is dropped. Subclasses
+     *   that need to keep the partial group (e.g. for live updates) should
+     *   override this method.
+     */
+    _aggregateCandles(candles, factor, targetTf) {
+        if (!Array.isArray(candles) || candles.length === 0 || factor <= 1) {
+            return candles;
+        }
+        const out = [];
+        for (let i = 0; i + factor <= candles.length; i += factor) {
+            const group = candles.slice(i, i + factor);
+            const first = group[0];
+            const last  = group[group.length - 1];
+            let ohlc = {
+                _x:    first._x,
+                open:  first.open,
+                high:  -Infinity,
+                low:   Infinity,
+                close: last.close,
+                vol:   0,
+                price: last.close,
+                pocPrice: NaN,  // cannot meaningfully aggregate POC; drop
+            };
+            for (const c of group) {
+                if (isFinite(c.high) && c.high > ohlc.high) ohlc.high = c.high;
+                if (isFinite(c.low)  && c.low  < ohlc.low)  ohlc.low  = c.low;
+                if (isFinite(c.vol)) ohlc.vol += c.vol;
+            }
+            if (!isFinite(ohlc.high)) ohlc.high = last.close;
+            if (!isFinite(ohlc.low))  ohlc.low  = last.close;
+            out.push(ohlc);
+        }
+        return out;
+    }
+
     /** Build the WebSocket URL for this exchange. Override in subclass. */
     _buildWsUrl() { throw new Error('Not implemented'); }
 
@@ -48526,8 +48508,12 @@ class BinanceAdapter extends WebSocketExchangeAdapter {
         const perp = !this.isPerp;  // flip
         const path = perp ? '/fapi/v1/klines' : '/api/v3/klines';
         const base = perp ? 'https://fapi.binance.com' : 'https://api.binance.com';
+        // V55-tf-aggregate: use native sub-TF + factor for non-native TFs
+        //   (e.g. '2w' → fetch '1w' with limit*2, _transformKlines aggregates).
+        const { nativeTf, factor } = this._nativeTfFor(this.timeframe);
+        const effLimit = limit * factor;
         try {
-            const url = `${base}${path}?symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(this.timeframe)}&limit=${limit}`;
+            const url = `${base}${path}?symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(nativeTf)}&limit=${effLimit}`;
             const resp = await fetch(url);
             if (!resp.ok) return [];
             const data = await resp.json();
@@ -48545,8 +48531,11 @@ class BinanceAdapter extends WebSocketExchangeAdapter {
         const perp = !this.isPerp;  // flip
         const path = perp ? '/fapi/v1/klines' : '/api/v3/klines';
         const base = perp ? 'https://fapi.binance.com' : 'https://api.binance.com';
+        // V55-tf-aggregate: use native sub-TF + factor for non-native TFs
+        const { nativeTf, factor } = this._nativeTfFor(this.timeframe);
+        const effLimit = limit * factor;
         try {
-            const url = `${base}${path}?symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(this.timeframe)}&limit=${limit}&endTime=${firstX - 1}`;
+            const url = `${base}${path}?symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(nativeTf)}&limit=${effLimit}&endTime=${firstX - 1}`;
             const resp = await fetch(url);
             if (!resp.ok) return [];
             const data = await resp.json();
@@ -48577,6 +48566,15 @@ class BinanceAdapter extends WebSocketExchangeAdapter {
         }
     }
 
+    // ── Binance-specific: native timeframe mapping ──
+    // V55-tf-aggregate: Binance natively supports 1s,1m,3m,5m,15m,30m,1h,
+    //   2h,4h,6h,8h,12h,1d,3d,1w,1M. '2w' is NOT native — fetch '1w' (factor=2)
+    //   and aggregate client-side. '3d' IS native (factor=1).
+    _nativeTfFor(tf) {
+        if (tf === '2w') return { nativeTf: '1w', factor: 2 };
+        return { nativeTf: tf, factor: 1 };
+    }
+
     // ── Cache metadata override ──
 
     _buildCacheMeta() {
@@ -48590,32 +48588,48 @@ class BinanceAdapter extends WebSocketExchangeAdapter {
     // ── URL builders ──
     // For spot: /api/v3/klines
     // For perp: /fapi/v1/klines (different path on the same host)
+    //
+    // V55-tf-aggregate: for timeframes Binance doesn't natively support
+    //   (currently '2w'), we fetch a NATIVE SUB-TF ('1w') and aggregate
+    //   client-side. _nativeTfFor(tf) returns {nativeTf, factor} — when
+    //   factor > 1, we multiply the candle limit so we still get enough
+    //   raw candles to fill the requested count after aggregation.
+    //   Aggregation happens in _transformKlines (override).
 
     _buildHistoryUrl(limit, startTime) {
         const path = this.isPerp ? '/fapi/v1/klines' : '/api/v3/klines';
-        let url = `${this.restBase}${path}?symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(this.timeframe)}&limit=${limit}`;
+        const { nativeTf, factor } = this._nativeTfFor(this.timeframe);
+        const effLimit = limit * factor;
+        let url = `${this.restBase}${path}?symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(nativeTf)}&limit=${effLimit}`;
         if (startTime) url += `&startTime=${Math.round(startTime)}`;
         return url;
     }
 
     _buildLoadMoreUrl(limit, firstX) {
         const path = this.isPerp ? '/fapi/v1/klines' : '/api/v3/klines';
-        return `${this.restBase}${path}?symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(this.timeframe)}&limit=${limit}&endTime=${firstX - 1}`;
+        const { nativeTf, factor } = this._nativeTfFor(this.timeframe);
+        const effLimit = limit * factor;
+        return `${this.restBase}${path}?symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(nativeTf)}&limit=${effLimit}&endTime=${firstX - 1}`;
     }
 
     _buildRefreshUrl(startTime) {
         const path = this.isPerp ? '/fapi/v1/klines' : '/api/v3/klines';
-        return `${this.restBase}${path}?symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(this.timeframe)}&startTime=${startTime}&limit=${this._refreshCandleLimit}`;
+        const { nativeTf, factor } = this._nativeTfFor(this.timeframe);
+        const effLimit = (this._refreshCandleLimit || 50) * factor;
+        return `${this.restBase}${path}?symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(nativeTf)}&startTime=${startTime}&limit=${effLimit}`;
     }
 
     _buildPollUrl() {
         const path = this.isPerp ? '/fapi/v1/klines' : '/api/v3/klines';
-        return `${this.restBase}${path}?symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(this.timeframe)}&limit=${this._pollCandleLimit}`;
+        const { nativeTf, factor } = this._nativeTfFor(this.timeframe);
+        const effLimit = (this._pollCandleLimit || 5) * factor;
+        return `${this.restBase}${path}?symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(nativeTf)}&limit=${effLimit}`;
     }
 
     _buildGapFillUrl(afterX, beforeX) {
         const path = this.isPerp ? '/fapi/v1/klines' : '/api/v3/klines';
-        return `${this.restBase}${path}?symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(this.timeframe)}&startTime=${afterX + 1}&endTime=${beforeX}&limit=1000`;
+        const { nativeTf } = this._nativeTfFor(this.timeframe);
+        return `${this.restBase}${path}?symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(nativeTf)}&startTime=${afterX + 1}&endTime=${beforeX}&limit=1000`;
     }
 
     // ── CORS proxy fallback inherited from WebSocketExchangeAdapter._fetchJson ──
@@ -48691,7 +48705,7 @@ class BinanceAdapter extends WebSocketExchangeAdapter {
         //   • NaN in open → volume profile (buy/sell classification via c >= o)
         //     silently drops the candle from the "buy" bucket, skewing POC
         // We now require all six fields to be finite before accepting a candle.
-        return klines.map(k => ({
+        const raw = klines.map(k => ({
             _x:    k[0],
             open:  parseFloat(k[1]),
             high:  parseFloat(k[2]),
@@ -48704,6 +48718,15 @@ class BinanceAdapter extends WebSocketExchangeAdapter {
             isFinite(c._x) && isFinite(c.open) && isFinite(c.high) &&
             isFinite(c.low) && isFinite(c.close) && isFinite(c.vol)
         );
+        // V55-tf-aggregate: if the chart's current TF is non-native
+        //   (e.g. '2w' which Binance doesn't support), the URL builders
+        //   already requested the native sub-TF. Now aggregate the raw
+        //   candles into the target TF.
+        const { factor } = this._nativeTfFor(this.timeframe);
+        if (factor > 1) {
+            return this._aggregateCandles(raw, factor, this.timeframe);
+        }
+        return raw;
     }
 
     // ── WebSocket hooks (inherited from WebSocketExchangeAdapter template method) ──
@@ -48808,6 +48831,16 @@ class ByBitAdapter extends WebSocketExchangeAdapter {
         return meta;
     }
 
+    // ── ByBit-specific: native timeframe mapping ──
+    // V55-tf-aggregate: ByBit v5 kline intervals: 1,3,5,15,30,60,120,240,
+    //   360,720,D,W,M. Neither '3d' nor '2w' is native — fetch '1d' (factor=3)
+    //   or '1w' (factor=2) and aggregate client-side.
+    _nativeTfFor(tf) {
+        if (tf === '3d') return { nativeTf: '1d', factor: 3 };
+        if (tf === '2w') return { nativeTf: '1w', factor: 2 };
+        return { nativeTf: tf, factor: 1 };
+    }
+
     // ── ByBit-specific: interval mapping ──
 
     _bybitInterval() {
@@ -48816,9 +48849,12 @@ class ByBitAdapter extends WebSocketExchangeAdapter {
             '1h': '60', '2h': '120', '4h': '240', '6h': '360',
             '12h': '720', '1d': 'D', '1w': 'W', '1M': 'M'
         };
-        const result = map[this.timeframe];
+        // V55-tf-aggregate: use the NATIVE sub-TF (resolved via _nativeTfFor)
+        //   so '3d' / '2w' map to '1d' / '1w' instead of falling back to 1m.
+        const { nativeTf } = this._nativeTfFor(this.timeframe);
+        const result = map[nativeTf];
         if (!result) {
-            console.warn(`ByBit: unsupported timeframe "${this.timeframe}", falling back to 1m`);
+            console.warn(`ByBit: unsupported timeframe "${this.timeframe}" (native "${nativeTf}"), falling back to 1m`);
             return '1';
         }
         return result;
@@ -49007,7 +49043,7 @@ class ByBitAdapter extends WebSocketExchangeAdapter {
         }
         // comment there. ByBit's "list" arrays have the same layout:
         // [_x, open, high, low, close, vol].
-        return klines
+        const raw = klines
             .slice()
             .reverse()
             .map(k => ({
@@ -49024,6 +49060,14 @@ class ByBitAdapter extends WebSocketExchangeAdapter {
                 isFinite(c._x) && isFinite(c.open) && isFinite(c.high) &&
                 isFinite(c.low) && isFinite(c.close) && isFinite(c.vol)
             );
+        // V55-tf-aggregate: if the chart's current TF is non-native
+        //   (e.g. '3d' or '2w' on ByBit), the URL builders already requested
+        //   the native sub-TF. Now aggregate the raw candles into the target TF.
+        const { factor } = this._nativeTfFor(this.timeframe);
+        if (factor > 1) {
+            return this._aggregateCandles(raw, factor, this.timeframe);
+        }
+        return raw;
     }
 
     // ── WebSocket hooks (inherited from WebSocketExchangeAdapter template method) ──
@@ -55448,8 +55492,15 @@ class ChartFactory {
         tfDropdown.appendChild(tfTrigger);
         const tfMenu = document.createElement('div');
         tfMenu.className = 'dropdown-menu';
-        const ALL_TF = ['1m','3m','5m','15m','30m','1h','2h','4h','6h','8h','12h','1d','1w'];
-        for (const tf of ALL_TF) {
+        // V55-tf-dropdown: split into MAIN (the ones most users actually use)
+        //   and RARE (everything else, including the new 3d / 2w).
+        //   A menu-sep divides the two groups visually so the dropdown reads
+        //   as "primary timeframes | less-common timeframes".
+        //   Main:  5m, 15m, 1h, 4h, 1d, 1w  (matches user request)
+        //   Rare:  1m, 3m, 30m, 2h, 6h, 8h, 12h, 3d, 2w, 1M
+        const MAIN_TF = ['5m', '15m', '1h', '4h', '1d', '1w'];
+        const RARE_TF = ['1m', '3m', '30m', '2h', '6h', '8h', '12h', '3d', '2w', '1M'];
+        const _addTfItem = (tf) => {
             const item = document.createElement('button');
             item.type = 'button';
             item.textContent = tf;
@@ -55460,7 +55511,13 @@ class ChartFactory {
                 tfTrigger.setAttribute('aria-expanded', 'false');
             });
             tfMenu.appendChild(item);
-        }
+        };
+        for (const tf of MAIN_TF) _addTfItem(tf);
+        // Separator between main and rare timeframes.
+        const tfSep = document.createElement('div');
+        tfSep.className = 'menu-sep';
+        tfMenu.appendChild(tfSep);
+        for (const tf of RARE_TF) _addTfItem(tf);
         tfDropdown.appendChild(tfMenu);
         document.addEventListener('click', (e) => {
             if (!tfDropdown.contains(e.target)) {
@@ -57003,7 +57060,9 @@ class ChartFactory {
             // HTF → forward-fill the HTF result onto chart bars.
             // LTF → sample the LTF result at chart bar boundaries (last LTF
             //       value within each chart bar wins).
-            for (const tf of ['1m','5m','15m','30m','1h','4h','1d']) {
+            // V55-tf-dropdown: keep in sync with the main TF dropdown —
+            //   include 1w, 3d, 2w as anchor options too.
+            for (const tf of ['1m','5m','15m','30m','1h','4h','1d','1w','3d','2w']) {
                 html += `<option value="${tf}" ${existingTf === tf ? 'selected' : ''}>${tf}</option>`;
             }
             html += `</select></div>`;
@@ -60892,6 +60951,22 @@ const ChartStatePersistence = (() => {
                 axisXMode: layout.axisXMode,
                 overlayAxisCount: layout._overlayAxisCount || 0,
             };
+            // V54-maximize-restore: persist the PanelMaximizer's in-memory state
+            //   so that a page reload while a panel is maximized can fully
+            //   restore the pre-maximize ratios when the user later minimizes.
+            //   Previously only `ratios` was saved — which in maximized state
+            //   is { maximizedId: 1.0, others: 0 } — and `_savedRatios` was
+            //   lost on reload, so minimizePanel() fell back to the hardcoded
+            //   50/50 split instead of the user's actual pre-maximize ratios.
+            try {
+                const mx = engine.panelMaximizer;
+                if (mx && mx.isAnyMaximized && mx._savedRatios) {
+                    state.layout.maximizer = {
+                        maximizedId: mx._maximizedId,
+                        savedRatios: { ...mx._savedRatios },
+                    };
+                }
+            } catch (e) { /* maximizer not present — skip */ }
         } catch (e) { /* skip */ }
 
         // ── Viewport (xMin/xMax + per-panel Y) ──
@@ -61212,25 +61287,57 @@ const ChartStatePersistence = (() => {
                     layout.recalculate(layout.width, layout.height);
                     try { layout.saveToStorage(engine.config.instanceId); } catch (e) {}
                     
-                    // V52-maximize-restore: detect if a panel was maximized
-                    //   when the state was saved. In maximized state, one panel
-                    //   has ratio=1.0 and all others have ratio=0. We need to
-                    //   restore the PanelMaximizer's internal _maximizedId so
-                    //   that toggle() correctly minimizes (restores) instead
-                    //   of re-maximizing (which would save the broken 1.0/0
-                    //   ratios as the "pre-maximize" snapshot).
+                    // V54-maximize-restore: if the saved state includes the
+                    //   PanelMaximizer snapshot (`maximizer.savedRatios`),
+                    //   restore BOTH _maximizedId AND _savedRatios. This lets
+                    //   minimizePanel() restore the user's actual pre-maximize
+                    //   ratios instead of the V52 fallback (50% main + equal
+                    //   split of the rest).
+                    //   Backward-compat: if the snapshot is missing (older save
+                    //   or non-maximized state), fall through to the V52
+                    //   detection by ratios=1.0/0 heuristic.
                     const maximizer = api.getPanelMaximizer?.();
                     if (maximizer) {
-                        const allIds = Object.keys(layout.panelRatios);
-                        const nonZeroIds = allIds.filter(id => layout.panelRatios[id] > 0);
-                        if (nonZeroIds.length === 1 && layout.panelRatios[nonZeroIds[0]] >= 0.99) {
-                            // One panel has ~100% ratio, all others are 0 →
-                            // this is a maximized state. Restore it.
-                            maximizer._maximizedId = nonZeroIds[0];
-                            // _savedRatios is lost (was in-memory only) —
-                            // minimizePanel will use fallback if null.
-                            maximizer._savedRatios = null;
-                            console.log('[StatePersistence] restored maximized state for panel:', nonZeroIds[0]);
+                        const savedMx = state.layout.maximizer;
+                        if (savedMx && savedMx.maximizedId && savedMx.savedRatios) {
+                            // Only restore the maximizedId if the panel still
+                            //   exists in the current layout (could have been
+                            //   removed by the user).
+                            if (savedMx.maximizedId in layout.panelRatios) {
+                                maximizer._maximizedId = savedMx.maximizedId;
+                                // Filter savedRatios to only panels that still
+                                //   exist (skip any that were removed).
+                                const filtered = {};
+                                for (const id in savedMx.savedRatios) {
+                                    if (id in layout.panelRatios) {
+                                        filtered[id] = savedMx.savedRatios[id];
+                                    }
+                                }
+                                maximizer._savedRatios =
+                                    Object.keys(filtered).length > 0 ? filtered : null;
+                                console.log('[StatePersistence] V54 restored maximizer:',
+                                    savedMx.maximizedId, 'with',
+                                    maximizer._savedRatios ? Object.keys(maximizer._savedRatios).length : 0,
+                                    'saved ratios');
+                            } else {
+                                maximizer._maximizedId = null;
+                                maximizer._savedRatios = null;
+                            }
+                        } else {
+                            // V52-maximize-restore (legacy heuristic): detect
+                            //   if a panel was maximized when the state was
+                            //   saved, even if the new `maximizer` snapshot is
+                            //   absent (older save). One panel has ratio=1.0
+                            //   and all others have ratio=0.
+                            const allIds = Object.keys(layout.panelRatios);
+                            const nonZeroIds = allIds.filter(id => layout.panelRatios[id] > 0);
+                            if (nonZeroIds.length === 1 && layout.panelRatios[nonZeroIds[0]] >= 0.99) {
+                                maximizer._maximizedId = nonZeroIds[0];
+                                // _savedRatios is lost (was in-memory only) —
+                                // minimizePanel will use V52 fallback if null.
+                                maximizer._savedRatios = null;
+                                console.log('[StatePersistence] V52 heuristic restored maximized state for panel:', nonZeroIds[0]);
+                            }
                         }
                     }
                 }
