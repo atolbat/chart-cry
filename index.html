@@ -22734,6 +22734,30 @@ class SupportResistanceBrick extends IndicatorBrick {
             new BrickParam({ name: 'minTouches', label: 'Min touches', default: 2, min: 1, max: 20, step: 1 }),
             new BrickParam({ name: 'maxLevels', label: 'Max levels', default: 8, min: 1, max: 30, step: 1 }),
             new BrickParam({ name: 'sensitivity', label: 'Sensitivity', default: 5, min: 1, max: 20, step: 1 }),
+            // V55-prob: probability-of-touch parameters.
+            //   When showProb='yes', each level shows a "% within N bars" label,
+            //   computed via Monte Carlo simulation of a GBM calibrated to recent
+            //   price action. probHorizon is N (in chart bars). probPaths is
+            //   the number of MC paths (more = smoother but slower).
+            new BrickParam({ name: 'showProb', label: 'Show Prob', type: 'select', default: 'no',
+                options: [{ value: 'yes', label: 'Yes' }, { value: 'no', label: 'No' }], group: 'Probability' }),
+            new BrickParam({ name: 'probHorizon', label: 'Prob Horizon (bars)', default: 40, min: 5, max: 500, step: 5, group: 'Probability' }),
+            new BrickParam({ name: 'probPaths', label: 'Prob Paths', default: 500, min: 100, max: 2000, step: 100, group: 'Probability' }),
+            new BrickParam({ name: 'probVolLookback', label: 'Prob Vol Lookback', default: 30, min: 5, max: 200, step: 5, group: 'Probability' }),
+            // V55-prob-drift: drift mode (same as HPOC). Default 'zero' = neutral.
+            new BrickParam({ name: 'probDriftMode', label: 'Drift mode', type: 'select', default: 'zero',
+                options: [
+                    { value: 'zero',        label: 'Neutral (μ=0) — no-view' },
+                    { value: 'recent',      label: 'Recent (extrapolate current trend)' },
+                    { value: 'long',        label: 'Long-term (all history)' },
+                    { value: 'mean-revert', label: 'Mean-revert (pull to levels)' },
+                ], group: 'Probability' }),
+            new BrickParam({ name: 'probJumps', label: 'Jumps (pumps)', type: 'select', default: 'no',
+                options: [{ value: 'yes', label: 'Yes' }, { value: 'no', label: 'No' }], group: 'Probability' }),
+            new BrickParam({ name: 'probJumpLambda', label: 'Jump λ (/bar)', default: 0.10, min: 0.01, max: 1.0, step: 0.01, group: 'Probability' }),
+            new BrickParam({ name: 'probJumpMean', label: 'Jump mean %', default: 25, min: 5, max: 100, step: 5, group: 'Probability' }),
+            new BrickParam({ name: 'probJumpVol', label: 'Jump vol %', default: 20, min: 5, max: 50, step: 5, group: 'Probability' }),
+            new BrickParam({ name: 'probMagnetK', label: 'Magnet κ', default: 0.05, min: 0.01, max: 0.5, step: 0.01, group: 'Probability' }),
         ],
         inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
         outputs: [
@@ -22867,7 +22891,157 @@ class SupportResistanceBrick extends IndicatorBrick {
         }
         levels = mergedLevels;
 
-        this._computed = { line: new Float64Array(count).fill(NaN), levels, count, visibleRange };
+        // V55-prob: compute probability-of-touch for each level via Monte Carlo.
+        //   We calibrate a GBM (geometric Brownian motion) to the most recent
+        //   `probVolLookback` bars (drift μ and vol σ from log-returns), then
+        //   simulate `probPaths` future paths over `probHorizon` bars. For each
+        //   level, count the fraction of paths that cross it.
+        //   The simulation is deterministic (seeded PRNG) so the same data +
+        //   params always produce the same probabilities — important for cache
+        //   hits and visual stability across renders.
+        // V55-prob-cache: cache the MC results so we don't re-run 500×40×N
+        //   simulations every render frame. Cache key includes level prices +
+        //   horizon + paths + GBM calibration (μ, σ, P0).
+        let probResults = null;
+        if (this.params.showProb === 'yes' && count >= 5 && ohlc?.close) {
+            const horizon = Math.max(5, Math.floor(this.params.probHorizon ?? 40));
+            const numPaths = Math.max(50, Math.floor(this.params.probPaths ?? 500));
+            const volLB = Math.max(5, Math.min(count - 1, Math.floor(this.params.probVolLookback ?? 30)));
+            const closes = ohlc.close;
+            const driftMode = this.params.probDriftMode || 'zero';
+            const useJumps = this.params.probJumps === 'yes';
+            const jumpLambda = useJumps ? Math.max(0, this.params.probJumpLambda ?? 0.10) : 0;
+            const jumpMean = (this.params.probJumpMean ?? 25) / 100;
+            const jumpVol = (this.params.probJumpVol ?? 20) / 100;
+            const magnetK = driftMode === 'mean-revert' ? Math.max(0, this.params.probMagnetK ?? 0.05) : 0;
+
+            // Calibrate σ (volatility) from last `volLB` log-returns.
+            const logRets = [];
+            for (let i = count - volLB; i < count; i++) {
+                if (i > 0 && isFinite(closes[i-1]) && closes[i-1] > 0 && isFinite(closes[i])) {
+                    logRets.push(Math.log(closes[i] / closes[i-1]));
+                }
+            }
+            if (logRets.length >= 5) {
+                const meanLR = logRets.reduce((a, b) => a + b, 0) / logRets.length;
+                const varLR = logRets.reduce((a, b) => a + (b - meanLR) ** 2, 0) / Math.max(1, logRets.length - 1);
+                const sigma = Math.sqrt(Math.max(1e-8, varLR));
+
+                // V55-prob-drift: compute μ based on the selected mode.
+                let mu;
+                if (driftMode === 'recent') {
+                    mu = meanLR + sigma * sigma / 2;
+                } else if (driftMode === 'long') {
+                    let sumLR = 0, nLR = 0;
+                    for (let i = 1; i < count; i++) {
+                        if (isFinite(closes[i-1]) && closes[i-1] > 0 && isFinite(closes[i])) {
+                            sumLR += Math.log(closes[i] / closes[i-1]);
+                            nLR++;
+                        }
+                    }
+                    mu = nLR > 0 ? (sumLR / nLR) + sigma * sigma / 2 : 0;
+                } else {
+                    mu = 0;  // 'zero' and 'mean-revert' base drift
+                }
+                const P0 = closes[count - 1];
+
+                // V55-prob-zoom-fix: seed must NOT depend on `count` — count
+                //   changes when the user zooms (lazy-load prepends older bars),
+                //   which previously caused probabilities to shift even though
+                //   the levels and price data hadn't changed. Now the seed is
+                //   derived from P0 + horizon + paths + a hash of the level
+                //   prices, so identical levels → identical probabilities
+                //   regardless of how much history is loaded.
+                const levelPriceHash = levels.reduce(
+                    (acc, l) => ((acc * 31) ^ Math.floor((l.price || 0) * 1e6)) >>> 0,
+                    0
+                );
+                // V55-prob-cache: check cache before running MC.
+                const probCacheKey = `${levelPriceHash}:${horizon}:${numPaths}:${P0.toFixed(8)}:${mu.toFixed(8)}:${sigma.toFixed(8)}:${driftMode}:${jumpLambda}:${jumpMean}:${jumpVol}:${magnetK}`;
+                if (this._srProbCacheKey === probCacheKey && this._srProbCache) {
+                    const cached = this._srProbCache;
+                    for (let li = 0; li < levels.length && li < cached.length; li++) {
+                        levels[li].prob = cached[li];
+                        levels[li].probHorizon = horizon;
+                    }
+                    probResults = this._srProbCacheResults;
+                } else {
+                    let seed = ((levelPriceHash * 2654435761) ^ (horizon * 40503) ^ (numPaths * 2246822519) ^ Math.floor(P0 * 1e6)) >>> 0;
+                    if (seed === 0) seed = 1;
+                    const rng = () => {
+                        seed = (seed + 0x6D2B79F5) >>> 0;
+                        let t = seed;
+                        t = Math.imul(t ^ (t >>> 15), t | 1);
+                        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+                        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+                    };
+                    const gauss = () => {
+                        let u = 0, v = 0;
+                        while (u === 0) u = rng();
+                        while (v === 0) v = rng();
+                        return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+                    };
+
+                    const levelProbs = new Array(levels.length).fill(0);
+                    for (let p = 0; p < numPaths; p++) {
+                        let P = P0;
+                        const crossed = new Array(levels.length).fill(false);
+                        for (let t = 1; t <= horizon; t++) {
+                            const dW = gauss();
+                            let logStep = (mu - sigma * sigma / 2) + sigma * dW;
+                            // V55-prob-magnet: mean-reversion pull toward nearest level.
+                            if (magnetK > 0) {
+                                let nearestLog = 0;
+                                let nearestDist = Infinity;
+                                for (let li = 0; li < levels.length; li++) {
+                                    const lvl = levels[li].price;
+                                    if (isFinite(lvl) && lvl > 0 && P > 0) {
+                                        const d = Math.abs(Math.log(lvl / P));
+                                        if (d < nearestDist) { nearestDist = d; nearestLog = Math.log(lvl / P); }
+                                    }
+                                }
+                                logStep += magnetK * nearestLog;
+                            }
+                            // V55-prob-jumps: Poisson jumps (lognormal sizes).
+                            if (jumpLambda > 0) {
+                                const L = Math.exp(-jumpLambda);
+                                let kJ = 0, pJ = 1;
+                                do { kJ++; pJ *= rng(); } while (pJ > L);
+                                const nJumps = kJ - 1;
+                                for (let j = 0; j < nJumps; j++) {
+                                    logStep += gauss() * jumpVol + (Math.log(1 + jumpMean) - jumpVol * jumpVol / 2);
+                                }
+                            }
+                            P *= Math.exp(logStep);
+                            for (let li = 0; li < levels.length; li++) {
+                                if (crossed[li]) continue;
+                                const lvl = levels[li].price;
+                                if (!isFinite(lvl)) continue;
+                                if (lvl >= P0) {
+                                    if (P >= lvl) crossed[li] = true;
+                                } else {
+                                    if (P <= lvl) crossed[li] = true;
+                                }
+                            }
+                        }
+                        for (let li = 0; li < levels.length; li++) {
+                            if (crossed[li]) levelProbs[li]++;
+                        }
+                    }
+                    probResults = { horizon, paths: numPaths, mu, sigma, P0 };
+                    for (let li = 0; li < levels.length; li++) {
+                        levels[li].prob = levelProbs[li] / numPaths;
+                        levels[li].probHorizon = horizon;
+                    }
+                    // Cache the results.
+                    this._srProbCacheKey = probCacheKey;
+                    this._srProbCache = levels.map(l => l.prob);
+                    this._srProbCacheResults = probResults;
+                }
+            }
+        }
+
+        this._computed = { line: new Float64Array(count).fill(NaN), levels, count, visibleRange, probResults };
         return this._computed;
     }
 
@@ -22945,6 +23119,28 @@ class SupportResistanceBrick extends IndicatorBrick {
             ctx.textAlign = 'left';
             ctx.fillStyle = color.replace(/[\d.]+\)$/, Math.min(0.95, alpha + 0.2) + ')');
             ctx.fillText(label, segEnd + 2, y);
+
+            // V55-prob: probability-of-touch label.
+            //   Shows "P: NN% / N bars" next to each level when showProb is on.
+            //   Color encodes probability strength:
+            //     >70%  → bright green (very likely)
+            //     40-70% → yellow
+            //     15-40% → orange
+            //     <15%  → grey (unlikely)
+            if (lvl.prob !== undefined && isFinite(lvl.prob) && lvl.probHorizon) {
+                const pct = lvl.prob * 100;
+                let probColor;
+                if (pct >= 70) probColor = 'rgba(63, 185, 80, 0.95)';   // green
+                else if (pct >= 40) probColor = 'rgba(210, 153, 34, 0.95)'; // yellow
+                else if (pct >= 15) probColor = 'rgba(255, 140, 50, 0.85)'; // orange
+                else probColor = 'rgba(139, 148, 158, 0.7)';              // grey
+
+                // Measure the S/R label width to position the prob label after it.
+                const baseLabelW = ctx.measureText(label).width;
+                const probLabel = `${pct.toFixed(0)}%/${lvl.probHorizon}b`;
+                ctx.fillStyle = probColor;
+                ctx.fillText(probLabel, segEnd + 2 + baseLabelW + 6, y);
+            }
         }
         ctx.setLineDash([]);
         ctx.restore();
@@ -24333,6 +24529,58 @@ class HistoricalPocBrick extends IndicatorBrick {
             new BrickParam({ name: 'volFontSize', label: 'Label font size', default: 9, min: 6, max: 16, step: 1, group: 'Labels' }),
             new BrickParam({ name: 'volAlpha',   label: 'Label alpha',    default: 0.7, min: 0.1, max: 1, step: 0.05, group: 'Labels' }),
             new BrickParam({ name: 'minVolume',  label: 'Min volume filter (0=none)', default: 0, min: 0, max: 1000000000, step: 100000, group: 'Filtering' }),
+            // V55-hpoc-logscale: log-scale aware binning. 'auto' (default)
+            //   follows the chart's actual Y-scale mode — same source
+            //   ZigZagBrick uses (yScale.mode === 'log'). 'yes'/'no' force
+            //   log/linear regardless of chart mode.
+            new BrickParam({ name: 'useLogBins', label: 'Log bins', type: 'select', default: 'auto',
+                options: [
+                    { value: 'auto', label: 'Auto (follow chart Y-scale)' },
+                    { value: 'yes',  label: 'Always log' },
+                    { value: 'no',   label: 'Always linear' },
+                ], group: 'Histogram' }),
+            // V55-hpoc-prob: probability-of-touch parameters (same model as
+            //   SupportResistanceBrick). When showProb='yes', each zone shows
+            //   a "NN%/Nb" label = probability that price touches the zone's
+            //   max-volume line within N bars (current TF). Computed via
+            //   Monte Carlo GBM calibrated to recent log-returns.
+            new BrickParam({ name: 'showProb', label: 'Show Prob', type: 'select', default: 'no',
+                options: [{ value: 'yes', label: 'Yes' }, { value: 'no', label: 'No' }], group: 'Probability' }),
+            new BrickParam({ name: 'probHorizon', label: 'Prob Horizon (bars)', default: 40, min: 5, max: 500, step: 5, group: 'Probability' }),
+            new BrickParam({ name: 'probPaths', label: 'Prob Paths', default: 500, min: 100, max: 2000, step: 100, group: 'Probability' }),
+            new BrickParam({ name: 'probVolLookback', label: 'Prob Vol Lookback', default: 30, min: 5, max: 200, step: 5, group: 'Probability' }),
+            // V55-prob-drift: how to estimate the drift μ for the GBM.
+            //   'recent' — μ from last `probVolLookback` bars (default in v1).
+            //     Problem: extrapolates current trend forever. For BRETT in a
+            //     strong downtrend, this gives 4% probability to reach a +71%
+            //     cluster — clearly wrong.
+            //   'zero' (default) — μ = 0, neutral no-view assumption. This is
+            //     the "fair" probability under no directional bias. For BRETT
+            //     this gives ~40% to reach +71% cluster in 40 weeks.
+            //   'long' — μ from ALL available history (long-term drift).
+            //     Smoothes out short-term trends.
+            //   'mean-revert' — μ = 0 PLUS a pull toward the nearest zone
+            //     (Ornstein-Uhlenbeck-style). Models the "gravity" of volume
+            //     clusters. Gives the highest probabilities for nearby zones.
+            new BrickParam({ name: 'probDriftMode', label: 'Drift mode', type: 'select', default: 'zero',
+                options: [
+                    { value: 'zero',        label: 'Neutral (μ=0) — no-view' },
+                    { value: 'recent',      label: 'Recent (extrapolate current trend)' },
+                    { value: 'long',        label: 'Long-term (all history)' },
+                    { value: 'mean-revert', label: 'Mean-revert (pull to zones)' },
+                ], group: 'Probability' }),
+            // V55-prob-jumps: jump-diffusion (Merton model). Adds occasional
+            //   upward jumps to simulate altcoin pumps. λ = jumps per bar,
+            //   jumpMean = average jump size, jumpVol = jump size std.
+            new BrickParam({ name: 'probJumps', label: 'Jumps (pumps)', type: 'select', default: 'no',
+                options: [{ value: 'yes', label: 'Yes' }, { value: 'no', label: 'No' }], group: 'Probability' }),
+            new BrickParam({ name: 'probJumpLambda', label: 'Jump λ (/bar)', default: 0.10, min: 0.01, max: 1.0, step: 0.01, group: 'Probability' }),
+            new BrickParam({ name: 'probJumpMean', label: 'Jump mean %', default: 25, min: 5, max: 100, step: 5, group: 'Probability' }),
+            new BrickParam({ name: 'probJumpVol', label: 'Jump vol %', default: 20, min: 5, max: 50, step: 5, group: 'Probability' }),
+            // V55-prob-magnet: strength of mean-reversion pull (only used when
+            //   drift mode = 'mean-revert'). κ = pull strength per bar.
+            new BrickParam({ name: 'probMagnetK', label: 'Magnet κ', default: 0.05, min: 0.01, max: 0.5, step: 0.01, group: 'Probability' }),
+            new BrickParam({ name: 'probFontSize', label: 'Prob Font Size', default: 9, min: 6, max: 16, step: 1, group: 'Probability' }),
         ],
         inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
         outputs: [
@@ -24358,6 +24606,37 @@ class HistoricalPocBrick extends IndicatorBrick {
         const clusterMult = this.params.clusterMult || 2.0;
         const maxZones   = Math.max(1, Math.floor(this.params.maxZones || 15));
         const minVolume  = this.params.minVolume || 0;
+        // V55-hpoc-logscale: read the chart's ACTUAL Y-scale mode (same source
+        //   ZigZagBrick._drawZigZagFibs uses: yScale.mode === 'log'). The
+        //   'useLogBins' param now only overrides when set to 'yes' or 'no'
+        //   explicitly — 'auto' (default) follows the chart's Y-scale.
+        const useLogBinsCfg = this.params.useLogBins || 'auto';
+        let chartIsLog = null;
+        try {
+            const ctx = manager?._chartCtx || manager?.getChartContext?.();
+            const eng = ctx?.engine;
+            // The Y-scale mode is stored in scaleCache.yScales[panelId].mode.
+            //   (viewport.panels[panelId] only has yMin/yMax — no yScale ref.)
+            //   This matches what render() receives via the `yScale` param:
+            //   ZigZagBrick._drawZigZagFibs checks yScale.mode === 'log'.
+            const yScales = eng?.scaleCache?.yScales;
+            const panelKey = this.panelId || 'main';
+            const ys = yScales?.[panelKey] || yScales?.main;
+            if (ys?.mode) {
+                chartIsLog = ys.mode === 'log';
+            }
+        } catch (_) { /* fall through to param config */ }
+        // Resolve final log-mode:
+        //   'yes' → always log
+        //   'no'  → always linear
+        //   'auto' → follow chart's Y-scale (chartIsLog), or fall back to
+        //           ratio>10 heuristic if chart mode is unavailable.
+        const resolveLog = (yMin, yMax) => {
+            if (useLogBinsCfg === 'yes') return true;
+            if (useLogBinsCfg === 'no')  return false;
+            if (chartIsLog !== null) return chartIsLog;
+            return (yMax / yMin) > 10;  // fallback heuristic
+        };
 
         const startIdx = lookback > 0 ? Math.max(0, count - lookback) : 0;
         if (count - startIdx < windowBars) {
@@ -24388,29 +24667,66 @@ class HistoricalPocBrick extends IndicatorBrick {
                 if (H[i] > yMax) yMax = H[i];
             }
             if (!isFinite(yMin) || !isFinite(yMax) || yMax <= yMin) continue;
+            // V55-hpoc-logbins: skip windows with non-positive prices — log
+            //   binning requires yMin > 0.
+            if (yMin <= 0) continue;
+
+            // V55-hpoc-logscale: use resolveLog() which checks the chart's
+            //   actual Y-scale mode (when 'auto'), or the explicit override.
+            const useLog = resolveLog(yMin, yMax);
 
             // Build bins
-            const binStep = (yMax - yMin) / nodeCount;
             const binVol = new Float64Array(nodeCount);
             const binLo = new Float64Array(nodeCount);
             const binHi = new Float64Array(nodeCount);
-            for (let i = 0; i < nodeCount; i++) {
-                binLo[i] = yMin + i * binStep;
-                binHi[i] = yMin + (i + 1) * binStep;
+            if (useLog) {
+                // Log-spaced bins — match what a log Y-axis would draw.
+                const logMin = Math.log(yMin);
+                const logMax = Math.log(yMax);
+                const logStep = (logMax - logMin) / nodeCount;
+                for (let i = 0; i < nodeCount; i++) {
+                    binLo[i] = Math.exp(logMin + i * logStep);
+                    binHi[i] = Math.exp(logMin + (i + 1) * logStep);
+                }
+            } else {
+                const binStep = (yMax - yMin) / nodeCount;
+                for (let i = 0; i < nodeCount; i++) {
+                    binLo[i] = yMin + i * binStep;
+                    binHi[i] = yMin + (i + 1) * binStep;
+                }
             }
 
-            // Accumulate volume per bin (market-profile overlap method)
+            // Accumulate volume per bin (market-profile overlap method).
+            // V55-hpoc-logbins: when useLog, weight overlap by LOG-space
+            //   coverage (not linear). Otherwise wide candles dump all their
+            //   volume into the lowest bins, making the profile visually
+            //   distorted on log-scale charts.
             for (let i = winStart; i < winEnd; i++) {
                 const o = O[i], h = H[i], l = L[i], c = C[i], v = V[i];
                 if (!isFinite(o) || !isFinite(c) || !isFinite(v) || v <= 0) continue;
                 const barLo = Math.min(o, c, l);
                 const barHi = Math.max(o, c, h);
-                if (barHi <= barLo) continue;
-                for (let li = 0; li < nodeCount; li++) {
-                    const ovLo = Math.max(barLo, binLo[li]);
-                    const ovHi = Math.min(barHi, binHi[li]);
-                    if (ovHi > ovLo) {
-                        binVol[li] += v * (ovHi - ovLo) / (barHi - barLo);
+                if (barHi <= barLo || barLo <= 0) continue;
+                if (useLog) {
+                    const logBarLo = Math.log(barLo);
+                    const logBarHi = Math.log(barHi);
+                    const logBarRange = logBarHi - logBarLo;
+                    for (let li = 0; li < nodeCount; li++) {
+                        const logBinLo = Math.log(binLo[li]);
+                        const logBinHi = Math.log(binHi[li]);
+                        const ovLo = Math.max(logBarLo, logBinLo);
+                        const ovHi = Math.min(logBarHi, logBinHi);
+                        if (ovHi > ovLo) {
+                            binVol[li] += v * (ovHi - ovLo) / logBarRange;
+                        }
+                    }
+                } else {
+                    for (let li = 0; li < nodeCount; li++) {
+                        const ovLo = Math.max(barLo, binLo[li]);
+                        const ovHi = Math.min(barHi, binHi[li]);
+                        if (ovHi > ovLo) {
+                            binVol[li] += v * (ovHi - ovLo) / (barHi - barLo);
+                        }
                     }
                 }
             }
@@ -24423,8 +24739,12 @@ class HistoricalPocBrick extends IndicatorBrick {
             if (maxVol <= 0) continue;
 
             const pocPrice = (binLo[pocIdx] + binHi[pocIdx]) / 2;
-            pocLevels.push({ price: pocPrice, volume: maxVol, nodeHeight: binStep });
-            totalNodeHeight += binStep;
+            // nodeHeight = bin width at the POC level. For log bins, this is
+            //   the linear price span of that bin (binHi - binLo), which is
+            //   what clusterThreshold compares against.
+            const nodeHeight = binHi[pocIdx] - binLo[pocIdx];
+            pocLevels.push({ price: pocPrice, volume: maxVol, nodeHeight });
+            totalNodeHeight += nodeHeight;
             windowCount++;
         }
 
@@ -24486,11 +24806,180 @@ class HistoricalPocBrick extends IndicatorBrick {
         let maxZoneVol = 0;
         for (const z of zones) { if (z.totalVol > maxZoneVol) maxZoneVol = z.totalVol; }
 
+        // V55-hpoc-prob: compute probability-of-touch for each zone's maxVolPrice.
+        //   Same GBM Monte Carlo model as SupportResistanceBrick, but with a
+        //   ZOOM-INDEPENDENT seed — derived from zone prices + horizon + paths,
+        //   NOT from `count`. So zooming in/out (which can trigger lazy-load
+        //   and change `count`) does NOT change the probabilities.
+        // V55-hpoc-prob-cache: cache the MC results so we don't re-run 500×40×N
+        //   simulations every render frame. Cache key includes zone prices +
+        //   horizon + paths + GBM calibration (μ, σ, P0) — if any of these
+        //   change, we recompute; otherwise we reuse the cached probabilities.
+        // V55-prob-drift: drift mode selector — 'zero' (default, neutral),
+        //   'recent' (extrapolate current trend), 'long' (all-history drift),
+        //   'mean-revert' (μ=0 + pull toward zones). The default 'zero' avoids
+        //   the v1 bug where BRETT's recent downtrend gave only 4% probability
+        //   to reach a +71% cluster — neutral drift gives ~40%.
+        let probResults = null;
+        if (this.params.showProb === 'yes' && count >= 5 && ohlc?.close) {
+            const horizon = Math.max(5, Math.floor(this.params.probHorizon ?? 40));
+            const numPaths = Math.max(50, Math.floor(this.params.probPaths ?? 500));
+            const volLB = Math.max(5, Math.min(count - 1, Math.floor(this.params.probVolLookback ?? 30)));
+            const closes = ohlc.close;
+            const driftMode = this.params.probDriftMode || 'zero';
+            const useJumps = this.params.probJumps === 'yes';
+            const jumpLambda = useJumps ? Math.max(0, this.params.probJumpLambda ?? 0.10) : 0;
+            const jumpMean = (this.params.probJumpMean ?? 25) / 100;
+            const jumpVol = (this.params.probJumpVol ?? 20) / 100;
+            const magnetK = driftMode === 'mean-revert' ? Math.max(0, this.params.probMagnetK ?? 0.05) : 0;
+
+            // Calibrate σ (volatility) from last `volLB` log-returns.
+            const logRets = [];
+            for (let i = count - volLB; i < count; i++) {
+                if (i > 0 && isFinite(closes[i-1]) && closes[i-1] > 0 && isFinite(closes[i])) {
+                    logRets.push(Math.log(closes[i] / closes[i-1]));
+                }
+            }
+            if (logRets.length >= 5) {
+                const meanLR = logRets.reduce((a, b) => a + b, 0) / logRets.length;
+                const varLR = logRets.reduce((a, b) => a + (b - meanLR) ** 2, 0) / Math.max(1, logRets.length - 1);
+                const sigma = Math.sqrt(Math.max(1e-8, varLR));
+
+                // V55-prob-drift: compute μ based on the selected mode.
+                let mu;
+                if (driftMode === 'recent') {
+                    mu = meanLR + sigma * sigma / 2;
+                } else if (driftMode === 'long') {
+                    let sumLR = 0, nLR = 0;
+                    for (let i = 1; i < count; i++) {
+                        if (isFinite(closes[i-1]) && closes[i-1] > 0 && isFinite(closes[i])) {
+                            sumLR += Math.log(closes[i] / closes[i-1]);
+                            nLR++;
+                        }
+                    }
+                    mu = nLR > 0 ? (sumLR / nLR) + sigma * sigma / 2 : 0;
+                } else {
+                    mu = 0;  // 'zero' and 'mean-revert' base drift
+                }
+                const P0 = closes[count - 1];
+
+                // V55-hpoc-prob-cache: build a cache key from everything that
+                //   affects the MC result. If the key matches the last run,
+                //   reuse the cached probabilities (skip the simulation).
+                const zonePriceHash = zones.reduce(
+                    (acc, z) => ((acc * 31) ^ Math.floor((z.maxVolPrice || 0) * 1e6) ^ Math.floor((z.lo || 0) * 1e6) ^ Math.floor((z.hi || 0) * 1e6)) >>> 0,
+                    0
+                );
+                const probCacheKey = `${zonePriceHash}:${horizon}:${numPaths}:${P0.toFixed(8)}:${mu.toFixed(8)}:${sigma.toFixed(8)}:${driftMode}:${jumpLambda}:${jumpMean}:${jumpVol}:${magnetK}`;
+                if (this._hpocProbCacheKey === probCacheKey && this._hpocProbCache) {
+                    // Cache hit — reuse cached probabilities.
+                    const cached = this._hpocProbCache;
+                    for (let zi = 0; zi < zones.length && zi < cached.length; zi++) {
+                        zones[zi].prob = cached[zi];
+                        zones[zi].probHorizon = horizon;
+                    }
+                    probResults = this._hpocProbCacheResults;
+                } else {
+                    // Cache miss — run the Monte Carlo simulation.
+                    // V55-prob-zoom-fix: seed derived from zone prices (not count).
+                    let seed = ((zonePriceHash * 2654435761) ^ (horizon * 40503) ^ (numPaths * 2246822519) ^ Math.floor(P0 * 1e6)) >>> 0;
+                    if (seed === 0) seed = 1;
+                    const rng = () => {
+                        seed = (seed + 0x6D2B79F5) >>> 0;
+                        let t = seed;
+                        t = Math.imul(t ^ (t >>> 15), t | 1);
+                        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+                        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+                    };
+                    const gauss = () => {
+                        let u = 0, v = 0;
+                        while (u === 0) u = rng();
+                        while (v === 0) v = rng();
+                        return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+                    };
+
+                    // For each zone, count paths that touch the zone's [lo, hi]
+                    // range within `horizon` bars. Touch = price enters the zone
+                    // (P >= lo AND P <= hi). This is more lenient than touching
+                    // only the maxVolPrice — any candle crossing the zone counts.
+                    // V55-prob-drift: in 'mean-revert' mode, add a pull toward
+                    //   the nearest zone (Ornstein-Uhlenbeck-style). The pull
+                    //   strength is κ · ln(nearestZonePrice / P) per bar.
+                    // V55-prob-jumps: in jump mode, add Poisson-distributed
+                    //   upward jumps (lognormal) to simulate altcoin pumps.
+                    const zoneProbs = new Array(zones.length).fill(0);
+                    // Precompute nearest zone for mean-revert (cache per-path
+                    // would be wasteful — recompute each step is fine for
+                    // typical zone counts ≤ 15).
+                    for (let p = 0; p < numPaths; p++) {
+                        let P = P0;
+                        const crossed = new Array(zones.length).fill(false);
+                        for (let t = 1; t <= horizon; t++) {
+                            const dW = gauss();
+                            let logStep = (mu - sigma * sigma / 2) + sigma * dW;
+                            // V55-prob-magnet: mean-reversion pull toward nearest zone.
+                            if (magnetK > 0) {
+                                // Find nearest zone by log-distance.
+                                let nearestLog = 0;
+                                let nearestDist = Infinity;
+                                for (let zi = 0; zi < zones.length; zi++) {
+                                    const z = zones[zi];
+                                    const zoneMid = z.maxVolPrice || ((z.lo + z.hi) / 2);
+                                    if (zoneMid > 0 && P > 0) {
+                                        const d = Math.abs(Math.log(zoneMid / P));
+                                        if (d < nearestDist) { nearestDist = d; nearestLog = Math.log(zoneMid / P); }
+                                    }
+                                }
+                                logStep += magnetK * nearestLog;
+                            }
+                            // V55-prob-jumps: Poisson jumps (lognormal sizes).
+                            if (jumpLambda > 0) {
+                                // Knuth's Poisson.
+                                const L = Math.exp(-jumpLambda);
+                                let kJ = 0, pJ = 1;
+                                do { kJ++; pJ *= rng(); } while (pJ > L);
+                                const nJumps = kJ - 1;
+                                for (let j = 0; j < nJumps; j++) {
+                                    // Lognormal jump: mean ln(1+jumpMean), vol jumpVol.
+                                    logStep += gauss() * jumpVol + (Math.log(1 + jumpMean) - jumpVol * jumpVol / 2);
+                                }
+                            }
+                            P *= Math.exp(logStep);
+                            for (let zi = 0; zi < zones.length; zi++) {
+                                if (crossed[zi]) continue;
+                                const z = zones[zi];
+                                if (z.lo <= P0 && z.hi >= P0) {
+                                    crossed[zi] = true;
+                                } else if (z.lo > P0) {
+                                    if (P >= z.lo) crossed[zi] = true;
+                                } else {
+                                    if (P <= z.hi) crossed[zi] = true;
+                                }
+                            }
+                        }
+                        for (let zi = 0; zi < zones.length; zi++) {
+                            if (crossed[zi]) zoneProbs[zi]++;
+                        }
+                    }
+                    probResults = { horizon, paths: numPaths, mu, sigma, P0 };
+                    for (let zi = 0; zi < zones.length; zi++) {
+                        zones[zi].prob = zoneProbs[zi] / numPaths;
+                        zones[zi].probHorizon = horizon;
+                    }
+                    // Cache the results.
+                    this._hpocProbCacheKey = probCacheKey;
+                    this._hpocProbCache = zones.map(z => z.prob);
+                    this._hpocProbCacheResults = probResults;
+                }
+            }
+        }
+
         this._computed = {
             line: new Float64Array(count).fill(NaN),
             zones,
             avgNodeHeight,
             maxZoneVol,
+            probResults,
             count, visibleRange,
         };
         return this._computed;
@@ -24519,6 +25008,9 @@ class HistoricalPocBrick extends IndicatorBrick {
         const showVolume = this.params.showVolume !== false;
         const volFontSize = this.params.volFontSize || 9;
         const volAlpha = this.params.volAlpha ?? 0.7;
+        // V55-hpoc-prob: probability label params.
+        const showProb = this.params.showProb === 'yes';
+        const probFontSize = this.params.probFontSize || 9;
         const maxZoneVol = computed.maxZoneVol || 1;
         // V52-volbar: volume bar extends beyond rectEnd by a few px so it's
         //   visually separate from the zone fill.
@@ -24626,6 +25118,47 @@ class HistoricalPocBrick extends IndicatorBrick {
                 // Only draw if there's enough vertical space
                 if (rectH >= volFontSize || showMaxVolLine) {
                     ctx.fillText(volStr, labelX, labelY);
+                }
+            }
+
+            // V55-hpoc-prob: probability-of-touch label.
+            //   Shows "NN%/Nb" below the volume label (or at zone center if
+            //   volume label is off). Color encodes probability strength:
+            //     >70%  → bright green (very likely)
+            //     40-70% → yellow
+            //     15-40% → orange
+            //     <15%  → grey (unlikely)
+            if (showProb && zone.prob !== undefined && isFinite(zone.prob) && zone.probHorizon) {
+                const pct = zone.prob * 100;
+                let probColor;
+                if (pct >= 70) probColor = 'rgba(63, 185, 80, 0.95)';
+                else if (pct >= 40) probColor = 'rgba(210, 153, 34, 0.95)';
+                else if (pct >= 15) probColor = 'rgba(255, 140, 50, 0.85)';
+                else probColor = 'rgba(139, 148, 158, 0.7)';
+
+                ctx.font = probFontSize + 'px -apple-system, sans-serif';
+                ctx.textBaseline = 'middle';
+                ctx.textAlign = 'left';
+                ctx.fillStyle = probColor;
+
+                // Position: below the volume label if it's shown, else at zone center.
+                // We use the max-vol line Y as the anchor (same as volume label)
+                // and offset DOWN by (volFontSize + 2) px to avoid overlap.
+                const anchorY = (showMaxVolLine && isFinite(zone.maxVolPrice))
+                    ? yScale.valToPix(zone.maxVolPrice)
+                    : (yTop + yBot) / 2;
+                const probLabelY = showVolume
+                    ? anchorY + volFontSize + 2
+                    : anchorY;
+                const probLabelX = (showZones ? rectEnd : rectStart) + labelXOffset;
+                const probLabel = `${pct.toFixed(0)}%/${zone.probHorizon}b`;
+
+                // Only draw if there's room below the zone's bottom edge.
+                if (probLabelY < yBot - 2 || !showVolume) {
+                    ctx.fillText(probLabel, probLabelX, probLabelY);
+                } else {
+                    // Not enough room below — draw ABOVE the anchor instead.
+                    ctx.fillText(probLabel, probLabelX, anchorY - volFontSize - 2);
                 }
             }
         }
@@ -28349,21 +28882,57 @@ class VolumeProfileRenderer {
     static _vpHistCache = null;
     static _vpHistCacheKey = null;
 
-    /** Accumulate volume for one candle into level arrays. Shared by main & POC-developing loops. */
-    static _accumulateCandle(o, h, l, c, v, nodeCount, levelsPriceLo, levelsPriceHi, levelsBuyVol, levelsSellVol) {
+    /**
+     * Accumulate volume for one candle into level arrays. Shared by main & POC-developing loops.
+     *
+     * V55-vp-logscale: previously, volume was distributed across bins proportionally
+     *   to LINEAR price overlap: overlapRatio = (overlapHi - overlapLo) / (barHi - barLo).
+     *   On a log Y-scale chart, the bins themselves are log-spaced (computed in
+     *   computeModel), but this linear overlap weighting caused wide-range candles
+     *   (which span many low-priced bins in linear terms but few in log terms)
+     *   to dump most of their volume into the lower bins — making low-price nodes
+     *   appear visually huge and high-price nodes appear thin. The fix: when
+     *   `isLog` is true, distribute volume proportionally to LOG-space overlap
+     *   instead, so the same candle contributes equally across the log bins it
+     *   actually crosses on screen.
+     */
+    static _accumulateCandle(o, h, l, c, v, nodeCount, levelsPriceLo, levelsPriceHi, levelsBuyVol, levelsSellVol, isLog) {
         if (!isFinite(o) || !isFinite(c) || !isFinite(v) || v <= 0) return;
         const isBuy = c >= o;
         const barLo = Math.min(o, c, isFinite(l) ? l : Math.min(o, c));
         const barHi = Math.max(o, c, isFinite(h) ? h : Math.max(o, c));
         if (barHi <= barLo) return;
-        for (let li = 0; li < nodeCount; li++) {
-            const overlapLo = Math.max(barLo, levelsPriceLo[li]);
-            const overlapHi = Math.min(barHi, levelsPriceHi[li]);
-            if (overlapHi > overlapLo) {
-                const overlapRatio = (overlapHi - overlapLo) / (barHi - barLo);
-                const allocVol = v * overlapRatio;
-                if (isBuy) levelsBuyVol[li] += allocVol;
-                else levelsSellVol[li] += allocVol;
+        if (isLog && barLo > 0 && barHi > 0) {
+            // Log-space overlap: weight by log-bin coverage, not linear coverage.
+            // This makes the histogram visually consistent with how the bins
+            // are drawn on a log Y-axis.
+            const logBarLo = Math.log(barLo);
+            const logBarHi = Math.log(barHi);
+            const logBarRange = logBarHi - logBarLo;
+            for (let li = 0; li < nodeCount; li++) {
+                if (levelsPriceHi[li] <= 0 || levelsPriceLo[li] <= 0) continue;
+                const logLvlLo = Math.log(levelsPriceLo[li]);
+                const logLvlHi = Math.log(levelsPriceHi[li]);
+                const overlapLo = Math.max(logBarLo, logLvlLo);
+                const overlapHi = Math.min(logBarHi, logLvlHi);
+                if (overlapHi > overlapLo) {
+                    const overlapRatio = (overlapHi - overlapLo) / logBarRange;
+                    const allocVol = v * overlapRatio;
+                    if (isBuy) levelsBuyVol[li] += allocVol;
+                    else levelsSellVol[li] += allocVol;
+                }
+            }
+        } else {
+            // Linear mode (unchanged): weight by linear price coverage.
+            for (let li = 0; li < nodeCount; li++) {
+                const overlapLo = Math.max(barLo, levelsPriceLo[li]);
+                const overlapHi = Math.min(barHi, levelsPriceHi[li]);
+                if (overlapHi > overlapLo) {
+                    const overlapRatio = (overlapHi - overlapLo) / (barHi - barLo);
+                    const allocVol = v * overlapRatio;
+                    if (isBuy) levelsBuyVol[li] += allocVol;
+                    else levelsSellVol[li] += allocVol;
+                }
             }
         }
     }
@@ -28398,7 +28967,10 @@ class VolumeProfileRenderer {
         //   levelsBuyVol/SellVol every call → on cache hit, volumes were
         //   all zero → histogram disappeared.
         //   Fix: cache the full result object including all level arrays.
-        const cacheKey = `${yMin.toFixed(2)}:${yMax.toFixed(2)}:${nodeCount}:${count}`;
+        // V55-vp-logscale: include isLog in the cache key so switching Y-scale
+        //   mode (linear ↔ log) invalidates the cache and re-accumulates with
+        //   the correct overlap weighting.
+        const cacheKey = `${yMin.toFixed(2)}:${yMax.toFixed(2)}:${nodeCount}:${count}:${isLog ? 1 : 0}`;
         if (VolumeProfileRenderer._vpModelCacheKey === cacheKey && VolumeProfileRenderer._vpModelCache) {
             return VolumeProfileRenderer._vpModelCache;
         }
@@ -28446,7 +29018,7 @@ class VolumeProfileRenderer {
             const barLo = Math.min(o, c, isFinite(l) ? l : Math.min(o, c));
             const barHi = Math.max(o, c, isFinite(h) ? h : Math.max(o, c));
             if (barHi <= barLo) continue;
-            VolumeProfileRenderer._accumulateCandle(o, h, l, c, v, nodeCount, levelsPriceLo, levelsPriceHi, levelsBuyVol, levelsSellVol);
+            VolumeProfileRenderer._accumulateCandle(o, h, l, c, v, nodeCount, levelsPriceLo, levelsPriceHi, levelsBuyVol, levelsSellVol, isLog);
             vpHist.add(isBuy ? (o + c) / 2 : (o + c) / 2, v);
         }
 
@@ -28691,7 +29263,7 @@ class VolumeProfileRenderer {
                 VolumeProfileRenderer._accumulateCandle(
                     priceSeries.openData?.[i], priceSeries.highData?.[i], priceSeries.lowData?.[i],
                     priceSeries.data?.[i], volSeries?.data?.[i],
-                    nodeCount, levelsPriceLo, levelsPriceHi, runBuyVol, runSellVol
+                    nodeCount, levelsPriceLo, levelsPriceHi, runBuyVol, runSellVol, isLog
                 );
 
                 // Find running POC
@@ -57504,6 +58076,15 @@ class ChartFactory {
                     if (isExisting) {
                         // Update existing indicator params
                         Object.assign(existingInd.params, selectedParams);
+                        // V55-prob-cache: invalidate compute + prob caches so
+                        //   the indicator re-runs _computeRaw (and MC simulation)
+                        //   with the new params. Without this, the fast-path in
+                        //   compute() returns the stale _computed result.
+                        existingInd._computed = null;
+                        existingInd._computeVersion = -1;
+                        existingInd._computeAnchorVer = null;
+                        existingInd._hpocProbCacheKey = null;
+                        existingInd._srProbCacheKey = null;
                         // V38: Apply per-output styles
                         for (const outName in styleConfig) {
                             if (!existingInd.outputStyles[outName]) existingInd.outputStyles[outName] = {};
