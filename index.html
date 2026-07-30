@@ -54039,6 +54039,15 @@ class DataSourceOrchestrator {
         // source property. It's used when src='ratio' to create the adapter.
         if (param === 'ratioConfig') {
             this._ratioConfig = value;
+            // V55-ratio-fix: when changing ratioConfig while in ratio mode,
+            //   update _preRatioSymbol so that switching back to binance/bybit
+            //   restores the LAST numerator (not the original one from before
+            //   entering ratio mode). Without this, switching from BTC/USDT
+            //   ratio → ETH/USDT ratio → back to binance restores BTC instead
+            //   of ETH.
+            if (this.srcMode === 'ratio' && value?.numerator) {
+                this._preRatioSymbol = value.numerator;
+            }
             return;
         }
 
@@ -56727,6 +56736,7 @@ class ChartFactory {
         ChartFactory._wireIndicatorModal(container, api, engine);
         ChartFactory._wirePresetModal(container, engine.presetManager);
         ChartFactory._wireExportModal(container, api, engine);
+        ChartFactory._wireStatsModal(container, api, engine);
 
         // ── 10. Lock integration via EventBus (worker-compatible) ──
         const _lockUnsubs = ChartFactory._wireLockIntegration(container, guard);
@@ -57060,10 +57070,17 @@ class ChartFactory {
         // V14-export: Export button — opens modal to export chart data as text.
         //   Sits immediately to the right of the Settings dropdown. Reuses
         //   the standard toolbar button look (transparent bg, hover highlight).
-        const exportBtn = _mkBtn(['btn-export', '📋 Export', {}]);
+        const exportBtn = _mkBtn(['btn-export', '📋', {}]);
         exportBtn.type = 'button';
         exportBtn.title = 'Export chart data';
         toolbarInner.appendChild(exportBtn);
+
+        // V55-stats: Statistics button — opens modal with comprehensive
+        //   statistical analysis of the visible range.
+        const statsBtn = _mkBtn(['btn-stats', '📊 Stats', {}]);
+        statsBtn.type = 'button';
+        statsBtn.title = 'Statistical analysis (visible range)';
+        toolbarInner.appendChild(statsBtn);
 
         // V49n-coin-info: "?" button — opens a popup with info about the
         //   current coin (same content as the CoinPicker tooltip: name,
@@ -59394,6 +59411,760 @@ class ChartFactory {
         });
     }
 
+    // V55-stats: Statistics modal — comprehensive analysis of visible range.
+    static _wireStatsModal(container, api, engine) {
+        const btn = container.querySelector('[data-role="btn-stats"]');
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+            ChartFactory._openStatsModal(container, api, engine);
+        });
+    }
+
+    // V55-stats-snapshot: in-memory snapshot for comparison.
+    static _statsSnapshot = null;
+
+    static _openStatsModal(container, api, engine) {
+        const existing = document.querySelector('.ind-modal-backdrop');
+        if (existing) { existing.remove(); }
+
+        const backdrop = document.createElement('div');
+        backdrop.className = 'ind-modal-backdrop';
+        backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100000;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:10px;';
+
+        const close = () => backdrop.remove();
+        backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+
+        const escHandler = (e) => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', escHandler); } };
+        document.addEventListener('keydown', escHandler);
+
+        const rerender = () => {
+            const stats = ChartFactory._computeStats(api, engine);
+            const snapshot = ChartFactory._statsSnapshot;
+            const html = ChartFactory._renderStatsHtmlTabbed(stats, snapshot);
+            const body = backdrop.querySelector('.stats-body');
+            if (body) body.innerHTML = html;
+            // Re-wire snapshot/clear buttons
+            const snapBtn = backdrop.querySelector('.stats-snap-btn');
+            if (snapBtn) snapBtn.onclick = () => { ChartFactory._statsSnapshot = stats; rerender(); };
+            const clearBtn = backdrop.querySelector('.stats-clear-btn');
+            if (clearBtn) clearBtn.onclick = () => { ChartFactory._statsSnapshot = null; rerender(); };
+            const refreshBtn = backdrop.querySelector('.stats-refresh-btn');
+            if (refreshBtn) refreshBtn.onclick = () => rerender();
+            // V55-stats-copy: copy all stats as text to clipboard.
+            // V55-copy-fix: use textarea+execCommand FIRST (works on HTTP),
+            //   then try clipboard API as fallback. The async clipboard API
+            //   fails on non-HTTPS pages and when the user gesture is lost
+            //   during await. execCommand is deprecated but still works
+            //   everywhere including HTTP.
+            const copyBtn = backdrop.querySelector('.stats-copy-btn');
+            if (copyBtn) copyBtn.onclick = () => {
+                const text = ChartFactory._statsToText(stats, snapshot);
+                let ok = false;
+                // Method 1: textarea + execCommand (works on HTTP)
+                try {
+                    const ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;';
+                    document.body.appendChild(ta);
+                    ta.focus();
+                    ta.select();
+                    ok = document.execCommand('copy');
+                    ta.remove();
+                } catch (e) { ok = false; }
+                // Method 2: clipboard API (HTTPS only) — only if method 1 failed
+                if (!ok && navigator.clipboard?.writeText) {
+                    navigator.clipboard.writeText(text).then(
+                        () => { copyBtn.textContent = '✓ Copied!'; setTimeout(() => { copyBtn.textContent = '📋 Copy'; }, 1500); },
+                        () => { copyBtn.textContent = '✗ Failed'; setTimeout(() => { copyBtn.textContent = '📋 Copy'; }, 1500); }
+                    );
+                    return;
+                }
+                copyBtn.textContent = ok ? '✓ Copied!' : '✗ Failed';
+                setTimeout(() => { copyBtn.textContent = '📋 Copy'; }, 1500);
+            };
+            // V55-stats-tabs: wire tab buttons to scroll to sections.
+            backdrop.querySelectorAll('.stats-tab-btn').forEach(btn => {
+                btn.onclick = () => {
+                    const tabId = btn.dataset.tab;
+                    const content = backdrop.querySelector('.stats-content');
+                    if (!content) return;
+                    // Find section by keyword in its header text.
+                    const sections = content.querySelectorAll('div[style*="font-weight:600"]');
+                    const keywords = {
+                        overview: ['Price Overview', 'Trading'],
+                        distribution: ['Return Distribution', 'Percentiles', 'Histogram', 'Streak Distribution'],
+                        probs: ['Probability', 'Conditional', 'Binomial'],
+                        risk: ['Risk Metrics', 'Drawdown'],
+                        dow: ['Day of Week'],
+                        ma: ['MA(', 'Conditional —'],
+                    };
+                    const targetKws = keywords[tabId] || [];
+                    for (const sec of sections) {
+                        const text = sec.textContent || '';
+                        if (targetKws.some(kw => text.includes(kw))) {
+                            sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            break;
+                        }
+                    }
+                };
+            });
+        };
+
+        // V55-stats-mobile: responsive modal — full width on mobile, 700px on desktop.
+        const isMobile = window.innerWidth < 600;
+        const modalW = isMobile ? '100%' : '700px';
+        const modalMaxH = isMobile ? '100vh' : '90vh';
+
+        backdrop.innerHTML =
+            '<div class="ind-modal" style="max-width:' + modalW + ';max-height:' + modalMaxH + ';width:100%;margin:auto;">' +
+            '<div class="ind-modal-header">' +
+            '<h3 style="font-size:' + (isMobile ? '12px' : '14px') + ';">📊 Statistics</h3>' +
+            '<button class="ind-modal-close">&times;</button>' +
+            '</div>' +
+            '<div class="stats-body s-modal-body" style="overflow-y:auto;max-height:calc(' + modalMaxH + ' - 110px);font-size:' + (isMobile ? '11px' : '12px') + ';padding:8px;">' +
+            '</div>' +
+            '<div class="s-footer" style="display:flex;gap:6px;flex-wrap:wrap;">' +
+            '<button class="ind-btn stats-snap-btn" style="font-size:10px;">📷 Snapshot</button>' +
+            '<button class="ind-btn stats-clear-btn" style="font-size:10px;">🗑 Clear</button>' +
+            '<button class="ind-btn stats-refresh-btn" style="font-size:10px;">🔄 Refresh</button>' +
+            '<button class="ind-btn stats-copy-btn" style="font-size:10px;">📋 Copy</button>' +
+            '<button class="ind-btn ind-btn-back" style="font-size:10px;margin-left:auto;">Close</button>' +
+            '</div>' +
+            '</div>';
+
+        backdrop.querySelector('.ind-modal-close').onclick = close;
+        backdrop.querySelector('.ind-btn-back').onclick = close;
+        rerender();
+        document.body.appendChild(backdrop);
+    }
+
+    static _computeStats(api, engine) {
+        const ds = engine?.dataContext?.dataStore;
+        if (!ds || ds.size < 2) return { error: 'Not enough data' };
+
+        const orch = engine?._orchestrator;
+        const symbol = orch?.symbol || '';
+        const tf = orch?.timeframe || '';
+
+        // Get visible range via viewport
+        const vp = engine?.viewport;
+        let iMin = 0, iMax = ds.size - 1;
+        if (vp?.xMin != null && vp?.xMax != null) {
+            const vis = ds.getVisibleLogicalIndices(vp.xMin, vp.xMax);
+            if (vis && Array.isArray(vis) && vis.length >= 2) {
+                iMin = Math.max(0, vis[0]);
+                iMax = Math.min(ds.size - 1, vis[1]);
+            }
+        }
+        const count = iMax - iMin + 1;
+        if (count < 3) return { error: 'Visible range too small (need ≥3 bars)', symbol, timeframe: tf };
+
+        // Get close data — use seriesMap directly (avoids OHLC ring buffer issues)
+        const priceSeries = ds.seriesMap?.['price'] || ds.seriesMap?.['close'];
+        if (!priceSeries) return { error: 'No price series', symbol, timeframe: tf };
+
+        // Collect closes and log-returns within visible range
+        const closes = [];
+        const returns = [];
+        const xArr = [];
+        for (let i = iMin; i <= iMax; i++) {
+            const c = ds.getData('price', i);
+            if (!isFinite(c) || c <= 0) continue;
+            closes.push(c);
+            xArr.push(ds.getX(i) || 0);
+            if (closes.length >= 2) {
+                const r = Math.log(closes[closes.length - 1] / closes[closes.length - 2]);
+                if (isFinite(r)) returns.push(r);
+            }
+        }
+        const n = returns.length;
+        if (n < 2) return { error: 'Not enough returns', symbol, timeframe: tf };
+
+        // ── Basic stats ──
+        const mean = returns.reduce((a, b) => a + b, 0) / n;
+        const sorted = [...returns].sort((a, b) => a - b);
+        const median = sorted[Math.floor(n / 2)];
+        // Mode (bucketed to 0.1%)
+        const buckets = {};
+        returns.forEach(r => { const k = (r * 100).toFixed(1); buckets[k] = (buckets[k] || 0) + 1; });
+        let modeVal = 0, modeCount = 0;
+        for (const [k, c] of Object.entries(buckets)) { if (c > modeCount) { modeCount = c; modeVal = parseFloat(k) / 100; } }
+        const range = sorted[n - 1] - sorted[0];
+        const variance = returns.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1);
+        const stdDev = Math.sqrt(variance);
+        const meanAbsDev = returns.reduce((a, b) => a + Math.abs(b - mean), 0) / n;
+        const cv = stdDev / Math.abs(mean || 1e-10); // coefficient of variation
+        // Skewness
+        const skew = returns.reduce((a, b) => a + ((b - mean) / stdDev) ** 3, 0) / n;
+        // Kurtosis (excess)
+        const kurt = returns.reduce((a, b) => a + ((b - mean) / stdDev) ** 4, 0) / n - 3;
+        // Geometric mean
+        const geoMean = Math.exp(returns.reduce((a, b) => a + b, 0) / n);
+        // Semi-variance (negative returns only)
+        const negReturns = returns.filter(r => r < 0);
+        const semiVar = negReturns.length > 0 ? negReturns.reduce((a, b) => a + b * b, 0) / negReturns.length : 0;
+        const semiDev = Math.sqrt(semiVar);
+
+        // ── Percentiles ──
+        const pct = (p) => { const idx = Math.min(n - 1, Math.floor(p * n)); return sorted[idx]; };
+        const pcts = { p5: pct(0.05), p10: pct(0.10), p25: pct(0.25), p50: pct(0.50), p75: pct(0.75), p90: pct(0.90), p95: pct(0.95) };
+
+        // ── Probabilities ──
+        const upCount = returns.filter(r => r > 0).length;
+        const downCount = returns.filter(r => r < 0).length;
+        const flatCount = n - upCount - downCount;
+        const pUp = upCount / n;
+        const pDown = downCount / n;
+
+        // ── Conditional probabilities ──
+        let upAfterUp = 0, upAfterDown = 0, downAfterUp = 0, downAfterDown = 0;
+        let totalAfterUp = 0, totalAfterDown = 0;
+        for (let i = 1; i < returns.length; i++) {
+            const prev = returns[i - 1];
+            const cur = returns[i];
+            if (prev > 0) {
+                totalAfterUp++;
+                if (cur > 0) upAfterUp++;
+                else if (cur < 0) downAfterUp++;
+            } else if (prev < 0) {
+                totalAfterDown++;
+                if (cur > 0) upAfterDown++;
+                else if (cur < 0) downAfterDown++;
+            }
+        }
+        const pUpGivenUp = totalAfterUp > 0 ? upAfterUp / totalAfterUp : 0;
+        const pUpGivenDown = totalAfterDown > 0 ? upAfterDown / totalAfterDown : 0;
+        const pDownGivenUp = totalAfterUp > 0 ? downAfterUp / totalAfterUp : 0;
+        const pDownGivenDown = totalAfterDown > 0 ? downAfterDown / totalAfterDown : 0;
+
+        // ── Day-of-week stats ──
+        const dowStats = {};
+        for (let i = 0; i < 7; i++) dowStats[i] = { count: 0, up: 0, down: 0, returns: [] };
+        for (let i = 0; i < returns.length; i++) {
+            const ts = xArr[i + 1] || xArr[i];
+            if (ts) {
+                const d = new Date(ts);
+                const dow = d.getDay();
+                dowStats[dow].count++;
+                if (returns[i] > 0) dowStats[dow].up++;
+                else if (returns[i] < 0) dowStats[dow].down++;
+                dowStats[dow].returns.push(returns[i]);
+            }
+        }
+        const dowNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const dowResult = [];
+        for (let i = 0; i < 7; i++) {
+            const s = dowStats[i];
+            if (s.count > 0) {
+                const avgRet = s.returns.reduce((a, b) => a + b, 0) / s.count;
+                dowResult.push({ day: dowNames[i], count: s.count, pUp: s.up / s.count, avgRet, up: s.up, down: s.down });
+            }
+        }
+
+        // ── Risk metrics ──
+        // Sharpe ratio (annualized, assuming risk-free = 0)
+        const intervalMs = ds.intervalMs || 86400000;
+        const periodsPerYear = 365.25 * 86400000 / intervalMs;
+        const annMean = mean * periodsPerYear;
+        const annStd = stdDev * Math.sqrt(periodsPerYear);
+        const sharpe = annStd > 0 ? annMean / annStd : 0;
+        // Sortino ratio (only downside deviation)
+        const annSemiDev = semiDev * Math.sqrt(periodsPerYear);
+        const sortino = annSemiDev > 0 ? annMean / annSemiDev : 0;
+
+        // ── Expected value (binomial) ──
+        // E[return per bar] = pUp * avgUpReturn + pDown * avgDownReturn
+        const avgUpRet = upCount > 0 ? returns.filter(r => r > 0).reduce((a, b) => a + b, 0) / upCount : 0;
+        const avgDownRet = downCount > 0 ? returns.filter(r => r < 0).reduce((a, b) => a + b, 0) / downCount : 0;
+        const expValue = pUp * avgUpRet + pDown * avgDownRet;
+
+        // ── Binomial distribution ──
+        // P(k ups in n bars) = C(n,k) * pUp^k * (1-pUp)^(n-k)
+        // P(at least 1 up in next k bars) = 1 - (1-pUp)^k
+        const pAtLeastOneUp3 = 1 - Math.pow(1 - pUp, 3);
+        const pAtLeastOneUp5 = 1 - Math.pow(1 - pUp, 5);
+        const pAtLeastOneUp10 = 1 - Math.pow(1 - pUp, 10);
+
+        // ── Drawdown estimate ──
+        // Max consecutive down bars
+        let maxStreak = 0, curStreak = 0, maxDownStreakReturn = 0, curStreakReturn = 0;
+        for (const r of returns) {
+            if (r < 0) {
+                curStreak++;
+                curStreakReturn += r;
+                if (curStreak > maxStreak) { maxStreak = curStreak; maxDownStreakReturn = curStreakReturn; }
+            } else { curStreak = 0; curStreakReturn = 0; }
+        }
+        // Max consecutive UP bars
+        let maxUpStreak = 0, curUpStreak = 0, maxUpStreakReturn = 0, curUpStreakReturn = 0;
+        for (const r of returns) {
+            if (r > 0) {
+                curUpStreak++;
+                curUpStreakReturn += r;
+                if (curUpStreak > maxUpStreak) { maxUpStreak = curUpStreak; maxUpStreakReturn = curUpStreakReturn; }
+            } else { curUpStreak = 0; curUpStreakReturn = 0; }
+        }
+        // Estimated short drawdown: avg down return × expected streak length
+        const estDrawdown = avgDownRet * (1 / (1 - pDown)); // geometric series approximation
+
+        // ── Streak distribution ──
+        const downStreaks = []; // lengths of consecutive down runs
+        let curDS = 0;
+        for (const r of returns) {
+            if (r < 0) { curDS++; } else { if (curDS > 0) downStreaks.push(curDS); curDS = 0; }
+        }
+        if (curDS > 0) downStreaks.push(curDS);
+        const upStreaks = [];
+        let curUS = 0;
+        for (const r of returns) {
+            if (r > 0) { curUS++; } else { if (curUS > 0) upStreaks.push(curUS); curUS = 0; }
+        }
+        if (curUS > 0) upStreaks.push(curUS);
+        const avgDownStreak = downStreaks.length > 0 ? downStreaks.reduce((a, b) => a + b, 0) / downStreaks.length : 0;
+        const avgUpStreak = upStreaks.length > 0 ? upStreaks.reduce((a, b) => a + b, 0) / upStreaks.length : 0;
+
+        // ── Profit factor ──
+        const grossProfit = returns.filter(r => r > 0).reduce((a, b) => a + b, 0);
+        const grossLoss = Math.abs(returns.filter(r => r < 0).reduce((a, b) => a + b, 0));
+        const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : Infinity;
+        // Win rate = same as pUp but only counting non-flat bars
+        const winRate = (upCount + downCount) > 0 ? upCount / (upCount + downCount) : 0;
+        // Expectancy = (winRate * avgWin) - (lossRate * avgLoss)
+        const lossRate = 1 - winRate;
+        const expectancy = winRate * avgUpRet + lossRate * avgDownRet;
+        // Largest single bar move
+        const maxUpBar = Math.max(...returns);
+        const maxDownBar = Math.min(...returns);
+        // Ratio of avg up to avg down (reward/risk per bar)
+        const rewardRisk = Math.abs(avgDownRet) > 0 ? Math.abs(avgUpRet / avgDownRet) : Infinity;
+
+        // ── Histogram data (returns distribution) ──
+        // 20 buckets from min to max return
+        const nBuckets = 20;
+        const histMin = sorted[0];
+        const histMax = sorted[n - 1];
+        const histRange = histMax - histMin || 1e-10;
+        const histBucketSize = histRange / nBuckets;
+        const histBuckets = new Array(nBuckets).fill(0);
+        for (const r of returns) {
+            let idx = Math.floor((r - histMin) / histBucketSize);
+            if (idx >= nBuckets) idx = nBuckets - 1;
+            if (idx < 0) idx = 0;
+            histBuckets[idx]++;
+        }
+        const histMaxCount = Math.max(...histBuckets, 1);
+        // Build histogram — color by bucket midpoint sign (not bucketHi).
+        //   A bucket spanning [-1%, +0.5%] has midpoint -0.25% → red.
+        //   Previously used bucketHi > 0 which colored the [-1%, +0.5%] bucket green.
+        const histBars = histBuckets.map((count, i) => {
+            const bucketLo = histMin + i * histBucketSize;
+            const bucketHi = histMin + (i + 1) * histBucketSize;
+            const bucketMid = (bucketLo + bucketHi) / 2;
+            const isPositive = bucketMid >= 0;
+            const color = isPositive ? '#3fb950' : '#f85149';
+            const barW = Math.round((count / histMaxCount) * 100);
+            const pct = (count / n * 100).toFixed(1);
+            return '<div style="display:flex;align-items:center;gap:4px;margin:1px 0;font-size:9px;font-family:monospace;">' +
+                '<span style="width:42px;text-align:right;color:#8b949e;">' + (bucketLo * 100).toFixed(2) + '%</span>' +
+                '<span style="flex:1;background:#1e222d;border-radius:2px;height:12px;overflow:hidden;">' +
+                '<span style="display:block;height:100%;width:' + barW + '%;background:' + color + ';opacity:0.7;border-radius:2px;"></span>' +
+                '</span>' +
+                '<span style="width:24px;text-align:right;color:' + color + ';">' + count + '</span>' +
+                '<span style="width:36px;text-align:right;color:#8b949e;">' + pct + '%</span>' +
+                '</div>';
+        }).join('');
+
+        // ── Up/Down streak histogram ──
+        const streakHist = (streaks, color, label) => {
+            if (streaks.length === 0) return '';
+            const maxLen = Math.max(...streaks);
+            const streakBuckets = new Array(maxLen).fill(0);
+            for (const s of streaks) streakBuckets[s - 1]++;
+            const maxCount = Math.max(...streakBuckets, 1);
+            return streakBuckets.map((count, i) => {
+                if (count === 0) return '';
+                const barW = Math.round((count / maxCount) * 100);
+                return '<div style="display:flex;align-items:center;gap:4px;margin:1px 0;font-size:9px;font-family:monospace;">' +
+                    '<span style="width:20px;text-align:right;color:#8b949e;">' + (i + 1) + 'x</span>' +
+                    '<span style="flex:1;background:#1e222d;border-radius:2px;height:10px;overflow:hidden;">' +
+                    '<span style="display:block;height:100%;width:' + barW + '%;background:' + color + ';opacity:0.7;border-radius:2px;"></span>' +
+                    '</span>' +
+                    '<span style="width:20px;text-align:right;color:' + color + ';">' + count + '</span>' +
+                    '</div>';
+            }).join('');
+        };
+        const upStreakHist = streakHist(upStreaks, '#3fb950', 'up');
+        const downStreakHist = streakHist(downStreaks, '#f85149', 'down');
+
+        // ── MA200 conditional analysis ──
+        // Compute SMA(200) on ALL closes (not just visible), then split
+        // visible returns into "above MA" (prev close > MA) and "below MA".
+        // V55-ma200: always use period 200 (not adaptive). If fewer than 200
+        //   bars are visible, SMA uses what's available (partial MA) — the
+        //   analysis is still meaningful, just with a shorter lookback.
+        const maPeriod = 200;
+        let maResult = null;
+        if (closes.length >= 10) {
+            // Compute SMA over all closes available (visible range only).
+            // For each visible bar i, SMA[i] = avg of closes[max(0,i-maP+1)..i].
+            const maCloses = [];
+            for (let i = 0; i < closes.length; i++) {
+                const start = Math.max(0, i - maPeriod + 1);
+                let sum = 0, cnt = 0;
+                for (let j = start; j <= i; j++) { sum += closes[j]; cnt++; }
+                maCloses.push(sum / cnt);
+            }
+            // Split returns: "above MA" = prev close > prev MA, "below MA" = prev close < prev MA
+            const aboveReturns = [], belowReturns = [];
+            for (let i = 0; i < returns.length; i++) {
+                // returns[i] is the return from closes[i] to closes[i+1].
+                // "Prev close" = closes[i], "prev MA" = maCloses[i].
+                if (i < maCloses.length && closes[i] > maCloses[i]) {
+                    aboveReturns.push(returns[i]);
+                } else if (i < maCloses.length && closes[i] < maCloses[i]) {
+                    belowReturns.push(returns[i]);
+                }
+            }
+            const computeGroupStats = (rs) => {
+                if (rs.length < 2) return null;
+                const m = rs.reduce((a, b) => a + b, 0) / rs.length;
+                const v = rs.reduce((a, b) => a + (b - m) ** 2, 0) / (rs.length - 1);
+                const sd = Math.sqrt(v);
+                const up = rs.filter(r => r > 0).length;
+                return {
+                    count: rs.length,
+                    mean: m,
+                    stdDev: sd,
+                    pUp: up / rs.length,
+                    avgUp: rs.filter(r => r > 0).reduce((a, b) => a + b, 0) / Math.max(1, up),
+                    avgDown: rs.filter(r => r < 0).reduce((a, b) => a + b, 0) / Math.max(1, rs.length - up),
+                    min: Math.min(...rs),
+                    max: Math.max(...rs),
+                };
+            };
+            maResult = {
+                period: maPeriod,
+                above: computeGroupStats(aboveReturns),
+                below: computeGroupStats(belowReturns),
+            };
+        }
+
+        // ── Price stats ──
+        const priceMin = Math.min(...closes);
+        const priceMax = Math.max(...closes);
+        const priceFirst = closes[0];
+        const priceLast = closes[closes.length - 1];
+        const totalReturn = (priceLast / priceFirst - 1) * 100;
+
+        return {
+            symbol, timeframe: tf, count: n, closes: closes.length,
+            mean, median, modeVal, modeCount, range, variance, stdDev, meanAbsDev, cv,
+            skew, kurt, geoMean, semiVar, semiDev, pcts,
+            pUp, pDown, pUpGivenUp, pUpGivenDown, pDownGivenUp, pDownGivenDown,
+            upCount, downCount, flatCount, dowResult,
+            sharpe, sortino, expValue, avgUpRet, avgDownRet,
+            pAtLeastOneUp3, pAtLeastOneUp5, pAtLeastOneUp10,
+            maxStreak, maxDownStreakReturn, estDrawdown,
+            maxUpStreak, maxUpStreakReturn, avgDownStreak, avgUpStreak,
+            profitFactor, winRate, expectancy, maxUpBar, maxDownBar, rewardRisk,
+            grossProfit, grossLoss,
+            histBars, upStreakHist, downStreakHist,
+            maResult,
+            priceMin, priceMax, priceFirst, priceLast, totalReturn,
+            periodsPerYear,
+        };
+    }
+
+    static _renderStatsHtml(s, snap) {
+        if (s.error) return '<div style="text-align:center;color:#8b949e;padding:20px;">' + esc(s.error) + '</div>';
+        const fmt = (v, d = 4) => isFinite(v) ? v.toFixed(d) : 'N/A';
+        const fmtPct = (v, d = 2) => (v * 100).toFixed(d) + '%';
+        // V55-stats-diff: format value with optional diff vs snapshot.
+        const rowD = (label, value, snapVal, hint = '', isPct = false) => {
+            let diffHtml = '';
+            if (snapVal != null && isFinite(snapVal)) {
+                let diff;
+                if (isPct) {
+                    diff = (value - snapVal); // already in percentage points
+                } else {
+                    diff = value - snapVal;
+                }
+                const absDiff = Math.abs(diff);
+                if (absDiff > 1e-8) {
+                    const color = diff > 0 ? '#3fb950' : '#f85149';
+                    const sign = diff > 0 ? '+' : '';
+                    const diffStr = isPct ? sign + (diff * 100).toFixed(2) + 'pp' : sign + diff.toFixed(4);
+                    diffHtml = '<span style="color:' + color + ';font-size:9px;margin-left:6px;font-family:monospace;">(' + diffStr + ')</span>';
+                }
+            }
+            return '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04);flex-wrap:wrap;">' +
+                '<span style="color:#8b949e;">' + label + '</span>' +
+                '<span style="color:#e6edf3;font-family:monospace;text-align:right;">' + value + diffHtml + '</span>' +
+                (hint ? '<span style="color:#8b949e;font-size:8px;width:100%;text-align:right;">' + hint + '</span>' : '') +
+                '</div>';
+        };
+        // Simple row without diff (for non-numeric values)
+        const row = (label, value, hint = '') =>
+            '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04);flex-wrap:wrap;">' +
+            '<span style="color:#8b949e;">' + label + '</span>' +
+            '<span style="color:#e6edf3;font-family:monospace;text-align:right;">' + value + '</span>' +
+            (hint ? '<span style="color:#8b949e;font-size:8px;width:100%;text-align:right;">' + hint + '</span>' : '') +
+            '</div>';
+        const section = (title, rows) =>
+            '<div style="margin:8px 0;">' +
+            '<div style="font-size:9px;font-weight:600;color:#58a6ff;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">' + title + '</div>' +
+            rows +
+            '</div>';
+
+        // V55-stats-snap: snapshot banner
+        let snapBanner = '';
+        if (snap) {
+            snapBanner = '<div style="background:rgba(88,166,255,.1);border:1px solid rgba(88,166,255,.3);border-radius:4px;padding:4px 8px;margin-bottom:8px;font-size:9px;color:#58a6ff;">📷 Comparing with snapshot: ' +
+                esc(snap.symbol || '') + ' ' + esc(snap.timeframe || '') + ' (' + snap.count + ' bars, ret=' + fmt(snap.totalReturn, 2) + '%)</div>';
+        }
+
+        let html = snapBanner;
+
+        // Price overview
+        html += section('Price Overview', [
+            row('Bars in range', s.count),
+            row('First price', fmt(s.priceFirst, 2)),
+            row('Last price', fmt(s.priceLast, 2)),
+            row('Min price', fmt(s.priceMin, 2)),
+            row('Max price', fmt(s.priceMax, 2)),
+            rowD('Total return', fmt(s.totalReturn, 2) + '%', snap?.totalReturn, '', true),
+        ].join(''));
+
+        // Return distribution
+        html += section('Return Distribution (log returns per bar)', [
+            rowD('Mean (μ)', fmt(s.mean, 6), snap?.mean, 'E[R] per bar'),
+            rowD('Median', fmt(s.median, 6), snap?.median),
+            row('Mode (bucketed 0.1%)', fmt(s.modeVal, 6), '(' + s.modeCount + ' hits)'),
+            rowD('Range', fmt(s.range, 6), snap?.range),
+            rowD('Variance (σ²)', fmt(s.variance, 8), snap?.variance),
+            rowD('Std Dev (σ)', fmt(s.stdDev, 6), snap?.stdDev),
+            rowD('Mean Abs Dev', fmt(s.meanAbsDev, 6), snap?.meanAbsDev),
+            rowD('Coeff of Variation', fmt(s.cv, 4), snap?.cv, 'σ/|μ|'),
+            rowD('Skewness', fmt(s.skew, 4), snap?.skew, s.skew > 0 ? 'right-skewed' : s.skew < 0 ? 'left-skewed' : 'symmetric'),
+            rowD('Kurtosis (excess)', fmt(s.kurt, 4), snap?.kurt, s.kurt > 0 ? 'fat tails' : s.kurt < 0 ? 'thin tails' : 'normal'),
+            rowD('Geometric Mean', fmt(s.geoMean, 6), snap?.geoMean, 'exp(μ_log)'),
+            rowD('Semi-Variance (↓)', fmt(s.semiVar, 8), snap?.semiVar, 'negative returns only'),
+            rowD('Semi-Deviation (↓)', fmt(s.semiDev, 6), snap?.semiDev, 'downside risk'),
+        ].join(''));
+
+        // Percentiles
+        html += section('Percentiles (returns)', [
+            rowD('P5', fmt(s.pcts.p5, 6), snap?.pcts?.p5),
+            rowD('P10', fmt(s.pcts.p10, 6), snap?.pcts?.p10),
+            rowD('P25 (Q1)', fmt(s.pcts.p25, 6), snap?.pcts?.p25),
+            rowD('P50 (Q2=Median)', fmt(s.pcts.p50, 6), snap?.pcts?.p50),
+            rowD('P75 (Q3)', fmt(s.pcts.p75, 6), snap?.pcts?.p75),
+            rowD('P90', fmt(s.pcts.p90, 6), snap?.pcts?.p90),
+            rowD('P95', fmt(s.pcts.p95, 6), snap?.pcts?.p95),
+        ].join(''));
+
+        // Probabilities
+        html += section('Probability of Movement', [
+            rowD('P(up)', fmtPct(s.pUp), snap?.pUp, s.upCount + ' bars', true),
+            rowD('P(down)', fmtPct(s.pDown), snap?.pDown, s.downCount + ' bars', true),
+            row('P(flat)', fmtPct(1 - s.pUp - s.pDown), s.flatCount + ' bars'),
+            rowD('Avg up return', fmt(s.avgUpRet, 6), snap?.avgUpRet),
+            rowD('Avg down return', fmt(s.avgDownRet, 6), snap?.avgDownRet),
+            rowD('Expected value/bar', fmt(s.expValue, 6), snap?.expValue, 'P↑×avg↑ + P↓×avg↓'),
+        ].join(''));
+
+        // Conditional probabilities
+        html += section('Conditional Probabilities', [
+            rowD('P(↑ | prev ↑)', fmtPct(s.pUpGivenUp), snap?.pUpGivenUp, '', true),
+            rowD('P(↑ | prev ↓)', fmtPct(s.pUpGivenDown), snap?.pUpGivenDown, '', true),
+            rowD('P(↓ | prev ↑)', fmtPct(s.pDownGivenUp), snap?.pDownGivenUp, '', true),
+            rowD('P(↓ | prev ↓)', fmtPct(s.pDownGivenDown), snap?.pDownGivenDown, '', true),
+        ].join(''));
+
+        // Binomial
+        html += section('Binomial Distribution', [
+            rowD('P(≥1 up in 3 bars)', fmtPct(s.pAtLeastOneUp3), snap?.pAtLeastOneUp3, '', true),
+            rowD('P(≥1 up in 5 bars)', fmtPct(s.pAtLeastOneUp5), snap?.pAtLeastOneUp5, '', true),
+            rowD('P(≥1 up in 10 bars)', fmtPct(s.pAtLeastOneUp10), snap?.pAtLeastOneUp10, '', true),
+        ].join(''));
+
+        // Risk metrics
+        html += section('Risk Metrics (annualized)', [
+            row('Periods/year', fmt(s.periodsPerYear, 1)),
+            rowD('Ann. return', fmt(s.mean * s.periodsPerYear * 100, 2) + '%', snap ? snap.mean * snap.periodsPerYear * 100 : null, '', true),
+            rowD('Ann. volatility', fmt(s.stdDev * Math.sqrt(s.periodsPerYear) * 100, 2) + '%', snap ? snap.stdDev * Math.sqrt(snap.periodsPerYear) * 100 : null, '', true),
+            rowD('Sharpe ratio', fmt(s.sharpe, 4), snap?.sharpe, '(risk-free = 0)'),
+            rowD('Sortino ratio', fmt(s.sortino, 4), snap?.sortino, '(downside-only)'),
+        ].join(''));
+
+        // Drawdown
+        html += section('Drawdown & Streaks', [
+            rowD('Max consecutive down bars', s.maxStreak, snap?.maxStreak),
+            rowD('Max down streak return', fmt(s.maxDownStreakReturn * 100, 2) + '%', snap ? snap.maxDownStreakReturn * 100 : null, '', true),
+            rowD('Max consecutive up bars', s.maxUpStreak, snap?.maxUpStreak),
+            rowD('Max up streak return', fmt(s.maxUpStreakReturn * 100, 2) + '%', snap ? snap.maxUpStreakReturn * 100 : null, '', true),
+            rowD('Avg down streak length', fmt(s.avgDownStreak, 2), snap?.avgDownStreak),
+            rowD('Avg up streak length', fmt(s.avgUpStreak, 2), snap?.avgUpStreak),
+            rowD('Est. short drawdown', fmt(s.estDrawdown * 100, 2) + '%', snap ? snap.estDrawdown * 100 : null, 'avg↓ / (1-P↓)', true),
+        ].join(''));
+
+        // Trading metrics
+        html += section('Trading Metrics', [
+            rowD('Win rate', fmtPct(s.winRate), snap?.winRate, '', true),
+            rowD('Profit factor', fmt(s.profitFactor, 3), snap?.profitFactor, 'gross profit / gross loss'),
+            rowD('Expectancy/bar', fmt(s.expectancy, 6), snap?.expectancy, 'WR×avg↑ + LR×avg↓'),
+            rowD('Reward/Risk ratio', fmt(s.rewardRisk, 3), snap?.rewardRisk, '|avg↑ / avg↓|'),
+            rowD('Largest up bar', fmt(s.maxUpBar * 100, 2) + '%', snap ? snap.maxUpBar * 100 : null, '', true),
+            rowD('Largest down bar', fmt(s.maxDownBar * 100, 2) + '%', snap ? snap.maxDownBar * 100 : null, '', true),
+            rowD('Gross profit (Σ)', fmt(s.grossProfit * 100, 2) + '%', snap ? snap.grossProfit * 100 : null, '', true),
+            rowD('Gross loss (Σ)', fmt(s.grossLoss * 100, 2) + '%', snap ? snap.grossLoss * 100 : null, '', true),
+        ].join(''));
+
+        // Returns histogram
+        html += section('Returns Distribution Histogram', s.histBars || '<div style="color:#8b949e;font-size:9px;">Not enough data</div>');
+
+        // Streak histograms
+        html += section('↑ Up Streak Distribution', s.upStreakHist || '<div style="color:#8b949e;font-size:9px;">No up streaks</div>');
+        html += section('↓ Down Streak Distribution', s.downStreakHist || '<div style="color:#8b949e;font-size:9px;">No down streaks</div>');
+
+        // Day of week
+        if (s.dowResult.length > 0) {
+            html += section('Day of Week Analysis', [
+                '<div style="display:grid;grid-template-columns:auto repeat(4,1fr);gap:2px 8px;font-size:10px;font-family:monospace;padding:4px 0;">',
+                '<div style="color:#8b949e;">Day</div><div style="color:#8b949e;text-align:right;">Bars</div><div style="color:#8b949e;text-align:right;">P(up)</div><div style="color:#8b949e;text-align:right;">Avg Ret</div><div style="color:#8b949e;text-align:right;">↑/↓</div>',
+                ...s.dowResult.map(d =>
+                    '<div style="color:#e6edf3;">' + d.day + '</div>' +
+                    '<div style="text-align:right;color:#e6edf3;">' + d.count + '</div>' +
+                    '<div style="text-align:right;color:' + (d.pUp > 0.5 ? '#3fb950' : '#f85149') + ';">' + fmtPct(d.pUp) + '</div>' +
+                    '<div style="text-align:right;color:' + (d.avgRet > 0 ? '#3fb950' : '#f85149') + ';">' + fmt(d.avgRet * 100, 3) + '%</div>' +
+                    '<div style="text-align:right;color:#8b949e;">' + d.up + '/' + d.down + '</div>'
+                ).join(''),
+                '</div>',
+            ].join(''));
+        }
+
+        // MA200 conditional analysis
+        if (s.maResult && s.maResult.above && s.maResult.below) {
+            const ma = s.maResult;
+            const grpRow = (label, val, snapVal, isPct) => rowD(label, val, snapVal, '', isPct);
+            const aboveRows = [
+                row('Bars above MA(' + ma.period + ')', ma.above.count),
+                grpRow('Mean return', fmt(ma.above.mean, 6), snap?.maResult?.above?.mean),
+                grpRow('Std Dev', fmt(ma.above.stdDev, 6), snap?.maResult?.above?.stdDev),
+                grpRow('P(up)', fmtPct(ma.above.pUp), snap?.maResult?.above?.pUp, true),
+                grpRow('Avg up', fmt(ma.above.avgUp, 6), snap?.maResult?.above?.avgUp),
+                grpRow('Avg down', fmt(ma.above.avgDown, 6), snap?.maResult?.above?.avgDown),
+                row('Max bar', fmt(ma.above.max * 100, 2) + '%'),
+                row('Min bar', fmt(ma.above.min * 100, 2) + '%'),
+            ].join('');
+            const belowRows = [
+                row('Bars below MA(' + ma.period + ')', ma.below.count),
+                grpRow('Mean return', fmt(ma.below.mean, 6), snap?.maResult?.below?.mean),
+                grpRow('Std Dev', fmt(ma.below.stdDev, 6), snap?.maResult?.below?.stdDev),
+                grpRow('P(up)', fmtPct(ma.below.pUp), snap?.maResult?.below?.pUp, true),
+                grpRow('Avg up', fmt(ma.below.avgUp, 6), snap?.maResult?.below?.avgUp),
+                grpRow('Avg down', fmt(ma.below.avgDown, 6), snap?.maResult?.below?.avgDown),
+                row('Max bar', fmt(ma.below.max * 100, 2) + '%'),
+                row('Min bar', fmt(ma.below.min * 100, 2) + '%'),
+            ].join('');
+            html += section('MA(' + ma.period + ') Conditional — Above MA (green)', '<div style="color:#3fb950;">' + aboveRows + '</div>');
+            html += section('MA(' + ma.period + ') Conditional — Below MA (red)', '<div style="color:#f85149;">' + belowRows + '</div>');
+        }
+
+        return html;
+    }
+
+    // V55-stats-tabs: render stats with tab navigation.
+    // Tabs: Overview | Distribution | Probabilities | Day-of-Week | MA Conditional
+    static _renderStatsHtmlTabbed(s, snap) {
+        if (s.error) return '<div style="text-align:center;color:#8b949e;padding:20px;">' + esc(s.error) + '</div>';
+        const fullHtml = ChartFactory._renderStatsHtml(s, snap);
+
+        // Split fullHtml into tab sections by searching for section headers.
+        // We'll just render ALL content in one scrollable body for simplicity,
+        // but add tab buttons that scroll to sections.
+        const tabs = [
+            { id: 'overview', label: '📊 Overview' },
+            { id: 'distribution', label: '📉 Distribution' },
+            { id: 'probs', label: '🎲 Probabilities' },
+            { id: 'risk', label: '⚠️ Risk' },
+            { id: 'dow', label: '📅 Day of Week' },
+            { id: 'ma', label: '📈 MA Conditional' },
+        ];
+        const tabBtns = tabs.map(t =>
+            '<button class="stats-tab-btn" data-tab="' + t.id + '" style="background:transparent;border:1px solid #30363d;color:#8b949e;padding:3px 8px;font-size:9px;border-radius:4px;cursor:pointer;white-space:nowrap;">' + t.label + '</button>'
+        ).join('');
+
+        return '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;overflow-x:auto;">' + tabBtns + '</div>' +
+            '<div class="stats-content">' + fullHtml + '</div>';
+    }
+
+    // V55-stats-copy: format all stats as plain text for clipboard.
+    static _statsToText(s, snap) {
+        if (s.error) return s.error;
+        const f = (v, d = 4) => isFinite(v) ? v.toFixed(d) : 'N/A';
+        const fp = (v, d = 2) => (v * 100).toFixed(d) + '%';
+        const L = [];
+        L.push('=== Statistics: ' + s.symbol + ' ' + s.timeframe + ' ===');
+        L.push('Bars: ' + s.count + ' | Price: ' + f(s.priceFirst, 2) + ' → ' + f(s.priceLast, 2) + ' | Return: ' + f(s.totalReturn, 2) + '%');
+        L.push('');
+        L.push('--- Return Distribution ---');
+        L.push('Mean: ' + f(s.mean, 6));
+        L.push('Median: ' + f(s.median, 6));
+        L.push('Mode: ' + f(s.modeVal, 6) + ' (' + s.modeCount + ' hits)');
+        L.push('Std Dev: ' + f(s.stdDev, 6));
+        L.push('Variance: ' + f(s.variance, 8));
+        L.push('Mean Abs Dev: ' + f(s.meanAbsDev, 6));
+        L.push('Skewness: ' + f(s.skew, 4));
+        L.push('Kurtosis: ' + f(s.kurt, 4));
+        L.push('Geometric Mean: ' + f(s.geoMean, 6));
+        L.push('Semi-Variance: ' + f(s.semiVar, 8));
+        L.push('Semi-Deviation: ' + f(s.semiDev, 6));
+        L.push('Range: ' + f(s.range, 6));
+        L.push('');
+        L.push('--- Percentiles ---');
+        L.push('P5: ' + f(s.pcts.p5, 6) + ' | P10: ' + f(s.pcts.p10, 6) + ' | P25: ' + f(s.pcts.p25, 6));
+        L.push('P50: ' + f(s.pcts.p50, 6) + ' | P75: ' + f(s.pcts.p75, 6) + ' | P90: ' + f(s.pcts.p90, 6) + ' | P95: ' + f(s.pcts.p95, 6));
+        L.push('');
+        L.push('--- Probabilities ---');
+        L.push('P(up): ' + fp(s.pUp) + ' | P(down): ' + fp(s.pDown) + ' | P(flat): ' + fp(1 - s.pUp - s.pDown));
+        L.push('Avg up: ' + f(s.avgUpRet, 6) + ' | Avg down: ' + f(s.avgDownRet, 6));
+        L.push('Expected value/bar: ' + f(s.expValue, 6));
+        L.push('P(↑|↑): ' + fp(s.pUpGivenUp) + ' | P(↑|↓): ' + fp(s.pUpGivenDown));
+        L.push('P(↓|↑): ' + fp(s.pDownGivenUp) + ' | P(↓|↓): ' + fp(s.pDownGivenDown));
+        L.push('P(≥1 up in 3): ' + fp(s.pAtLeastOneUp3) + ' | 5: ' + fp(s.pAtLeastOneUp5) + ' | 10: ' + fp(s.pAtLeastOneUp10));
+        L.push('');
+        L.push('--- Risk Metrics ---');
+        L.push('Sharpe: ' + f(s.sharpe, 4) + ' | Sortino: ' + f(s.sortino, 4));
+        L.push('Ann. return: ' + f(s.mean * s.periodsPerYear * 100, 2) + '% | Ann. vol: ' + f(s.stdDev * Math.sqrt(s.periodsPerYear) * 100, 2) + '%');
+        L.push('');
+        L.push('--- Trading ---');
+        L.push('Win rate: ' + fp(s.winRate) + ' | Profit factor: ' + f(s.profitFactor, 3));
+        L.push('Expectancy: ' + f(s.expectancy, 6) + ' | Reward/Risk: ' + f(s.rewardRisk, 3));
+        L.push('Max up bar: ' + f(s.maxUpBar * 100, 2) + '% | Max down bar: ' + f(s.maxDownBar * 100, 2) + '%');
+        L.push('');
+        L.push('--- Streaks ---');
+        L.push('Max down streak: ' + s.maxStreak + ' bars (' + f(s.maxDownStreakReturn * 100, 2) + '%)');
+        L.push('Max up streak: ' + s.maxUpStreak + ' bars (' + f(s.maxUpStreakReturn * 100, 2) + '%)');
+        L.push('Avg down streak: ' + f(s.avgDownStreak, 2) + ' | Avg up streak: ' + f(s.avgUpStreak, 2));
+        L.push('Est. drawdown: ' + f(s.estDrawdown * 100, 2) + '%');
+        L.push('');
+        if (s.dowResult.length > 0) {
+            L.push('--- Day of Week ---');
+            for (const d of s.dowResult) {
+                L.push(d.day + ': ' + d.count + ' bars, P(up)=' + fp(d.pUp) + ', avg=' + f(d.avgRet * 100, 3) + '%, ↑' + d.up + '/↓' + d.down);
+            }
+            L.push('');
+        }
+        if (s.maResult?.above && s.maResult?.below) {
+            const ma = s.maResult;
+            L.push('--- MA(' + ma.period + ') Conditional ---');
+            L.push('Above MA: ' + ma.above.count + ' bars, mean=' + f(ma.above.mean, 6) + ', P(up)=' + fp(ma.above.pUp) + ', σ=' + f(ma.above.stdDev, 6));
+            L.push('Below MA: ' + ma.below.count + ' bars, mean=' + f(ma.below.mean, 6) + ', P(up)=' + fp(ma.below.pUp) + ', σ=' + f(ma.below.stdDev, 6));
+        }
+        return L.join('\n');
+    }
+
     /** Toggle the export modal — closes any open modal first (one at a time). */
     static _openExportModal(container, api, engine) {
         // Toggle behavior: if any modal already open, click closes it.
@@ -59771,7 +60542,20 @@ class ChartFactory {
                     settings.checkedIndicators = settings.checkedIndicators.filter(x => x !== id);
                 }
                 ChartFactory._saveExportSettings(settings);
+                // V55-export-fix: save scroll position before rerender, restore after.
+                //   Previously, rerender() rebuilt the entire modal HTML, causing
+                //   the indicator list to scroll back to the top on every checkbox
+                //   toggle. Now we preserve the scroll position.
+                const scrollEl = backdrop.querySelector('.ind-list-scroll') || backdrop.querySelector('.export-modal-body');
+                const savedScroll = scrollEl ? scrollEl.scrollTop : 0;
                 rerender();
+                // Restore scroll position after DOM rebuild.
+                if (savedScroll > 0) {
+                    requestAnimationFrame(() => {
+                        const newScrollEl = backdrop.querySelector('.ind-list-scroll') || backdrop.querySelector('.export-modal-body');
+                        if (newScrollEl) newScrollEl.scrollTop = savedScroll;
+                    });
+                }
             };
         });
 
