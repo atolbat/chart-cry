@@ -26178,6 +26178,10 @@ class BTCRealizedPriceBrick extends IndicatorBrick {
     // V55-btc-cors: bitcoin-data.com doesn't send CORS headers, so we use
     //   allorigins.win /get endpoint which wraps response as {contents: "..."}.
     //   Also cache to localStorage (1 hour TTL) to avoid rate limits.
+    // V55-btc-lth-fix: only replace _btcData if ALL 3 fetches succeed.
+    //   Previously, if LTH fetch failed (rate limit), the map was replaced
+    //   with entries missing LTH → LTH line disappeared. Now we keep the
+    //   embedded data (which has all 3) until ALL 3 succeed.
     async _fetchBTCData() {
         const now = Date.now();
         // Throttle: only fetch once per 30 minutes.
@@ -26191,9 +26195,18 @@ class BTCRealizedPriceBrick extends IndicatorBrick {
             if (cached) {
                 const parsed = JSON.parse(cached);
                 if (parsed.ts && (now - parsed.ts < 3600000) && parsed.data) {
-                    this._btcData = new Map(parsed.data);
-                    this._btcDataKey = 'btc';
-                    return;
+                    const cachedMap = new Map(parsed.data);
+                    // V55-btc-lth-fix: only use cache if it has LTH data.
+                    //   A broken cache (missing LTH) would hide the LTH line.
+                    let hasLTH = false;
+                    for (const [, v] of cachedMap) {
+                        if (isFinite(v.lth)) { hasLTH = true; break; }
+                    }
+                    if (hasLTH) {
+                        this._btcData = cachedMap;
+                        this._btcDataKey = 'btc';
+                        return;
+                    }
                 }
             }
         } catch (_) {}
@@ -26228,31 +26241,29 @@ class BTCRealizedPriceBrick extends IndicatorBrick {
                 fetchJson(`${base}/sth-realized-price`),
                 fetchJson(`${base}/lth-realized-price`),
             ]);
-            if (!rData) return;
+            // V55-btc-lth-fix: require ALL 3 to succeed before replacing.
+            //   If any fails, keep the embedded data (which has all 3).
+            if (!rData || !sthData || !lthData) return;
 
             const map = new Map();
             for (const item of rData) {
                 const ts = (item.unixTs || (new Date(item.d).getTime() / 1000)) * 1000;
                 if (isFinite(ts)) map.set(ts, { realized: parseFloat(item.realizedPrice) });
             }
-            if (sthData) {
-                for (const item of sthData) {
-                    const ts = (item.unixTs || (new Date(item.d).getTime() / 1000)) * 1000;
-                    if (isFinite(ts)) {
-                        const e = map.get(ts) || {};
-                        e.sth = parseFloat(item.sthRealizedPrice);
-                        map.set(ts, e);
-                    }
+            for (const item of sthData) {
+                const ts = (item.unixTs || (new Date(item.d).getTime() / 1000)) * 1000;
+                if (isFinite(ts)) {
+                    const e = map.get(ts) || {};
+                    e.sth = parseFloat(item.sthRealizedPrice);
+                    map.set(ts, e);
                 }
             }
-            if (lthData) {
-                for (const item of lthData) {
-                    const ts = (item.unixTs || (new Date(item.d).getTime() / 1000)) * 1000;
-                    if (isFinite(ts)) {
-                        const e = map.get(ts) || {};
-                        e.lth = parseFloat(item.lthRealizedPrice);
-                        map.set(ts, e);
-                    }
+            for (const item of lthData) {
+                const ts = (item.unixTs || (new Date(item.d).getTime() / 1000)) * 1000;
+                if (isFinite(ts)) {
+                    const e = map.get(ts) || {};
+                    e.lth = parseFloat(item.lthRealizedPrice);
+                    map.set(ts, e);
                 }
             }
             this._btcData = map;
@@ -26265,7 +26276,7 @@ class BTCRealizedPriceBrick extends IndicatorBrick {
                 }));
             } catch (_) {}
         } catch (e) {
-            // All proxies failed — leave _btcData as-is.
+            // All proxies failed — leave _btcData as-is (embedded data).
         }
     }
 
@@ -31077,7 +31088,14 @@ class MainRenderer {
             // V51-render-opt: cache min/max computation keyed on slice
             //   version + count. During panning, the slice doesn't change
             //   every frame — skip the O(N) scan when cached values are valid.
-            const cacheKey = `${id}:${slice.count}:${slice.version || 0}`;
+            // V55-minmax-fix: include the first/last X timestamp in the cache
+            //   key. Previously, the key was only `${id}:${count}:${version}`
+            //   — during panning (same count, same version), the cache returned
+            //   min/max from the OLD visible range, causing the dots/labels to
+            //   "dance" (show wrong position, wrong price, wrong percentage).
+            const _firstX = slice.xSlice && slice.xSlice.length > 0 ? slice.xSlice[0] : 0;
+            const _lastX = slice.xSlice && slice.xSlice.length > 0 ? slice.xSlice[slice.xSlice.length - 1] : 0;
+            const cacheKey = `${id}:${slice.count}:${slice.version || 0}:${_firstX}:${_lastX}`;
             if (!this._minMaxCache) this._minMaxCache = {};
             let minVal, maxVal, minIdx, maxIdx;
             if (this._minMaxCache[cacheKey]) {
@@ -33945,16 +33963,20 @@ class FibonacciRetracementObject extends FibonacciBase {
             });
         }
 
-        // (so they produce clean pixel positions + handle x1/x2/extend correctly),
-        // but we draw the line ourselves rather than calling child.render().
-        // Reason: TrendLineObject.render() draws endpoints, axis pills, inline
-        // labels, etc. — for fib we want just the bare segment + our own text
-        // labels. So we read childR.px1/px2/py1/py2 and stroke directly.
+        // V55-fib-clip: clip ALL rendering (lines + labels) to the fib's panel.
+        //   Previously, labels were drawn AFTER ctx.restore() — they weren't
+        //   clipped, so fib labels from the main panel appeared on top of
+        //   other panels (RSI, MACD, etc.).
         ctx.save();
         ctx.beginPath();
         ctx.rect(layout.plotLeft, r.pb.top, layout.plotWidth, r.pb.height);
         ctx.clip();
 
+        // (so they produce clean pixel positions + handle x1/x2/extend correctly),
+        // but we draw the line ourselves rather than calling child.render().
+        // Reason: TrendLineObject.render() draws endpoints, axis pills, inline
+        // labels, etc. — for fib we want just the bare segment + our own text
+        // labels. So we read childR.px1/px2/py1/py2 and stroke directly.
         const lineAlpha = isHovered ? 0.9 : (r.lineAlpha * 0.7);
         for (const lvl of r.levels) {
             if (!lvl.childR) {
@@ -33980,9 +34002,10 @@ class FibonacciRetracementObject extends FibonacciBase {
             ctx.lineTo(lvl.childR.px2, lvl.childR.py2);
             ctx.stroke();
         }
-        ctx.restore();
 
         // Draw labels on the left only: "ratio% (price)" — no right-side pills
+        // V55-fib-clip: labels are now INSIDE the clip, so they won't bleed
+        //   into other panels.
         ctx.font = '9px monospace';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
@@ -33998,6 +34021,7 @@ class FibonacciRetracementObject extends FibonacciBase {
             }
         }
         ctx.globalAlpha = 1.0;
+        ctx.restore();
     }
 
     hitTest(px, py, r) {
@@ -34155,14 +34179,15 @@ class FibonacciTrendObject extends FibonacciBase {
     render(ctx, layout, r, isHovered) {
         if (!r) return;
 
-        // Matryoshka: delegate resolve to child TrendLineObjects (so they
-        // produce clean pixel positions), but draw the line ourselves —
-        // TrendLineObject.render() would add endpoints/labels we don't want.
+        // V55-fib-clip: clip ALL rendering (lines + labels) to the fib's panel.
         ctx.save();
         ctx.beginPath();
         ctx.rect(layout.plotLeft, r.pb.top, layout.plotWidth, r.pb.height);
         ctx.clip();
 
+        // Matryoshka: delegate resolve to child TrendLineObjects (so they
+        // produce clean pixel positions), but draw the line ourselves —
+        // TrendLineObject.render() would add endpoints/labels we don't want.
         const lineAlpha = isHovered ? 0.9 : (r.lineAlpha * 0.7);
         for (const lvl of r.levels) {
             if (!lvl.childR) continue;
@@ -34175,9 +34200,9 @@ class FibonacciTrendObject extends FibonacciBase {
             ctx.lineTo(lvl.childR.px2, lvl.childR.py2);
             ctx.stroke();
         }
-        ctx.restore();
 
         // Labels at the left end of each level segment
+        // V55-fib-clip: labels are now INSIDE the clip.
         ctx.font = '9px monospace';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
@@ -34193,6 +34218,7 @@ class FibonacciTrendObject extends FibonacciBase {
             }
         }
         ctx.globalAlpha = 1.0;
+        ctx.restore();
     }
 
     hitTest(px, py, r) {
@@ -34356,6 +34382,10 @@ class FibonacciExpansionObject extends FibonacciBase {
     render(ctx, layout, r, isHovered) {
         if (!r) return;
 
+        // V55-fib-clip: clip ALL rendering (lines + labels + endpoints) to the
+        //   fib's panel. Previously, labels were drawn AFTER ctx.restore() —
+        //   they weren't clipped, so fib labels from the main panel appeared
+        //   on top of other panels (RSI, MACD, etc.).
         ctx.save();
         ctx.beginPath();
         ctx.rect(layout.plotLeft, r.pb.top, layout.plotWidth, r.pb.height);
@@ -34395,12 +34425,10 @@ class FibonacciExpansionObject extends FibonacciBase {
             ctx.lineTo(lvl.childR.px2, lvl.childR.py2);
             ctx.stroke();
         }
-        ctx.restore();
 
         // Level labels — positioned to the LEFT or RIGHT of the level segment
-        // based on r.levelLabelSide (default 'left'). When 'left', text ends
-        // before min(P2.x, P3.x) — i.e. OUTSIDE the segment on the left.
-        // When 'right', text starts after max(P2.x, P3.x) — OUTSIDE on the right.
+        // V55-fib-clip: labels are now INSIDE the clip, so they won't bleed
+        //   into other panels.
         ctx.font = '9px monospace';
         ctx.textBaseline = 'middle';
         ctx.globalAlpha = 1.0;
@@ -34459,6 +34487,7 @@ class FibonacciExpansionObject extends FibonacciBase {
             ctx.fill();
             ctx.stroke();
         }
+        ctx.restore();  // V55-fib-clip: restore after ALL rendering
     }
 
     hitTest(px, py, r) {
