@@ -62308,6 +62308,11 @@ const ChartStatePersistence = (() => {
                 if (ind.panelId) cfg.panelId = ind.panelId;
                 if (typeof ind.visible === 'boolean') cfg.visible = ind.visible;
                 if (ind.sourceId) cfg.sourceId = ind.sourceId;
+                // V55-source-persist: save sourceRef + inputs.source so they
+                //   survive page reload. Without this, SMA(volume) restores as
+                //   SMA(close) because the constructor defaults to 'close'.
+                if (ind.sourceRef) cfg.sourceRef = ind.sourceRef;
+                if (ind.inputs?.source && ind.inputs.source !== 'close') cfg.source = ind.inputs.source;
                 // V49n-fix: save ALL per-indicator settings that were previously
                 //   lost on reload. Without these, the user had to reconfigure
                 //   anchor TF, divergence, bands, colors, and level visibility
