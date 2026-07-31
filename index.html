@@ -19019,18 +19019,28 @@ class IndicatorBrick extends IndicatorBase {
                    emaPool, mutation, ohlc, manager, chartIntervalMs) {
         let anchorCount = anchorCandles.length;
         if (anchorCount === 0) return null;
+        // V62-debug: clear previous virtual point — will be set by V62 block
+        //   if a forming-period virtual candle was built.
+        this._lastVirtualAnchorPt = null;
 
-        // V53-remove-extendPartial: previously this block built a virtual
-        //   "forming" HTF candle from the latest LTF bars and fed it to the
-        //   indicator so its line would extend through the in-progress HTF
-        //   period (e.g. show today's partial 1d EMA on a 4h chart). The
-        //   user reported this "tail of the incomplete candle" looked wrong
-        //   on anchored indicators, so the whole virtual-candle path is now
-        //   removed. The indicator only ever sees fully closed HTF candles,
-        //   matching TradingView's strict `lookahead=off` semantics.
+        // V59-anchor-forming-include: KEEP the forming (in-progress) anchor
+        //   candle that Binance returns as the last item. Previously V57
+        //   dropped it to avoid a "dancing tail", but that also threw away
+        //   the EMA value for the current day — forcing the line to show
+        //   YESTERDAY's EMA (higher, because price has since fallen) and
+        //   leaving a flat tail of that stale value. The user explicitly
+        //   wants the line to include today's bar so EMA[30] reflects the
+        //   current-day drop. The V58 fix (forward-fill window = 1 *
+        //   anchorIntervalMs, `>=` guard) already terminates the line at
+        //   the end of the forming period, so there is no "future tail".
+        //   The forming candle's close updates each LTF bar (Binance live
+        //   update), so EMA[30] moves with price — that is correct MTF
+        //   behaviour, NOT a bug.
+        //   Edge case: if ALL anchor candles are missing (empty array),
+        //   return null so the indicator shows NaN until data loads.
         const anchorIntervalMs = tfToMs(anchorTf);
         const isHtfAnchor = anchorIntervalMs > chartIntervalMs;
-        const extendedCandles = anchorCandles;
+        const extendedCandles = anchorCandles;  // no drop — include forming bar
 
         // FIX V49n-perf: cache anchor arrays + proxy Sources.
         // FIX V49n-anchorX: declare anchorX BEFORE using it in cache key.
@@ -19203,7 +19213,24 @@ class IndicatorBrick extends IndicatorBase {
             if (!anchorData) continue;
             const chartData = new Float64Array(count).fill(NaN);
 
-            const anchorSource = new Source(anchorData, anchorX, sourceMethod, {
+            // V64-close-time-shift: build the Source with CLOSE-time x array
+            //   instead of OPEN-time. This way, anchorSource.at(x) returns
+            //   the last anchor value whose candle CLOSED at or before x —
+            //   matching the semantic that a candle's EMA is "known" only
+            //   at its close. For a 1d candle with openTime=30-00:00, the
+            //   shifted x = 31-00:00 (closeTime). On a 4h bar at 30-12:00,
+            //   the shifted Source returns EMA[29] (closed at 30-00:00),
+            //   NOT EMA[30] (which is still forming). This aligns the line
+            //   with the colored debug dots, which are also drawn at
+            //   closeTime.
+            let _shiftedAnchorX = anchorX;
+            if (isHtfAnchor) {
+                _shiftedAnchorX = new Float64Array(anchorCount);
+                for (let k = 0; k < anchorCount; k++) {
+                    _shiftedAnchorX[k] = anchorX[k] + anchorIntervalMs;
+                }
+            }
+            const anchorSource = new Source(anchorData, _shiftedAnchorX, sourceMethod, {
                 capacity: Math.max(64, anchorCount),
                 mode: 'linear',
                 type: Float64Array,
@@ -19285,9 +19312,14 @@ class IndicatorBrick extends IndicatorBase {
                 };
 
                 // For each chart bar, find which anchor-pivot period it's in.
+                // V60-revert-tail: window = 2 * anchorIntervalMs (covers the
+                //   last closed period + forming period), `>` guard so the
+                //   boundary bar is included. Matches the line-output path.
+                const _zzLastAnchorX = anchorX[anchorCount - 1];
+                const _zzEndX = _zzLastAnchorX + 2 * anchorIntervalMs;
                 for (let i = 0; i < count; i++) {
                     const x = chartX[i];
-                    if (x < anchorX[0] || x > anchorX[anchorCount - 1] + anchorIntervalMs) continue;
+                    if (x < anchorX[0] || x > _zzEndX) continue;
                     let bestPivot = null;
                     for (let pi = anchorPivots.length - 1; pi >= 0; pi--) {
                         const pv = anchorPivots[pi];
@@ -19295,7 +19327,7 @@ class IndicatorBrick extends IndicatorBase {
                         if (x >= pvX) {
                             const nextPvX = (pi + 1 < anchorPivots.length)
                                 ? anchorX[anchorPivots[pi + 1].idx]
-                                : anchorX[anchorCount - 1] + anchorIntervalMs;
+                                : _zzEndX;
                             if (x < nextPvX) {
                                 bestPivot = pv;
                                 break;
@@ -19318,15 +19350,203 @@ class IndicatorBrick extends IndicatorBase {
                 }
                 mappedResult.pivots = chartPivots;
             } else {
+            // V60-revert-tail: revert the V58 forward-fill restriction.
+            //   V58 cut the forward-fill window to 1 * anchorIntervalMs with
+            //   a strict `>=` guard, which truncated the line at the end of
+            //   the last closed anchor period — leaving today's bars empty
+            //   on a 1d-anchored 4h chart. The user explicitly wants the
+            //   line to continue through today (forward-fill of the last
+            //   anchor value across the forming period), matching the
+            //   pre-V58 behaviour ("version 28"). Source.at(x) in 'asof'
+            //   mode already extends the last anchor value virtually
+            //   forward (see Source.at comment), so the only change vs V58
+            //   is widening the window back to 2 * anchorIntervalMs and
+            //   using `>` so the boundary bar is included.
+            const _lastAnchorX = anchorX[anchorCount - 1];
+            const _ffEndX = _lastAnchorX + 2 * anchorIntervalMs;
+            // V64-close-time-shift: first valid x for the shifted Source is
+            //   the closeTime of the FIRST anchor candle (openTime[0] + intervalMs).
+            //   Bars before this have no closed anchor to look up → NaN.
+            const _firstValidX = _shiftedAnchorX[0];
+
+            // V62-partial-anchor: build a VIRTUAL anchor candle from all
+            //   4h bars after the last closed anchor candle, compute its
+            //   EMA value (EMA_virtual = α*close_virtual + (1-α)*EMA_last_closed,
+            //   where α=2/(period+1)), and draw a STRAIGHT LINE from
+            //   EMA_last_closed (at the boundary between last closed period
+            //   and forming period) to EMA_virtual (at the last 4h bar).
+            //   This replaces the flat forward-fill tail (or the misleading
+            //   linear-interp tail toward the forming candle) with an
+            //   upward/downward sloped segment that approximates where the
+            //   next 1d EMA point will land.
+            //
+            //   Why linear interpolation (not per-4h-bar EMA)? The user
+            //   explicitly said "взять все 4ч свечи как одну большую свечу
+            //   и посчитать точку будто это ещё одна 1д свеча" — ONE virtual
+            //   candle, ONE EMA point at the end. The line between the red
+            //   dot (last closed) and that point is straight, not curved.
+            //
+            //   Why override linear/cosine/cubic interp? In those modes,
+            //   anchorSource.at(x) interpolates between EMA[last_closed]
+            //   and EMA[forming_candle] (which is a "dancing" value that
+            //   uses today's partial close). That produced a line ABOVE the
+            //   red dot (forming candle's EMA was higher) — visually wrong
+            //   and not what the user wants. V62 draws its own slope and
+            //   OVERRIDES the Source.at() value for forming-period bars.
+            //
+            //   Only applies to EMA-family indicators (this.params.period).
+            //   For SMA the formula is different; we skip V62 and fall
+            //   through to the normal mapping below.
+            let _v62FormingStart = Infinity;  // boundary; bars with x >= this get V62 slope
+            let _v62FormingEnd = -Infinity;
+            let _v62EMAstart = NaN, _v62EMAend = NaN;
+            let _v62InterpMode = 'step';  // user's chosen interp mode (step/linear/cosine/cubic)
+            // V66: V62 now works for ALL anchor-TF indicators, not just
+            //   MA-family ones. The virtual dot's Y = anchorData[anchorCount-1],
+            //   which is the indicator's output for the forming 1d candle.
+            //   This is already computed by the indicator (any indicator —
+            //   SMA, EMA, RSI, MACD, Bollinger, etc.) using today's partial
+            //   close. We don't need to know the indicator's formula — we
+            //   just take the last value from its output array.
+            //   Removed the `this.params?.period` check that was limiting
+            //   V62 to MA-family indicators only.
+            if (isHtfAnchor && ohlc?.close && ohlc?._x) {
+                // V64: red dot = LAST CLOSED anchor candle, drawn at its
+                //   CLOSE time (openTime + intervalMs). For a 1d candle
+                //   with openTime=30-00:00, closeTime=31-00:00. The V62
+                //   slope starts at closeTime (where the red dot sits) and
+                //   extends to the last 4h bar (where the orange virtual
+                //   dot sits). This gives ~5 bars between red and orange
+                //   on a 4h chart (31-00:00 → 31-20:00 = 20h = 5 bars).
+                const _now = Date.now();
+                let lastClosedIdx = anchorCount - 1;
+                if (anchorX[lastClosedIdx] + anchorIntervalMs > _now) {
+                    lastClosedIdx = anchorCount - 2;  // skip forming
+                }
+                // V65: the virtual dot's Y = anchorData[anchorCount-1] —
+                //   the forming candle's indicator value, which the
+                //   indicator already computed using today's partial close.
+                //   Works for ANY indicator (MA, RSI, MACD, BB, etc.).
+                //   The virtual dot's X = last 4h bar's x.
+                //   The red dot's X = closeTime of lastClosedIdx (where
+                //   the red dot is drawn). Between them, we interpolate
+                //   using the user's chosen interpMode (step/linear/cosine/cubic),
+                //   NOT a straight line.
+                if (lastClosedIdx >= 0 && isFinite(anchorData[lastClosedIdx])) {
+                    const EMA_last_closed = anchorData[lastClosedIdx];
+                    // formingStart = closeTime of last closed candle =
+                    //   openTime of the forming candle.
+                    const formingStart = anchorX[lastClosedIdx] + anchorIntervalMs;
+                    let lastFormingIdx = -1;
+                    for (let i = 0; i < count; i++) {
+                        if (chartX[i] >= formingStart) lastFormingIdx = i;
+                    }
+                    // V62-debug: log all key values so we can see what's happening
+                    if (!this._v62Logged) {
+                        // V67: log the last few anchor closes so we can verify
+                        //   SMA computation manually. For SMA(N), the virtual
+                        //   point should = mean of last N closes (including
+                        //   the forming candle's close).
+                        const lastNCloses = [];
+                        const N = Math.min(this.params?.period || 5, anchorCount);
+                        for (let k = anchorCount - N; k < anchorCount; k++) {
+                            lastNCloses.push(anchorClose[k]?.toFixed(2));
+                        }
+                        const manualSMA = lastNCloses.reduce((s,v) => s + parseFloat(v), 0) / lastNCloses.length;
+                        devLog('[V62] debug', {
+                            indId: this.id,
+                            indType: this.constructor?.META?.type,
+                            now: new Date(_now).toISOString(),
+                            anchorCount,
+                            period: this.params?.period,
+                            lastAnchorOpenTime: new Date(anchorX[anchorCount-1]).toISOString(),
+                            lastAnchorCloseTime: new Date(anchorX[anchorCount-1] + anchorIntervalMs).toISOString(),
+                            lastClosedIdx,
+                            lastClosedOpenTime: new Date(anchorX[lastClosedIdx]).toISOString(),
+                            EMA_last_closed,
+                            EMA_forming: anchorData[anchorCount-1],
+                            manualSMA: manualSMA.toFixed(2),
+                            lastNCloses,
+                            formingStart: new Date(formingStart).toISOString(),
+                            chartFirst: new Date(chartX[0]).toISOString(),
+                            chartLast: new Date(chartX[count-1]).toISOString(),
+                            lastFormingIdx,
+                            lastFormingX: lastFormingIdx >= 0 ? new Date(chartX[lastFormingIdx]).toISOString() : 'none',
+                            lastFormingClose: lastFormingIdx >= 0 ? ohlc.close[lastFormingIdx] : 'none',
+                            interpMode,
+                        });
+                        this._v62Logged = true;
+                        setTimeout(() => { this._v62Logged = false; }, 10000);
+                    }
+                    if (lastFormingIdx >= 0 && chartX[lastFormingIdx] > formingStart) {
+                        // V65: virtual dot Y = forming candle's indicator
+                        //   value (already computed by the indicator with
+                        //   today's close).
+                        const EMA_virtual = anchorData[anchorCount - 1];
+                        if (isFinite(EMA_virtual)) {
+                            const x_end = chartX[lastFormingIdx];
+                            _v62FormingStart = formingStart;
+                            _v62FormingEnd = x_end;
+                            _v62EMAstart = EMA_last_closed;
+                            _v62EMAend = EMA_virtual;
+                            _v62InterpMode = interpMode;  // pass interp mode for the mapping loop
+                            if (isFinite(this._anchorIntervalMs) === false) this._anchorIntervalMs = anchorIntervalMs;
+                            this._lastVirtualAnchorPt = { x: x_end, v: EMA_virtual };
+                        }
+                    }
+                }
+            }
+
             for (let i = 0; i < count; i++) {
                 const x = chartX[i];
-                if (x < anchorX[0] || x > anchorX[anchorCount - 1] + anchorIntervalMs) {
-                    continue;  // chartData[i] already NaN
+                // V64: use _firstValidX (closeTime of first anchor candle)
+                //   as the lower bound — bars before this have no closed
+                //   anchor to look up.
+                if (x < _firstValidX || x > _ffEndX) {
+                    continue;
+                }
+                // V65: if this bar is in the forming period, interpolate
+                //   between EMA_last_closed (at formingStart, where the red
+                //   dot sits) and EMA_virtual (at lastFormingX, where the
+                //   orange dot sits) using the user's chosen interpMode.
+                //   - step (asof): flat EMA_last_closed until the very last
+                //     bar, then jumps to EMA_virtual. Visually: flat line
+                //     then a step at the end.
+                //   - linear: straight line between the two points.
+                //   - cosine: S-curve (smoothstep).
+                //   - cubic: cubic Hermite spline (smoother).
+                if (x >= _v62FormingStart && x <= _v62FormingEnd && isFinite(_v62EMAstart) && isFinite(_v62EMAend)) {
+                    const span = _v62FormingEnd - _v62FormingStart;
+                    if (span > 0) {
+                        const t = (x - _v62FormingStart) / span;
+                        let v;
+                        if (_v62InterpMode === 'step' || _v62InterpMode === 'asof') {
+                            // Forward-fill: hold EMA_last_closed until the
+                            //   last bar (t=1), where we use EMA_virtual.
+                            v = (t >= 1) ? _v62EMAend : _v62EMAstart;
+                        } else if (_v62InterpMode === 'linear') {
+                            v = _v62EMAstart + (_v62EMAend - _v62EMAstart) * t;
+                        } else if (_v62InterpMode === 'cosine') {
+                            const s = (1 - Math.cos(Math.PI * t)) * 0.5;
+                            v = _v62EMAstart + (_v62EMAend - _v62EMAstart) * s;
+                        } else if (_v62InterpMode === 'cubic') {
+                            // Cubic Hermite with zero tangents (smoothstep)
+                            const t2 = t * t;
+                            const t3 = t2 * t;
+                            v = _v62EMAstart * (2*t3 - 3*t2 + 1) + _v62EMAend * (3*t2 - 2*t3);
+                        } else {
+                            v = _v62EMAstart + (_v62EMAend - _v62EMAstart) * t;  // fallback linear
+                        }
+                        chartData[i] = v;
+                        continue;
+                    }
                 }
                 const v = anchorSource.at(x);
                 if (isFinite(v)) {
                     chartData[i] = v;
-                } else if (x >= anchorX[anchorCount - 1] && x < anchorX[anchorCount - 1] + anchorIntervalMs) {
+                } else if (x >= _lastAnchorX && x <= _ffEndX) {
+                    // Forward-fill the last anchor value across the
+                    //   last closed period AND the forming period.
                     const lastAnchorVal = anchorData[anchorCount - 1];
                     if (isFinite(lastAnchorVal)) chartData[i] = lastAnchorVal;
                 }
@@ -19360,6 +19580,66 @@ class IndicatorBrick extends IndicatorBase {
             }
             mappedResult[out.name] = chartData;
         }
+        // V61-debug-dots: save the last 3 anchor (1d) points for visual
+        //   debugging. These are the actual indicator values on the anchor
+        //   TF, not the 4h-mapped values. We take the FIRST line-type
+        //   output's anchorData (anchorResult[out.name]) — that's the
+        //   array the indicator computed on the anchor candles.
+        let _dbgAnchorData = null;
+        for (const out of outs) {
+            if (out.type === 'line' && anchorResult[out.name]) {
+                _dbgAnchorData = anchorResult[out.name];
+                break;
+            }
+        }
+        if (!_dbgAnchorData) {
+            // Fallback: first non-band/cloud output
+            for (const out of outs) {
+                if (out.type !== 'band' && out.type !== 'cloud' && anchorResult[out.name]) {
+                    _dbgAnchorData = anchorResult[out.name];
+                    break;
+                }
+            }
+        }
+        const _dbgAnchorPts = [];
+        if (_dbgAnchorData) {
+            // V64-debug: draw dots at CLOSE time of each anchor candle
+            //   (openTime + intervalMs), NOT at openTime. This matches the
+            //   semantic that a candle's EMA value is "known" only when the
+            //   candle closes. For a 1d candle with openTime=30-00:00, the
+            //   dot sits at 31-00:00 (closeTime). The last candle (forming)
+            //   is excluded — its place is taken by the V62 virtual dot.
+            // V62-debug: skip the forming candle (last 1d candle).
+            const _nowDbg = Date.now();
+            let _startK = anchorCount - 1;
+            if (anchorX[_startK] + anchorIntervalMs > _nowDbg) {
+                _startK = anchorCount - 2;  // skip forming
+            }
+            for (let k = _startK; k >= 0 && _dbgAnchorPts.length < 3; k--) {
+                const _aV = _dbgAnchorData[k];
+                if (isFinite(_aV)) {
+                    // x = closeTime = openTime + intervalMs
+                    _dbgAnchorPts.push({ x: anchorX[k] + anchorIntervalMs, v: _aV, idx: k });
+                }
+            }
+            _dbgAnchorPts.reverse();  // [3rd-last, 2nd-last, last]
+        }
+        // V62-debug: also save the virtual anchor point (EMA_virtual) so
+        //   we can draw a yellow dot at the end of the forming-period
+        //   line. This is the "next 1d EMA" approximation computed by V62.
+        //   We stored it on `this._lastVirtualAnchorPt` during the mapping
+        //   loop above (set inside the V62 block).
+        if (this._lastVirtualAnchorPt) {
+            _dbgAnchorPts.push({
+                x: this._lastVirtualAnchorPt.x,
+                v: this._lastVirtualAnchorPt.v,
+                idx: -1,  // virtual — not in anchor array
+                virtual: true,
+            });
+        }
+        this._lastAnchorDebugDots = _dbgAnchorPts;
+        this._anchorIntervalMs = anchorIntervalMs;  // for label
+
         mappedResult.count = count;
         mappedResult.visibleRange = visibleRange;
         mappedResult._anchorTf = anchorTf;
@@ -19677,6 +19957,18 @@ class IndicatorBrick extends IndicatorBase {
         // V37: levels last (so they sit on top of the line, like gridlines
         // overlaid on the indicator)
         this._drawLevels(ctx, yScale, layout);
+        // V61-debug-dots: draw 3 colored dots at the last 3 ANCHOR (1d)
+        //   values. Placed AFTER everything else so dots sit on top.
+        //   Triggered when this indicator has an anchor TF AND we saved
+        //   debug dots during _computeAnchor. Works for any indicator
+        //   (EMA, SMA, etc.) since _computeAnchor is in the base class.
+        if (this.anchorTimeframe && this.anchorTimeframe !== 'chart' &&
+            this._lastAnchorDebugDots && this._lastAnchorDebugDots.length > 0) {
+            const lineData = computed.line || computed[Object.keys(computed)[0]];
+            if (lineData) {
+                this._drawDebugDots(ctx, lineData, xScale, yScale, xData, iMin, iMax);
+            }
+        }
     }
 
     /**
@@ -19792,6 +20084,54 @@ class IndicatorBrick extends IndicatorBase {
             ctx.fillRect(px - halfW, zeroY, barW, Math.max(0.5, py - zeroY));
         }
         ctx.globalAlpha = 1;
+    }
+
+    /**
+     * V61-debug-dots: draw 3 colored dots at the last 3 ANCHOR (1d) values.
+     * These are the actual EMA values computed on the anchor TF, projected
+     * onto the 4h chart via xScale. Each dot is placed at (anchorX, anchorV)
+     * — NOT at the 4h-mapped position.
+     * Colors: red=last anchor, green=2nd-last, blue=3rd-last.
+     */
+    _drawDebugDots(ctx, data, xScale, yScale, xData, iMin, iMax) {
+        const pts = this._lastAnchorDebugDots;
+        if (!pts || pts.length === 0) return;
+        // Colors per slot. Virtual point gets yellow with dashed border.
+        //   [0]=3rd-last=blue, [1]=2nd-last=green, [2]=last=red,
+        //   [3]=virtual=yellow (if present)
+        const colors = ['#58a6ff', '#3fb950', '#f85149', '#d29922'];
+        const labels = ['3rd-last', '2nd-last', 'LAST', 'VIRTUAL'];
+        ctx.save();
+        for (let k = 0; k < pts.length; k++) {
+            const p = pts[k];
+            const isVirtual = !!p.virtual;
+            const px = xScale.valToPix(p.x);
+            const py = yScale.valToPix(p.v);
+            const color = isVirtual ? colors[3] : (colors[k] || colors[2]);
+            const label = isVirtual ? labels[3] : (labels[k] || labels[2]);
+            // Filled circle (virtual uses larger radius + dashed border)
+            ctx.beginPath();
+            ctx.arc(px, py, isVirtual ? 8 : 6, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#ffffff';
+            if (isVirtual) ctx.setLineDash([3, 3]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // Text label
+            ctx.font = '11px monospace';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            const dt = new Date(p.x).toISOString().slice(0, 16);
+            const labelText = `[${label}] ${isVirtual ? 'virtual' : 'anchor#' + p.idx} v=${p.v.toFixed(2)} x=${dt}`;
+            const labelW = ctx.measureText(labelText).width;
+            ctx.fillStyle = 'rgba(0,0,0,0.85)';
+            ctx.fillRect(px + 10, py - 10, labelW + 10, 20);
+            ctx.fillStyle = color;
+            ctx.fillText(labelText, px + 15, py);
+        }
+        ctx.restore();
     }
 
     _drawLine(ctx, data, color, lineWidth, alpha, xScale, yScale, xData, iMin, iMax) {
@@ -35302,6 +35642,7 @@ class ImageLabelObject extends OverlayBase {
 
 
 
+
 // ── V39: явный экспорт в window (обратная совместимость) ──
 Object.assign(window, { OverlayBase, FibonacciBase, LineObject, LabelObject, TrendLineObject, PolygonObject, FibonacciRetracementObject, FibonacciTrendObject, FibonacciExpansionObject, ZoneObject, GridBotObject, ImageLabelObject });
 
@@ -44366,6 +44707,7 @@ class DrawRecognizer extends GestureRecognizer {
         // Focus the grid input for quick editing
         setTimeout(() => gridInput.focus(), 0);
     }
+
 
     handleStart(ctx) {
         this._startX = ctx.startX;
@@ -59638,8 +59980,26 @@ class ChartFactory {
         const pDownGivenDown = totalAfterDown > 0 ? downAfterDown / totalAfterDown : 0;
 
         // ── Day-of-week stats ──
+        // V56-dow-spread: also track per-day price range (high-low) and volume.
+        //   For each return at index i, the corresponding bar is the one
+        //   ending at xArr[i+1] (since returns[i] = log(close[i+1]/close[i])).
+        //   We pull high/low/vol from the OHLC linearized arrays so we don't
+        //   need to touch the ring buffer directly.
+        // V57-dow-pct: spread is stored as PERCENT of close — (high-low)/close*100 —
+        //   so the metric is comparable across price levels and assets.
+        let _ohlc = null;
+        try { _ohlc = ds.getFullOHLCData(); } catch (e) { _ohlc = null; }
+        // Build a map from timestamp → OHLC bar index for quick lookup.
+        //   xArr holds timestamps for the closes we kept; we need to find
+        //   each bar's high/low/vol by matching its timestamp.
+        const _ohlcIdxByTs = new Map();
+        if (_ohlc && _ohlc._x) {
+            for (let k = 0; k < _ohlc._x.length; k++) {
+                _ohlcIdxByTs.set(_ohlc._x[k], k);
+            }
+        }
         const dowStats = {};
-        for (let i = 0; i < 7; i++) dowStats[i] = { count: 0, up: 0, down: 0, returns: [] };
+        for (let i = 0; i < 7; i++) dowStats[i] = { count: 0, up: 0, down: 0, returns: [], spreads: [], vols: [] };
         for (let i = 0; i < returns.length; i++) {
             const ts = xArr[i + 1] || xArr[i];
             if (ts) {
@@ -59649,6 +60009,25 @@ class ChartFactory {
                 if (returns[i] > 0) dowStats[dow].up++;
                 else if (returns[i] < 0) dowStats[dow].down++;
                 dowStats[dow].returns.push(returns[i]);
+                // Look up high/low/vol for this bar
+                if (_ohlc) {
+                    const oi = _ohlcIdxByTs.get(ts);
+                    if (oi != null && oi < _ohlc.high.length) {
+                        const hi = _ohlc.high[oi];
+                        const lo = _ohlc.low[oi];
+                        const cl = _ohlc.close[oi];
+                        const vl = _ohlc.vol[oi];
+                        // V57-dow-pct: store spread as percent of close so it's
+                        //   comparable across price regimes. Skip if close is
+                        //   missing/zero (avoid div-by-zero).
+                        if (isFinite(hi) && isFinite(lo) && isFinite(cl) && cl > 0 && hi >= lo) {
+                            dowStats[dow].spreads.push((hi - lo) / cl * 100);
+                        }
+                        if (isFinite(vl) && vl > 0) {
+                            dowStats[dow].vols.push(vl);
+                        }
+                    }
+                }
             }
         }
         const dowNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -59657,7 +60036,17 @@ class ChartFactory {
             const s = dowStats[i];
             if (s.count > 0) {
                 const avgRet = s.returns.reduce((a, b) => a + b, 0) / s.count;
-                dowResult.push({ day: dowNames[i], count: s.count, pUp: s.up / s.count, avgRet, up: s.up, down: s.down });
+                // V56-dow-spread: avg spread, max spread, avg volume per day.
+                //   V57-dow-pct: spreads are already in percent units.
+                const spreads = s.spreads;
+                const vols = s.vols;
+                const avgSpread = spreads.length > 0 ? spreads.reduce((a, b) => a + b, 0) / spreads.length : NaN;
+                const maxSpread = spreads.length > 0 ? Math.max(...spreads) : NaN;
+                const avgVol = vols.length > 0 ? vols.reduce((a, b) => a + b, 0) / vols.length : NaN;
+                dowResult.push({
+                    day: dowNames[i], count: s.count, pUp: s.up / s.count, avgRet, up: s.up, down: s.down,
+                    avgSpread, maxSpread, avgVol,
+                });
             }
         }
 
@@ -60029,18 +60418,44 @@ class ChartFactory {
 
         // Day of week
         if (s.dowResult.length > 0) {
-            html += section('Day of Week Analysis', [
-                '<div style="display:grid;grid-template-columns:auto repeat(4,1fr);gap:2px 8px;font-size:10px;font-family:monospace;padding:4px 0;">',
-                '<div style="color:#8b949e;">Day</div><div style="color:#8b949e;text-align:right;">Bars</div><div style="color:#8b949e;text-align:right;">P(up)</div><div style="color:#8b949e;text-align:right;">Avg Ret</div><div style="color:#8b949e;text-align:right;">↑/↓</div>',
-                ...s.dowResult.map(d =>
-                    '<div style="color:#e6edf3;">' + d.day + '</div>' +
+            // V56-dow-spread: render Day of Week as a per-day block with two rows:
+            //   Row 1 (compact): Day | Bars | P(up) | Avg Ret | ↑/↓
+            //   Row 2 (extra):   Avg Range | Max Range | Avg Vol
+            //   On a 700px desktop modal this fits comfortably; on mobile
+            //   the second row wraps gracefully below the first.
+            //   V57-dow-pct: Avg/Max Range are PERCENTS of close (not abs price).
+            const fmtVol = (v) => {
+                if (!isFinite(v) || v <= 0) return '—';
+                if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+                if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+                if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+                return v.toFixed(0);
+            };
+            const fmtPct2 = (v) => isFinite(v) && v > 0 ? v.toFixed(2) + '%' : '—';
+            const dowRows = s.dowResult.map(d =>
+                '<div style="display:grid;grid-template-columns:auto repeat(4,1fr);gap:2px 8px;font-size:10px;font-family:monospace;padding:4px 0 2px;border-bottom:1px solid rgba(255,255,255,.04);">' +
+                    '<div style="color:#e6edf3;font-weight:600;">' + d.day + '</div>' +
                     '<div style="text-align:right;color:#e6edf3;">' + d.count + '</div>' +
                     '<div style="text-align:right;color:' + (d.pUp > 0.5 ? '#3fb950' : '#f85149') + ';">' + fmtPct(d.pUp) + '</div>' +
                     '<div style="text-align:right;color:' + (d.avgRet > 0 ? '#3fb950' : '#f85149') + ';">' + fmt(d.avgRet * 100, 3) + '%</div>' +
-                    '<div style="text-align:right;color:#8b949e;">' + d.up + '/' + d.down + '</div>'
-                ).join(''),
-                '</div>',
-            ].join(''));
+                    '<div style="text-align:right;color:#8b949e;">' + d.up + '/' + d.down + '</div>' +
+                '</div>' +
+                '<div style="display:flex;gap:8px;font-size:9px;font-family:monospace;padding:0 0 4px;color:#8b949e;flex-wrap:wrap;">' +
+                    '<span>📊 Avg: <span style="color:#d29922;">' + fmtPct2(d.avgSpread) + '</span></span>' +
+                    '<span>↥ Max: <span style="color:#bc8cff;">' + fmtPct2(d.maxSpread) + '</span></span>' +
+                    '<span>📦 Vol: <span style="color:#58a6ff;">' + fmtVol(d.avgVol) + '</span></span>' +
+                '</div>'
+            ).join('');
+            html += section('Day of Week Analysis',
+                '<div style="display:grid;grid-template-columns:auto repeat(4,1fr);gap:2px 8px;font-size:10px;font-family:monospace;padding:4px 0 2px;border-bottom:1px solid var(--border);">' +
+                    '<div style="color:#8b949e;">Day</div>' +
+                    '<div style="color:#8b949e;text-align:right;">Bars</div>' +
+                    '<div style="color:#8b949e;text-align:right;">P(up)</div>' +
+                    '<div style="color:#8b949e;text-align:right;">Avg Ret</div>' +
+                    '<div style="color:#8b949e;text-align:right;">↑/↓</div>' +
+                '</div>' +
+                dowRows
+            );
         }
 
         // MA200 conditional analysis
@@ -60151,8 +60566,22 @@ class ChartFactory {
         L.push('');
         if (s.dowResult.length > 0) {
             L.push('--- Day of Week ---');
+            // V56-dow-spread: include avg/max spread and avg vol in copy output.
+            //   V57-dow-pct: spreads are percents of close.
+            const _fv = (v) => {
+                if (!isFinite(v) || v <= 0) return '—';
+                if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+                if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+                if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+                return v.toFixed(0);
+            };
+            const _fp = (v) => isFinite(v) && v > 0 ? v.toFixed(2) + '%' : '—';
             for (const d of s.dowResult) {
-                L.push(d.day + ': ' + d.count + ' bars, P(up)=' + fp(d.pUp) + ', avg=' + f(d.avgRet * 100, 3) + '%, ↑' + d.up + '/↓' + d.down);
+                L.push(d.day + ': ' + d.count + ' bars, P(up)=' + fp(d.pUp) + ', avg=' + f(d.avgRet * 100, 3) +
+                       '%, ↑' + d.up + '/↓' + d.down +
+                       ', avgSpread=' + _fp(d.avgSpread) +
+                       ', maxSpread=' + _fp(d.maxSpread) +
+                       ', avgVol=' + _fv(d.avgVol));
             }
             L.push('');
         }
