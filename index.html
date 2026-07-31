@@ -19401,6 +19401,7 @@ class IndicatorBrick extends IndicatorBase {
             let _v62FormingEnd = -Infinity;
             let _v62EMAstart = NaN, _v62EMAend = NaN;
             let _v62InterpMode = 'step';  // user's chosen interp mode (step/linear/cosine/cubic)
+            let _v62CubicTangent0 = 0;    // V69: scaled tangent at start for cubic Hermite
             // V66: V62 now works for ALL anchor-TF indicators, not just
             //   MA-family ones. The virtual dot's Y = anchorData[anchorCount-1],
             //   which is the indicator's output for the forming 1d candle.
@@ -19490,6 +19491,22 @@ class IndicatorBrick extends IndicatorBase {
                             _v62EMAstart = EMA_last_closed;
                             _v62EMAend = EMA_virtual;
                             _v62InterpMode = interpMode;  // pass interp mode for the mapping loop
+                            // V69-cubic-fix: compute scaled tangent at start
+                            //   for cubic Hermite. The tangent should match
+                            //   the slope of the previous segment so the line
+                            //   is C1-continuous at the red dot (no kink).
+                            //   Previous segment: from anchorData[lastClosedIdx-1]
+                            //   to anchorData[lastClosedIdx], time span =
+                            //   anchorIntervalMs. We scale by
+                            //   (prevSpan / curSpan) so the tangent is in
+                            //   units of "value per t" (t in [0,1] over curSpan).
+                            if (lastClosedIdx >= 1 && isFinite(anchorData[lastClosedIdx - 1])) {
+                                const prevSlope = (EMA_last_closed - anchorData[lastClosedIdx - 1]) / anchorIntervalMs;
+                                const curSpan = x_end - formingStart;
+                                _v62CubicTangent0 = prevSlope * curSpan;
+                            } else {
+                                _v62CubicTangent0 = 0;  // no prev point → flat
+                            }
                             if (isFinite(this._anchorIntervalMs) === false) this._anchorIntervalMs = anchorIntervalMs;
                             this._lastVirtualAnchorPt = { x: x_end, v: EMA_virtual };
                         }
@@ -19530,10 +19547,31 @@ class IndicatorBrick extends IndicatorBase {
                             const s = (1 - Math.cos(Math.PI * t)) * 0.5;
                             v = _v62EMAstart + (_v62EMAend - _v62EMAstart) * s;
                         } else if (_v62InterpMode === 'cubic') {
-                            // Cubic Hermite with zero tangents (smoothstep)
+                            // V69-cubic-fix: Cubic Hermite with tangent at
+                            //   start = slope of previous segment (so the line
+                            //   doesn't have a kink at the red dot).
+                            //   Previous segment goes from EMA[prev] to
+                            //   EMA[last_closed] over a time span of
+                            //   anchorIntervalMs. We scale the tangent by
+                            //   (prevSpan / curSpan) so it's in units of
+                            //   "value per current-segment-time".
+                            //   Tangent at end = 0 (we don't know the future
+                            //   beyond EMA_virtual, so assume flat — this
+                            //   matches the "lookahead=off" semantic).
+                            //   Hermite basis:
+                            //     h00(t) = 2t³ - 3t² + 1     (P0)
+                            //     h10(t) = t³ - 2t² + t       (m0)
+                            //     h01(t) = -2t³ + 3t²         (P1)
+                            //     h11(t) = t³ - t²            (m1)
+                            //   v(t) = h00*P0 + h10*m0 + h01*P1 + h11*m1
                             const t2 = t * t;
                             const t3 = t2 * t;
-                            v = _v62EMAstart * (2*t3 - 3*t2 + 1) + _v62EMAend * (3*t2 - 2*t3);
+                            const m0 = _v62CubicTangent0;  // scaled tangent at start
+                            const m1 = 0;                   // flat at end (no lookahead)
+                            v = _v62EMAstart * (2*t3 - 3*t2 + 1)
+                              + m0 * (t3 - 2*t2 + t)
+                              + _v62EMAend * (-2*t3 + 3*t2)
+                              + m1 * (t3 - t2);
                         } else {
                             v = _v62EMAstart + (_v62EMAend - _v62EMAstart) * t;  // fallback linear
                         }
@@ -19580,65 +19618,6 @@ class IndicatorBrick extends IndicatorBase {
             }
             mappedResult[out.name] = chartData;
         }
-        // V61-debug-dots: save the last 3 anchor (1d) points for visual
-        //   debugging. These are the actual indicator values on the anchor
-        //   TF, not the 4h-mapped values. We take the FIRST line-type
-        //   output's anchorData (anchorResult[out.name]) — that's the
-        //   array the indicator computed on the anchor candles.
-        let _dbgAnchorData = null;
-        for (const out of outs) {
-            if (out.type === 'line' && anchorResult[out.name]) {
-                _dbgAnchorData = anchorResult[out.name];
-                break;
-            }
-        }
-        if (!_dbgAnchorData) {
-            // Fallback: first non-band/cloud output
-            for (const out of outs) {
-                if (out.type !== 'band' && out.type !== 'cloud' && anchorResult[out.name]) {
-                    _dbgAnchorData = anchorResult[out.name];
-                    break;
-                }
-            }
-        }
-        const _dbgAnchorPts = [];
-        if (_dbgAnchorData) {
-            // V64-debug: draw dots at CLOSE time of each anchor candle
-            //   (openTime + intervalMs), NOT at openTime. This matches the
-            //   semantic that a candle's EMA value is "known" only when the
-            //   candle closes. For a 1d candle with openTime=30-00:00, the
-            //   dot sits at 31-00:00 (closeTime). The last candle (forming)
-            //   is excluded — its place is taken by the V62 virtual dot.
-            // V62-debug: skip the forming candle (last 1d candle).
-            const _nowDbg = Date.now();
-            let _startK = anchorCount - 1;
-            if (anchorX[_startK] + anchorIntervalMs > _nowDbg) {
-                _startK = anchorCount - 2;  // skip forming
-            }
-            for (let k = _startK; k >= 0 && _dbgAnchorPts.length < 3; k--) {
-                const _aV = _dbgAnchorData[k];
-                if (isFinite(_aV)) {
-                    // x = closeTime = openTime + intervalMs
-                    _dbgAnchorPts.push({ x: anchorX[k] + anchorIntervalMs, v: _aV, idx: k });
-                }
-            }
-            _dbgAnchorPts.reverse();  // [3rd-last, 2nd-last, last]
-        }
-        // V62-debug: also save the virtual anchor point (EMA_virtual) so
-        //   we can draw a yellow dot at the end of the forming-period
-        //   line. This is the "next 1d EMA" approximation computed by V62.
-        //   We stored it on `this._lastVirtualAnchorPt` during the mapping
-        //   loop above (set inside the V62 block).
-        if (this._lastVirtualAnchorPt) {
-            _dbgAnchorPts.push({
-                x: this._lastVirtualAnchorPt.x,
-                v: this._lastVirtualAnchorPt.v,
-                idx: -1,  // virtual — not in anchor array
-                virtual: true,
-            });
-        }
-        this._lastAnchorDebugDots = _dbgAnchorPts;
-        this._anchorIntervalMs = anchorIntervalMs;  // for label
 
         mappedResult.count = count;
         mappedResult.visibleRange = visibleRange;
@@ -19957,18 +19936,6 @@ class IndicatorBrick extends IndicatorBase {
         // V37: levels last (so they sit on top of the line, like gridlines
         // overlaid on the indicator)
         this._drawLevels(ctx, yScale, layout);
-        // V61-debug-dots: draw 3 colored dots at the last 3 ANCHOR (1d)
-        //   values. Placed AFTER everything else so dots sit on top.
-        //   Triggered when this indicator has an anchor TF AND we saved
-        //   debug dots during _computeAnchor. Works for any indicator
-        //   (EMA, SMA, etc.) since _computeAnchor is in the base class.
-        if (this.anchorTimeframe && this.anchorTimeframe !== 'chart' &&
-            this._lastAnchorDebugDots && this._lastAnchorDebugDots.length > 0) {
-            const lineData = computed.line || computed[Object.keys(computed)[0]];
-            if (lineData) {
-                this._drawDebugDots(ctx, lineData, xScale, yScale, xData, iMin, iMax);
-            }
-        }
     }
 
     /**
@@ -20086,53 +20053,6 @@ class IndicatorBrick extends IndicatorBase {
         ctx.globalAlpha = 1;
     }
 
-    /**
-     * V61-debug-dots: draw 3 colored dots at the last 3 ANCHOR (1d) values.
-     * These are the actual EMA values computed on the anchor TF, projected
-     * onto the 4h chart via xScale. Each dot is placed at (anchorX, anchorV)
-     * — NOT at the 4h-mapped position.
-     * Colors: red=last anchor, green=2nd-last, blue=3rd-last.
-     */
-    _drawDebugDots(ctx, data, xScale, yScale, xData, iMin, iMax) {
-        const pts = this._lastAnchorDebugDots;
-        if (!pts || pts.length === 0) return;
-        // Colors per slot. Virtual point gets yellow with dashed border.
-        //   [0]=3rd-last=blue, [1]=2nd-last=green, [2]=last=red,
-        //   [3]=virtual=yellow (if present)
-        const colors = ['#58a6ff', '#3fb950', '#f85149', '#d29922'];
-        const labels = ['3rd-last', '2nd-last', 'LAST', 'VIRTUAL'];
-        ctx.save();
-        for (let k = 0; k < pts.length; k++) {
-            const p = pts[k];
-            const isVirtual = !!p.virtual;
-            const px = xScale.valToPix(p.x);
-            const py = yScale.valToPix(p.v);
-            const color = isVirtual ? colors[3] : (colors[k] || colors[2]);
-            const label = isVirtual ? labels[3] : (labels[k] || labels[2]);
-            // Filled circle (virtual uses larger radius + dashed border)
-            ctx.beginPath();
-            ctx.arc(px, py, isVirtual ? 8 : 6, 0, Math.PI * 2);
-            ctx.fillStyle = color;
-            ctx.fill();
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = '#ffffff';
-            if (isVirtual) ctx.setLineDash([3, 3]);
-            ctx.stroke();
-            ctx.setLineDash([]);
-            // Text label
-            ctx.font = '11px monospace';
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'middle';
-            const dt = new Date(p.x).toISOString().slice(0, 16);
-            const labelText = `[${label}] ${isVirtual ? 'virtual' : 'anchor#' + p.idx} v=${p.v.toFixed(2)} x=${dt}`;
-            const labelW = ctx.measureText(labelText).width;
-            ctx.fillStyle = 'rgba(0,0,0,0.85)';
-            ctx.fillRect(px + 10, py - 10, labelW + 10, 20);
-            ctx.fillStyle = color;
-            ctx.fillText(labelText, px + 15, py);
-        }
-        ctx.restore();
-    }
 
     _drawLine(ctx, data, color, lineWidth, alpha, xScale, yScale, xData, iMin, iMax) {
         ctx.lineWidth = lineWidth;
