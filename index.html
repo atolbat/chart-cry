@@ -11657,6 +11657,7 @@ class PanelLabelRenderer {
         }
 
         // Sticker pill — drawn AFTER countdown. Color by connection status.
+        let stickerEndX = countdownEndX;
         if (sticker) {
             const sx = countdownEndX + 8;
             const sy = contentTop;
@@ -11671,6 +11672,76 @@ class PanelLabelRenderer {
             ctx.fillStyle = style.stickerColor;
             ctx.textBaseline = 'top';
             ctx.fillText(sticker, sx + 3, contentTop);
+            stickerEndX = sx + sw;
+        }
+
+        // V77-eye-button: draw eye/eye-slash button in the RIGHT part of the
+        //   main panel, regardless of label alignment. Clicking toggles
+        //   IndicatorManager._hideAllIndicators.
+        if (pId === 'main') {
+            const eyeSz = 18;  // V77b: reduced 10% from 20px
+            const eyeMargin = 6;
+            // Position at the right edge of the plot area, before Y-axis column
+            const eyeX = layout.plotRight - eyeSz - eyeMargin;
+            const eyeY = contentTop + (lineH - eyeSz) / 2;  // vertically centered with label
+            const im = this._api?._ctx?.indicatorManager || this._api?._ctx?.config?._indicatorManager;
+            const isHidden = im?._hideAllIndicators === true;
+            const isHovered = this._eyeHovered === true;
+            ctx.save();
+            // Background — subtle, matches expose button style
+            if (isHovered) {
+                ctx.fillStyle = 'rgba(255,255,255,0.12)';
+                this._roundRect(ctx, eyeX, eyeY, eyeSz, eyeSz, 3);
+                ctx.fill();
+            } else if (isHidden) {
+                ctx.fillStyle = 'rgba(248, 81, 73, 0.12)';
+                this._roundRect(ctx, eyeX, eyeY, eyeSz, eyeSz, 3);
+                ctx.fill();
+            }
+            // Border
+            ctx.strokeStyle = isHovered ? '#58a6ff' : (isHidden ? '#f85149' : 'rgba(255,255,255,0.15)');
+            ctx.lineWidth = 1;
+            this._roundRect(ctx, eyeX, eyeY, eyeSz, eyeSz, 3);
+            ctx.stroke();
+            // Eye glyph — bigger font, centered
+            ctx.font = `${Math.floor(eyeSz * 0.65)}px -apple-system, sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = isHidden ? '#f85149' : (isHovered ? '#58a6ff' : 'rgba(255,255,255,0.55)');
+            ctx.fillText(isHidden ? '\u{1F648}' : '\u{1F441}', eyeX + eyeSz / 2, eyeY + eyeSz / 2 + 1);
+            ctx.restore();
+            // Store rect for hit-test
+            this._eyeBtnRect = { x: eyeX, y: eyeY, w: eyeSz, h: eyeSz };
+        }
+        // V77: do NOT clear _eyeBtnRect for non-main panels — it would
+        //   be cleared every time another panel's label is drawn after main,
+        //   making the hit-test fail. The rect is only set when pId === 'main'
+        //   and stays valid until the next main-panel render.
+    }
+
+    /** V77-eye-button: hit-test for the eye button. Returns true if hit. */
+    hitTestEyeButton(x, y) {
+        if (!this._eyeBtnRect) {
+            try { devLog('[V77-eye] hitTest: no _eyeBtnRect', { x, y }); } catch(_) {}
+            return false;
+        }
+        const r = this._eyeBtnRect;
+        const hit = x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+        try { devLog('[V77-eye] hitTest', { x, y, rect: r, hit }); } catch(_) {}
+        return hit;
+    }
+
+    /** V77-eye-button: set hover state for the eye button. */
+    setEyeHovered(hovered) {
+        this._eyeHovered = !!hovered;
+    }
+
+    /** V77-eye-button: toggle the hide-all-indicators flag. */
+    toggleHideAllIndicators() {
+        const im = this._api?._ctx?.indicatorManager || this._api?._ctx?.config?._indicatorManager;
+        if (im) {
+            im._hideAllIndicators = !im._hideAllIndicators;
+            this._api?.markAllDirtyAndRender?.();
         }
     }
 
@@ -16978,6 +17049,14 @@ class MultiTfDataManager {
         this._chartIntervalMs = 60000;
         // Last visible chart xRange (set by render loop, used for coverage)
         this._chartVisibleXRange = [null, null];
+        // V73-symbol-cache: per-symbol anchor data cache. When switching
+        //   symbols, we snapshot the current stores into this cache keyed
+        //   by symbol. Switching back to a cached symbol restores the
+        //   snapshot instantly (no refetch needed). This makes BTC→ETH→BTC
+        //   switches instant on the second BTC visit.
+        //   Structure: Map<symbol, Map<tf, {close, high, low, open, vol, x, firstX, lastX, size}>>
+        this._symbolCache = new Map();
+        this._maxCachedSymbols = 8;  // LRU cap — evict oldest beyond this
     }
 
     setOnTfReady(fn) { this._onTfReady = fn; }
@@ -17162,23 +17241,33 @@ class MultiTfDataManager {
 
         const p = (async () => {
             try {
-                // FIX V49n-MTF-pagination: Binance returns max 1000 candles per
-                // request. When the chart has lazy-loaded history spanning months
-                // but the anchor store only has recent data, a single fetch can't
-                // bridge the gap. We loop: fetch → merge → check if gap remains
-                // → fetch more. Max 8 iterations to avoid infinite loops.
+                // V72-recent-first: fetch the MOST RECENT candles first, then
+                //   fill history backwards. This ensures the right edge of the
+                //   chart (current price) gets anchor data immediately, so the
+                //   indicator line renders on the visible bars without waiting
+                //   for the full historical gap-fill to complete.
                 //
-                // FIX V49n-MTF-merge: use mergeHistory (not prependHistory) so
-                // candles fetched in later iterations get inserted at their
-                // correct positions — filling gaps in the middle of the range.
-                // prependHistory only adds before firstX, so candles that belong
-                // in the middle were being discarded as "no new data".
-                let fetchStartTime = startTime;
-                const maxIterations = 10;
+                //   Old behavior: fetched from `startTime` (xMin - warmup)
+                //   forward. On a weekly chart with 8 years of history, the
+                //   first fetch returned 1000 candles from 2017-2020, leaving
+                //   a 6-year gap to 2026. The "no new bars" check stopped
+                //   the loop, and the indicator never got recent data.
+                //
+                //   New behavior: first fetch starts from `xMax - limit·anchorMs`
+                //   (recent history), then walks backwards. Each iteration
+                //   extends further back. The store's mergeHistory handles
+                //   out-of-order insertion correctly.
+                let fetchStartTime = Math.max(0, xMax - limit * anchorMs);
+                // V72: 8 iterations max. Weekly chart with 8 years of history
+                //   needs ~7 fetches of 1000 candles to cover 2017→2026.
+                //   Each fetch is ~200-400ms, so worst case ~3s total. But
+                //   the FIRST fetch covers the right edge (recent data), so
+                //   the indicator renders immediately and history fills in.
+                const maxIterations = 8;
                 let lastStoreSize = 0;
 
                 for (let iter = 0; iter < maxIterations; iter++) {
-                    const fetchLimit = Math.min(1500, Math.ceil((xMax - fetchStartTime) / anchorMs) + 5 + warmupBars);
+                    const fetchLimit = Math.min(1500, Math.ceil((xMax - fetchStartTime) / anchorMs) + 5);
                     const candles = await adapter.fetchHistoryTf(tf, fetchLimit, fetchStartTime);
                     // V49n-fix: abort if clearAnchorData was called during fetch.
                     //   The candles are from the OLD symbol — writing them would
@@ -17278,8 +17367,13 @@ class MultiTfDataManager {
                         break;
                     }
 
-                    // If no new bars were added, stop (avoid infinite loop)
-                    if (newBarsAdded === 0) {
+                    // If no new bars were added AND store range didn't extend,
+                    // stop (avoid infinite loop). V72: with recent-first
+                    //   fetching, a fetch can return 0 new bars if Binance
+                    //   returns the same candles we already have. But if
+                    //   store.firstX moved backwards, that's progress — keep
+                    //   going to fill more history.
+                    if (newBarsAdded === 0 && oldFirstX === store.firstX) {
                         if (__dbg) devLog('[anchor-TF] prefetch no new bars — stopping', { tf, iter });
                         break;
                     }
@@ -17308,15 +17402,19 @@ class MultiTfDataManager {
                         }
                     }
 
-                    // No gap found but doesn't cover target — need more data
-                    // FIX V49n-MTF-forward: if store.lastX < xMax, we need
-                    // to fetch FORWARD (toward chart's right edge), not backward.
-                    // This happens when chart TF > anchor TF (LTF anchor):
-                    // chart has 167 days of 4h bars, but anchor store only
-                    // has 1000 1h bars = 42 days. Need ~4000 anchor bars total.
+                    // No gap found but doesn't cover target — need more data.
+                    // V72: with recent-first fetching, the right edge (xMax)
+                    //   is covered first. The remaining gap is on the LEFT
+                    //   (history before store.firstX). Walk backwards.
+                    //   If the right edge somehow isn't covered (rare: LTF
+                    //   anchor with huge history), fetch forward from store.lastX.
                     if (!coversTarget) {
                         if (store.firstX > xMin) {
-                            // Need more history (left side)
+                            // Need more history (left side) — fetch backwards
+                            // from store.firstX. Binance returns candles
+                            // starting at startTime, so we set startTime to
+                            // store.firstX - 1500·anchorMs to get the next
+                            // batch of older candles.
                             fetchStartTime = Math.max(0, store.firstX - 1500 * anchorMs);
                             if (__dbg) devLog('[anchor-TF] prefetch need more history (left)', {
                                 tf, iter, storeFirstX: store.firstX, xMin,
@@ -17434,6 +17532,114 @@ class MultiTfDataManager {
         //   switch should give the new symbol a fresh start, not inherit the
         //   old symbol's exponential backoff level.
         this._errorCount.clear();
+    }
+
+    /**
+     * V73-symbol-cache: Save current anchor data to the symbol cache.
+     * Called BEFORE switching away from a symbol. Snapshots all stores'
+     * candle arrays + metadata so they can be restored instantly when
+     * switching back to this symbol.
+     */
+    saveToSymbolCache(symbol) {
+        if (!symbol) return;
+        const snapshot = new Map();
+        for (const [tf, store] of this._stores) {
+            if (store.size === 0) continue;
+            try {
+                // Deep-copy the typed arrays so mutations on the live store
+                //   don't affect the cached snapshot.
+                const close = new Float64Array(store._closeSeq.length);
+                const high  = new Float64Array(store._highSeq.length);
+                const low   = new Float64Array(store._lowSeq.length);
+                const open  = new Float64Array(store._openSeq.length);
+                const vol   = new Float64Array(store._volSeq.length);
+                const x     = new Float64Array(store._xSeq.length);
+                for (let i = 0; i < store._closeSeq.length; i++) {
+                    close[i] = store._closeSeq.read(i);
+                    high[i]  = store._highSeq.read(i);
+                    low[i]   = store._lowSeq.read(i);
+                    open[i]  = store._openSeq.read(i);
+                    vol[i]   = store._volSeq.read(i);
+                    x[i]     = store._xSeq.read(i);
+                }
+                snapshot.set(tf, {
+                    close, high, low, open, vol, x,
+                    firstX: store.firstX,
+                    lastX: store.lastX,
+                    size: store.size,
+                    state: store.state,
+                    lastFetchTs: store.lastFetchTs,
+                });
+            } catch (e) { /* per-store best-effort */ }
+        }
+        if (snapshot.size === 0) return;
+        // LRU eviction: if cache is full, delete the oldest entry.
+        // Map preserves insertion order, so the first key is the oldest.
+        if (this._symbolCache.size >= this._maxCachedSymbols) {
+            const oldest = this._symbolCache.keys().next().value;
+            this._symbolCache.delete(oldest);
+        }
+        // Delete + re-set to move this symbol to the end (most recently used)
+        this._symbolCache.delete(symbol);
+        this._symbolCache.set(symbol, snapshot);
+    }
+
+    /**
+     * V73-symbol-cache: Restore anchor data from the symbol cache.
+     * Called AFTER switching to a new symbol, BEFORE prefetching.
+     * If the symbol has cached data, restores it instantly and returns true.
+     * Returns false if no cache exists (caller should prefetch).
+     */
+    restoreFromSymbolCache(symbol) {
+        if (!symbol) return false;
+        const snapshot = this._symbolCache.get(symbol);
+        if (!snapshot || snapshot.size === 0) return false;
+        let restored = 0;
+        for (const [tf, store] of this._stores) {
+            const cached = snapshot.get(tf);
+            if (!cached) {
+                // This TF had no data when we cached — clear the live store too
+                try {
+                    while (store._closeSeq.length > 0) store._closeSeq.pop(false);
+                    while (store._highSeq.length  > 0) store._highSeq.pop(false);
+                    while (store._lowSeq.length   > 0) store._lowSeq.pop(false);
+                    while (store._openSeq.length  > 0) store._openSeq.pop(false);
+                    while (store._volSeq.length   > 0) store._volSeq.pop(false);
+                    while (store._xSeq.length     > 0) store._xSeq.pop(false);
+                    store.firstX = NaN; store.lastX = NaN;
+                    store.state = 'empty';
+                    store.lastFetchTs = 0;
+                } catch (e) { /* best-effort */ }
+                continue;
+            }
+            try {
+                // Clear existing data
+                while (store._closeSeq.length > 0) store._closeSeq.pop(false);
+                while (store._highSeq.length  > 0) store._highSeq.pop(false);
+                while (store._lowSeq.length   > 0) store._lowSeq.pop(false);
+                while (store._openSeq.length  > 0) store._openSeq.pop(false);
+                while (store._volSeq.length   > 0) store._volSeq.pop(false);
+                while (store._xSeq.length     > 0) store._xSeq.pop(false);
+                // Push cached candles back into the store
+                for (let i = 0; i < cached.size; i++) {
+                    store._closeSeq.push(cached.close[i], cached.x[i], false);
+                    store._highSeq.push(cached.high[i], cached.x[i], false);
+                    store._lowSeq.push(cached.low[i], cached.x[i], false);
+                    store._openSeq.push(cached.open[i], cached.x[i], false);
+                    store._volSeq.push(cached.vol[i], cached.x[i], false);
+                    store._xSeq.push(cached.x[i], cached.x[i], false);
+                }
+                store.firstX = cached.firstX;
+                store.lastX = cached.lastX;
+                store.state = cached.state || 'ready';
+                store.lastFetchTs = cached.lastFetchTs || Date.now();
+                restored++;
+            } catch (e) { /* per-store best-effort */ }
+        }
+        // Move this symbol to the end (most recently used) for LRU
+        this._symbolCache.delete(symbol);
+        this._symbolCache.set(symbol, snapshot);
+        return restored > 0;
     }
 }
 
@@ -17711,6 +17917,47 @@ class IndicatorManager {
                 ind._anchorUnavailableLogged = false;
             }
         }
+    }
+
+    /**
+     * V73-symbol-cache: Save current anchor data to symbol cache.
+     * Wrapper for MultiTfDataManager.saveToSymbolCache.
+     */
+    saveAnchorToSymbolCache(symbol) {
+        if (this.multiTf && typeof this.multiTf.saveToSymbolCache === 'function') {
+            this.multiTf.saveToSymbolCache(symbol);
+        }
+    }
+
+    /**
+     * V73-symbol-cache: Restore anchor data from symbol cache.
+     * Wrapper for MultiTfDataManager.restoreFromSymbolCache.
+     * Returns true if data was restored, false otherwise.
+     */
+    restoreAnchorFromSymbolCache(symbol) {
+        if (this.multiTf && typeof this.multiTf.restoreFromSymbolCache === 'function') {
+            const restored = this.multiTf.restoreFromSymbolCache(symbol);
+            if (restored) {
+                // Clear caches so _anchorTfGet rebuilds from the restored store
+                this._anchorCandlesCache = null;
+                this._anchorCandlesCacheKey = null;
+                // Invalidate compute cache + per-indicator caches
+                this.invalidateCache();
+                for (const ind of this._indicators.values()) {
+                    if (ind._computed) ind._computed = null;
+                    ind._computeVersion = -1;
+                    ind._computeMutation = null;
+                    ind._computeAnchorVer = null;
+                    ind._anchorArraysCache = null;
+                    ind._anchorArraysCacheKey = null;
+                    ind._anchorProxyCache = null;
+                    ind._anchorProxyCacheKey = null;
+                    ind._anchorSourceCache?.clear?.();
+                }
+            }
+            return restored;
+        }
+        return false;
     }
 
     /** Number of active indicators. */
@@ -18024,6 +18271,11 @@ class IndicatorManager {
 
     /** Render all indicators. Called from MainRenderer._indicators(). */
     renderAll(ctx, layout, xScale, yScales, xData, indicatorResults, visibleRange) {
+        // V74-hide-all: global toggle to hide all indicator lines.
+        //   Toggled by the eye button drawn on the canvas. When true,
+        //   skip rendering all indicators (but keep computing them so
+        //   toggling back is instant).
+        if (this._hideAllIndicators === true) return;
         for (const [id, ind] of this._indicators) {
             if (!ind.visible) continue;
             const computed = indicatorResults?.get(id);
@@ -19363,7 +19615,22 @@ class IndicatorBrick extends IndicatorBase {
             //   is widening the window back to 2 * anchorIntervalMs and
             //   using `>` so the boundary bar is included.
             const _lastAnchorX = anchorX[anchorCount - 1];
-            const _ffEndX = _lastAnchorX + 2 * anchorIntervalMs;
+            // V71-right-edge-fix: _ffEndX must cover the CURRENT chart bar,
+            //   not just anchorX[last] + 2·intervalMs. If prefetch hasn't
+            //   reached the current time (e.g. store.lastX < chartLast),
+            //   the old formula would cut off the right edge of the chart.
+            //   Now: _ffEndX = max(anchorX[last] + 2·intervalMs, chartLast + intervalMs)
+            //   so the line always extends through the current bar.
+            // V75-flat-line-fix: BUT only extend to chartLast if V62 (virtual
+            //   anchor) is active. If V62 doesn't fire (e.g. no forming bars
+            //   found, or lastFormingIdx < 0), Source.at(x) in asof mode
+            //   returns the SAME last value for all bars beyond anchorX[last]
+            //   → flat horizontal line. To avoid this, we compute _ffEndX
+            //   AFTER the V62 block: if V62 is active, extend to chartLast;
+            //   otherwise, stop at anchorX[last] + intervalMs (end of last
+            //   closed period) so the line terminates cleanly.
+            const _chartLastX = chartX[count - 1];
+            let _ffEndX = Math.max(_lastAnchorX + 2 * anchorIntervalMs, _chartLastX + anchorIntervalMs);
             // V64-close-time-shift: first valid x for the shifted Source is
             //   the closeTime of the FIRST anchor candle (openTime[0] + intervalMs).
             //   Bars before this have no closed anchor to look up → NaN.
@@ -19539,6 +19806,26 @@ class IndicatorBrick extends IndicatorBase {
                             this._lastVirtualAnchorPt = { x: x_end, v: EMA_virtual };
                         }
                     }
+                }
+            }
+
+            // V75-flat-line-fix: if V62 did NOT activate (no forming bars
+            //   found, or lastFormingIdx < 0), restrict _ffEndX to the end
+            //   of the last closed anchor period. This prevents Source.at(x)
+            //   in asof mode from returning the same last value for all bars
+            //   beyond the last anchor → flat horizontal line on the right.
+            //   The line will terminate cleanly at the last closed candle's
+            //   close time instead of extending flat to chartLast.
+            if (!isFinite(_v62FormingStart) || _v62FormingStart === Infinity) {
+                // V62 didn't fire — find last CLOSED anchor (skip forming)
+                const _now75 = Date.now();
+                let _lastClosedIdx75 = anchorCount - 1;
+                if (anchorX[_lastClosedIdx75] + anchorIntervalMs > _now75) {
+                    _lastClosedIdx75 = anchorCount - 2;
+                }
+                if (_lastClosedIdx75 >= 0) {
+                    // End of last closed period = closeTime of last closed candle
+                    _ffEndX = anchorX[_lastClosedIdx75] + anchorIntervalMs;
                 }
             }
 
@@ -22351,8 +22638,15 @@ function createOscillatorBrick(spec) {
         }
 
         _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+            // V75-skipDerived-fix: declare skipDerived (was missing → ReferenceError
+            //   when importing indicators that use the oscillator brick path).
+            //   Same logic as GeneratedMABrick: skip the Derived path when
+            //   sourceRef is set (chained indicator) or when source is not
+            //   'close' (Derived always uses closeSequence).
+            const skipDerived = !!this.sourceRef
+                || (this.inputs?.source && this.inputs.source !== 'close');
             // V49e: multi-source reactive path (MFI needs [high, low, close, volume])
-            if (spec.seriesJsMultiSpec && manager?._lastDataStore?.getHighSequence) {
+            if (spec.seriesJsMultiSpec && manager?._lastDataStore?.getHighSequence && !skipDerived) {
                 const ds = manager._lastDataStore;
                 const highSeq = ds.getHighSequence();
                 const lowSeq = ds.getLowSequence();
@@ -34309,6 +34603,23 @@ class FibonacciRetracementObject extends FibonacciBase {
             }
         }
         ctx.globalAlpha = 1.0;
+
+        // V78-fib-endpoints: draw endpoint handles when hovered/selected.
+        if (isHovered) {
+            const endR = 5;
+            ctx.fillStyle = r.lineColor;
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1.5;
+            for (const [px, py] of [[r.px1, r.py1], [r.px2, r.py2]]) {
+                if (isFinite(px) && isFinite(py)) {
+                    ctx.beginPath();
+                    ctx.arc(px, py, endR, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.stroke();
+                }
+            }
+        }
+
         ctx.restore();
     }
 
@@ -34330,6 +34641,26 @@ class FibonacciRetracementObject extends FibonacciBase {
             }
         }
         return minDist;
+    }
+
+    /**
+     * V78-fib-endpoints: Hit-test for endpoint handles (P1, P2).
+     *   Returns 'p1', 'p2', or null. Same pattern as FibonacciExpansionObject.
+     *   This enables dragging the fib's start/end points independently.
+     */
+    hitTestEndpoint(px, py, r) {
+        if (!r) return null;
+        const threshold = 12;
+        const candidates = [
+            { name: 'p1', x: r.px1, y: r.py1 },
+            { name: 'p2', x: r.px2, y: r.py2 },
+        ];
+        let best = null, bestDist = threshold;
+        for (const c of candidates) {
+            const d = Math.hypot(px - c.x, py - c.y);
+            if (d <= bestDist) { bestDist = d; best = c.name; }
+        }
+        return best;
     }
 
     toConfig() {
@@ -41865,11 +42196,20 @@ class TrendLineTool extends InteractionTool {
     }
 
     _updateDrag_fibRetracement(obj, dxData, yMapFn, api) {
-        if (this._dragMode === 'body' && this._dragStartData.x1 != null) {
-            obj.x1 = this._dragStartData.x1 + dxData;
-            obj.y1 = yMapFn(this._dragStartData.y1);
-            obj.x2 = this._dragStartData.x2 + dxData;
-            obj.y2 = yMapFn(this._dragStartData.y2);
+        const sd = this._dragStartData;
+        if (this._dragMode === 'body' && sd.x1 != null) {
+            obj.x1 = sd.x1 + dxData;
+            obj.y1 = yMapFn(sd.y1);
+            obj.x2 = sd.x2 + dxData;
+            obj.y2 = yMapFn(sd.y2);
+        } else if (this._dragMode === 'p1') {
+            // V78-fib-endpoints: drag just P1 (start point)
+            obj.x1 = sd.x1 + dxData;
+            obj.y1 = yMapFn(sd.y1);
+        } else if (this._dragMode === 'p2') {
+            // V78-fib-endpoints: drag just P2 (end point)
+            obj.x2 = sd.x2 + dxData;
+            obj.y2 = yMapFn(sd.y2);
         }
         api.dirty.set(DirtyFlags.OVERLAY);
         api.requestRender();
@@ -42039,7 +42379,7 @@ const OVERLAY_OBJECT_REGISTRY = [
     { Class: 'TrendLineObject',           hasEndpoint: true,  hasVertex: false, toolKey: '_trendLineTool' },
     { Class: 'PolygonObject',             hasEndpoint: false, hasVertex: true,  toolKey: '_trendLineTool' },
     { Class: 'ImageLabelObject',          hasEndpoint: false, hasVertex: false, toolKey: '_trendLineTool' },
-    { Class: 'FibonacciRetracementObject',hasEndpoint: false, hasVertex: false, toolKey: '_trendLineTool' },
+    { Class: 'FibonacciRetracementObject',hasEndpoint: true,  hasVertex: false, toolKey: '_trendLineTool' },
     { Class: 'FibonacciTrendObject',      hasEndpoint: false, hasVertex: false, toolKey: '_trendLineTool' },
     { Class: 'FibonacciExpansionObject',  hasEndpoint: true,  hasVertex: false, toolKey: '_trendLineTool' },
     { Class: 'ZoneObject',                hasEndpoint: true,  hasVertex: false, toolKey: '_trendLineTool' },
@@ -43242,6 +43582,18 @@ class PointerController {
 
         const [x, y]  = this._xy(e);
 
+        // V77-eye-button: check eye button hit-test via labelRenderer
+        //   (same pattern as expose buttons — works reliably on canvas).
+        const labelRenderer0 = this.api._ctx?.panelLabelRenderer;
+        console.log('[V77-eye] mousedown', { x, y, hasLR: !!labelRenderer0, hasHitTest: typeof labelRenderer0?.hitTestEyeButton });
+        if (typeof devLog === 'function') devLog('[V77-eye] mousedown', { x, y, hasLR: !!labelRenderer0, hasHitTest: typeof labelRenderer0?.hitTestEyeButton });
+        if (labelRenderer0 && typeof labelRenderer0.hitTestEyeButton === 'function') {
+            if (labelRenderer0.hitTestEyeButton(x, y)) {
+                labelRenderer0.toggleHideAllIndicators();
+                return;
+            }
+        }
+
         // V37: expose button hit-test — highest priority, before delete/label.
         const labelRenderer = this.api._ctx?.panelLabelRenderer;
         if (labelRenderer) {
@@ -43785,6 +44137,13 @@ class PointerController {
 
             // V37: expose button hit-test — same as mouse path.
             const lrExpose = this.api._ctx?.panelLabelRenderer;
+            // V77-eye-button: check eye button first (same pattern as expose)
+            if (lrExpose && typeof lrExpose.hitTestEyeButton === 'function') {
+                if (lrExpose.hitTestEyeButton(x, y)) {
+                    lrExpose.toggleHideAllIndicators();
+                    return;
+                }
+            }
             if (lrExpose) {
                 const exposeHit = lrExpose.hitTestExpose(x, y);
                 if (exposeHit) {
@@ -44513,6 +44872,7 @@ class DrawRecognizer extends GestureRecognizer {
             if (opts.hasEndpoint && typeof obj.hitTestEndpoint === 'function') {
                 const ep = obj.hitTestEndpoint(ctx.startX, ctx.startY, hit.resolved);
                 if (ep) {
+                    try { devLog('[V79] endpoint drag START', { ep, objType: obj.constructor?.name, hasHitTest: typeof obj.hitTestEndpoint }); } catch(_) {}
                     tool.startDrag(ep, { x: ctx.startX, y: ctx.startY }, obj);
                     this._dragActive = true;
                     this._dragTool = 'trendLine';
@@ -44756,6 +45116,44 @@ class DrawRecognizer extends GestureRecognizer {
             // SELECTION DRAG — delegate to appropriate tool
             const tool = this._getDragTool();
             if (tool) tool.updateDrag({ x: ctx.x, y: ctx.y }, this.api);
+            // V79b-endpoint-crosshair: when dragging an endpoint (p1/p2/p3),
+            //   show the crosshair at the ENDPOINT's current position (not
+            //   the finger/cursor position). This lets the user see exactly
+            //   where the endpoint is being moved to, even if the finger is
+            //   offset from the handle (common on touch where the finger
+            //   covers the handle).
+            const _isEndpoint = tool && (tool._dragMode === 'p1' || tool._dragMode === 'p2' || tool._dragMode === 'p3');
+            if (_isEndpoint) {
+                // Get the dragged object and its endpoint pixel position
+                const overlay = this.api.overlay;
+                const obj = overlay?.getObject?.(tool._selectedKey || tool.getSelectedKey?.());
+                if (obj) {
+                    const sc = this.api.scaleCache;
+                    if (sc?.valid) {
+                        const yS = sc.yScales[obj.panelId];
+                        if (yS) {
+                            // Determine which endpoint we're dragging and get its pixel pos
+                            let dataX = null, dataY = null;
+                            if (tool._dragMode === 'p1') {
+                                dataX = obj.x1; dataY = obj.y1;
+                            } else if (tool._dragMode === 'p2') {
+                                dataX = obj.x2; dataY = obj.y2;
+                            } else if (tool._dragMode === 'p3' && obj.x3 != null) {
+                                dataX = obj.x3; dataY = obj.y3;
+                            }
+                            if (isFinite(dataX) && isFinite(dataY)) {
+                                const px = sc.xScale.valToPix(dataX);
+                                const py = yS.valToPix(dataY);
+                                this.api.crosshair?.set?.(px, py);
+                                this.api.setInputLogicalPos?.(px, py);
+                                this.api.showInput?.();
+                            }
+                        }
+                    }
+                }
+                this.api.dirty.set(DirtyFlags.OVERLAY);
+                this.api.requestRender();
+            }
         }
     }
 
@@ -44800,8 +45198,13 @@ class DrawRecognizer extends GestureRecognizer {
             }
         } else if (this._dragActive) {
             const tool = this._getDragTool();
+            const wasEndpointDrag = tool && (tool._dragMode === 'p1' || tool._dragMode === 'p2' || tool._dragMode === 'p3');
             if (tool) tool.endDrag();
             devLog('[DrawRec.end] dragEnd tool=' + this._dragTool);
+            // V79-endpoint-crosshair: hide crosshair after endpoint drag ends
+            if (wasEndpointDrag) {
+                this.api.crosshair?.hide?.();
+            }
             this._dragActive = false;
             this._dragTool = null;
         }
@@ -46440,6 +46843,10 @@ class EngineRendering {
 
         // Stage 6: clear OVERLAY dirty flag
         this._overlayStage_clearDirty(vp, l, ls);
+
+        // V74-eye-button: REMOVED canvas button — replaced by a DOM button
+        //   in the toolbar (see ChartFactory._buildToolbar). The DOM button
+        //   is more reliable for click handling and aligns with other labels.
 
         return ls;
     }
@@ -49114,7 +49521,21 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
 
         // Begin data transition — dims chart, keeps old data visible.
         // endTransition() is called by _fetchAndStream() when loading completes.
-        if (this._active && this.chartApi) {
+        // V75-no-dim-on-cache: skip beginTransition if the chart data for the
+        //   new symbol+TF is already in DataCache. _fetchAndStream will load
+        //   from cache almost instantly and call endTransition, but the
+        //   brief dimming flicker is still visible. By skipping beginTransition
+        //   when cache has data, we avoid the flicker entirely.
+        let _skipTransition = false;
+        if (this._active && this.chartApi && this.dataCache && params.symbol) {
+            try {
+                const cached = await this.dataCache.get(this.sourceId, params.symbol, this.timeframe);
+                if (cached && cached.candles && cached.candles.length > 0) {
+                    _skipTransition = true;
+                }
+            } catch (_) { /* cache check failed — proceed with transition */ }
+        }
+        if (this._active && this.chartApi && !_skipTransition) {
             this.chartApi.beginTransition();
         }
 
@@ -54434,18 +54855,63 @@ class DataSourceOrchestrator {
                     }
                 } catch (_) { /* best-effort — switchAsset below will retry */ }
             } else if (param === 'symbol') {
-                // Symbol switch — only clear anchor data (no early prefetch).
-                // The late prefetch (after switchAsset) will fetch the new
-                // symbol's candles with the correct adapter.symbol.
+                // V73-symbol-cache: Symbol switch.
+                //   1. Save the OLD symbol's anchor data to the LRU cache.
+                //   2. Try to restore the NEW symbol's data from cache.
+                //   3. If restore succeeded, the indicator can render
+                //      immediately — no prefetch needed (unless coverage
+                //      check fails on next frame).
+                //   4. If restore failed (new symbol not cached), clear
+                //      anchor data so prefetch starts fresh.
                 try {
                     const engine = this.api?._ctx?.engine || window._chart?.engine;
                     const im = engine?.indicatorManager;
-                    if (im && typeof im.clearAnchorData === 'function') {
-                        im.clearAnchorData();
+                    if (im) {
+                        // Save old symbol's data BEFORE switching
+                        const oldSymbol = adapter.symbol;
+                        if (oldSymbol && typeof im.saveAnchorToSymbolCache === 'function') {
+                            im.saveAnchorToSymbolCache(oldSymbol);
+                        }
+                        // Try to restore new symbol's data
+                        const restored = typeof im.restoreAnchorFromSymbolCache === 'function'
+                            ? im.restoreAnchorFromSymbolCache(value)
+                            : false;
+                        if (!restored) {
+                            // New symbol not in cache — clear and prefetch fresh
+                            if (typeof im.clearAnchorData === 'function') {
+                                im.clearAnchorData();
+                            }
+                        } else {
+                            // Restored from cache — invalidate compute caches
+                            // so indicators re-compute against restored data.
+                            // restoreAnchorFromSymbolCache already did this,
+                            // but we also need to trigger a re-render.
+                            if (engine) {
+                                engine.dirty?.setAll?.();
+                                engine.requestRender?.();
+                            }
+                        }
                     }
                 } catch (_) { /* best-effort */ }
             }
             await adapter.switchAsset({ [param]: value });
+            // V71-speed: kick off anchor-TF prefetch IMMEDIATELY after
+            //   switchAsset, before autoFitY and requestRender. This gives
+            //   the fetch a ~50ms head start while the chart does its
+            //   layout work. The prefetch is async and non-blocking.
+            if (param === 'symbol') {
+                try {
+                    const engine = this.api?._ctx?.engine || window._chart?.engine;
+                    const im = engine?.indicatorManager;
+                    if (im && typeof im.prefetchAnchorTfs === 'function') {
+                        const ds = engine?.dataContext?.dataStore;
+                        const ad = this._getActiveAdapter();
+                        if (ds && ds.size > 0 && ad) {
+                            im.prefetchAnchorTfs(ad, ds).catch(() => {});
+                        }
+                    }
+                } catch (_) { /* best-effort */ }
+            }
             // V49n-swipe: when switching symbol, the Y range must re-fit to the
             //   new coin's price data. Different coins can have wildly
             //   different price ranges (BTC ~60000 vs DOGE ~0.10), so leaving
@@ -56535,7 +57001,28 @@ class PresetManager {
         // Capturing it lets the preset restore panel positions even when
         // the user has swapped them via swapPanels().
         const panelOrder = [...(layout._panelOrder || [])];
-        const panelRatios = { ...layout.panelRatios };
+        // V76-export-ratios: capture the ORIGINAL initialRatio from
+        //   config.panels when the current layout ratio is 0 (panel hidden).
+        //   Without this, exporting while a panel is hidden saves ratio=0,
+        //   and importing shows the panel with default height instead of
+        //   the user's custom height. We build a map of initialRatio from
+        //   config.panels, then for each panel use initialRatio when the
+        //   current ratio is 0.
+        const _initialRatioMap = {};
+        for (const p of (config.panels || [])) {
+            if (p.id && p.initialRatio != null) _initialRatioMap[p.id] = p.initialRatio;
+        }
+        const panelRatios = {};
+        for (const pId in layout.panelRatios) {
+            const cur = layout.panelRatios[pId];
+            // If current ratio is 0 (hidden) but we have an initialRatio > 0,
+            // save the initialRatio so import restores the correct height.
+            if ((!cur || cur <= 0) && _initialRatioMap[pId] > 0) {
+                panelRatios[pId] = _initialRatioMap[pId];
+            } else {
+                panelRatios[pId] = cur;
+            }
+        }
         const panelConfigs = {};
         for (const pId in layout.panelConfigs) {
             panelConfigs[pId] = { ...layout.panelConfigs[pId] };
@@ -56600,15 +57087,29 @@ class PresetManager {
             }
         }
         layout._panelOrder = ['main'];
+        // V76-import-panels: clear the hidden-panel-ratio stash so that
+        //   _syncPanelVisibilityForIndicator doesn't restore stale ratios
+        //   from a previous session when an indicator is added during import.
+        //   This was causing imported panels to have height 0.25 (the
+        //   default fallback) instead of the snapshot's saved ratio.
+        if (api._hiddenPanelRatios) {
+            api._hiddenPanelRatios = {};
+        }
 
         // 3. Recreate panels from snapshot — add them to config.panels +
         //    layout bookkeeping in the correct display order. We do this
         //    BEFORE adding indicators so the panels exist when addIndicator
         //    tries to place indicators on them.
         if (snapshot.panels) {
+            // V76-debug: log what we're about to create
+            try { devLog('[V76-import] snapshot.panels', { ids: snapshot.panels.map(p => p.id) }); } catch(_) {}
+            try { devLog('[V76-import] config.panels before', { ids: config.panels.map(p => p.id) }); } catch(_) {}
+            try { devLog('[V76-import] snapshot.panelRatios', snapshot.panelRatios); } catch(_) {}
+            try { devLog('[V76-import] snapshot.panelOrder', snapshot.panelOrder); } catch(_) {}
             for (const pCfg of snapshot.panels) {
                 if (pCfg.id === 'main') continue;  // main always exists
                 if (config.panels.find(p => p.id === pCfg.id)) continue;  // already exists
+                try { devLog('[V76-import] creating panel', { id: pCfg.id, initialRatio: pCfg.initialRatio }); } catch(_) {}
                 config.panels.push({ ...pCfg });
                 // Register in layout
                 if (!layout.panelRatios.hasOwnProperty(pCfg.id)) {
@@ -56631,7 +57132,13 @@ class PresetManager {
                 //   this threw "Cannot read properties of undefined (reading
                 //   '<panelId>')" when a preset was loaded before the
                 //   viewport had been fully initialized.
+                // V76-import-panels: also initialize vp.panels itself if
+                //   it's undefined (fresh page — viewport exists but
+                //   panels map hasn't been populated yet).
                 const vp = api.viewport;
+                if (vp && !vp.panels) {
+                    vp.panels = {};
+                }
                 if (vp && vp.panels && !vp.panels[pCfg.id]) {
                     vp.panels[pCfg.id] = { yMin: 0, yMax: 1 };
                     if (typeof vp.setPanelAutoFitY === 'function') {
@@ -56640,6 +57147,13 @@ class PresetManager {
                 }
             }
         }
+        // V76-import-panels: recalculate layout AFTER all panels are added
+        //   so panelRatios + _panelOrder are reflected in pixel positions.
+        //   Without this, panels exist in bookkeeping but have 0 height
+        //   (because recalculate was never called with the new panel count),
+        //   so addIndicator's "panel already exists" path skips the
+        //   recalculate that would have given them height.
+        layout.recalculate(layout.width, layout.height);
 
         // 4. Re-add indicators from snapshot. The panelId in each
         //    indicator cfg references the snapshot's panel ids, which we
@@ -56666,6 +57180,11 @@ class PresetManager {
                 }
             }
         }
+        try { devLog('[V76-import] after addIndicator', {
+            configPanels: config.panels.map(p => p.id),
+            panelRatios: { ...layout.panelRatios },
+            panelOrder: [...layout._panelOrder],
+        }); } catch(_) {}
 
         // 5. Restore panel display order from snapshot. This handles the
         //    case where the user swapped panels (e.g. RSI above MACD) —
@@ -56685,10 +57204,31 @@ class PresetManager {
 
         // 6. Restore panel ratios (including main) — this overrides the
         //    defaults addIndicator used when creating panels.
+        // V76-import-panels: if snapshot.panelRatios has a panel with ratio=0
+        //   (was hidden when snapshot was captured), but the panel exists in
+        //   snapshot.panels with initialRatio > 0, use the initialRatio
+        //   instead. This handles the case where a preset was exported while
+        //   a panel was temporarily hidden, but should be visible on import.
         if (snapshot.panelRatios) {
+            // Build a map of initialRatio from snapshot.panels for fallback
+            const initialRatios = {};
+            if (snapshot.panels) {
+                for (const pCfg of snapshot.panels) {
+                    if (pCfg.id && pCfg.initialRatio != null) {
+                        initialRatios[pCfg.id] = pCfg.initialRatio;
+                    }
+                }
+            }
             for (const pId in snapshot.panelRatios) {
                 if (layout.panelRatios.hasOwnProperty(pId)) {
-                    layout.panelRatios[pId] = snapshot.panelRatios[pId];
+                    let r = snapshot.panelRatios[pId];
+                    // If snapshot ratio is 0 but panel has initialRatio > 0,
+                    // use initialRatio (panel was hidden at export time but
+                    // should be visible on import).
+                    if ((!r || r <= 0) && initialRatios[pId] > 0) {
+                        r = initialRatios[pId];
+                    }
+                    layout.panelRatios[pId] = r;
                 }
             }
         }
@@ -56713,8 +57253,70 @@ class PresetManager {
         // 8. Recalculate + render. The layout will use the restored order +
         //    ratios + configs to position panels exactly as they were when
         //    the snapshot was captured.
-        layout.recalculate(layout.width, layout.height);
+        // V76-import-panels: ensure layout has valid dimensions before
+        //   recalculate. On a fresh page, layout.width/height might be 0
+        //   if the canvas hasn't been sized yet. Fall back to canvas size.
+        const _cw = layout.width || api._ctx?.canvasWrapper?.clientWidth || 0;
+        const _ch = layout.height || api._ctx?.canvasWrapper?.clientHeight || 0;
+        if (_cw > 0 && _ch > 0) {
+            layout.recalculate(_cw, _ch);
+        } else {
+            layout.recalculate(layout.width, layout.height);
+        }
+        // V76-import-panels: normalize panel ratios so they sum to 1.0.
+        //   If main=1 and other panels > 0, the sum > 1 and panels would
+        //   overflow. Scale all ratios proportionally.
+        //   V76b: if main ratio >= 0.9 (was full-screen because indicators
+        //   were hidden at export time), reset it to a reasonable default
+        //   (0.5) so the imported panels get visible height. Otherwise
+        //   normalization gives main ~0.57 and each small panel ~0.14 —
+        //   too small to be useful.
+        if (layout.panelRatios['main'] >= 0.9) {
+            const _otherCount = Object.keys(layout.panelRatios)
+                .filter(pId => pId !== 'main' && layout.panelRatios[pId] > 0).length;
+            if (_otherCount > 0) {
+                // Give main 50%, split the rest equally among other panels
+                layout.panelRatios['main'] = 0.5;
+                const _eachOther = 0.5 / _otherCount;
+                for (const pId in layout.panelRatios) {
+                    if (pId !== 'main' && layout.panelRatios[pId] > 0) {
+                        layout.panelRatios[pId] = _eachOther;
+                    }
+                }
+            }
+        }
+        const _ratioSum = Object.values(layout.panelRatios).reduce((s, r) => s + Math.max(0, r), 0);
+        if (_ratioSum > 1.01) {
+            const _scale = 1 / _ratioSum;
+            for (const pId in layout.panelRatios) {
+                layout.panelRatios[pId] = layout.panelRatios[pId] * _scale;
+            }
+        }
+        layout.recalculate(_cw > 0 ? _cw : layout.width, _ch > 0 ? _ch : layout.height);
+        // V76-import-panels: force auto-fit on ALL panels so the first
+        //   render computes correct Y ranges. Without this, panels created
+        //   during import may have stale viewport ranges [0, 1] and the
+        //   indicator line is drawn off-screen.
+        const vp = api.viewport;
+        if (vp && typeof vp.setAutoFitY === 'function') {
+            vp.setAutoFitY(true);
+        }
+        if (vp && vp.panels) {
+            for (const pId in vp.panels) {
+                if (typeof vp.setPanelAutoFitY === 'function') {
+                    vp.setPanelAutoFitY(pId, true);
+                }
+            }
+        }
         api.markAllDirtyAndRender();
+        try { devLog('[V76-import] FINAL state', {
+            configPanels: config.panels.map(p => p.id),
+            panelRatios: { ...layout.panelRatios },
+            panelOrder: [...layout._panelOrder],
+            layoutWidth: layout.width,
+            layoutHeight: layout.height,
+            vpPanels: api.viewport?.panels ? Object.keys(api.viewport.panels) : [],
+        }); } catch(_) {}
     }
 
     /** Clean up */
@@ -57271,6 +57873,9 @@ class ChartFactory {
         _addMenuBtn(['btn-populate-4h', 'Populate 4H (2Y)']);
         _addMenuBtn(['btn-cache-stats', 'Show Cache Stats']);
         _addMenuBtn(['btn-cache-clear', 'Clear Cache']);
+        _addMenuSep();
+        // V77-export: moved Export chart data button from toolbar to settings
+        _addMenuBtn(['btn-export', '📋 Export Chart Data']);
 
         // V50: Persistent progress block — visible whenever Settings dropdown
         //   is open, reflects current (or last) populate state. Survives
@@ -57356,14 +57961,6 @@ class ChartFactory {
 
         settingsDropdown.appendChild(settingsMenu);
         toolbarInner.appendChild(settingsDropdown);
-
-        // V14-export: Export button — opens modal to export chart data as text.
-        //   Sits immediately to the right of the Settings dropdown. Reuses
-        //   the standard toolbar button look (transparent bg, hover highlight).
-        const exportBtn = _mkBtn(['btn-export', '📋', {}]);
-        exportBtn.type = 'button';
-        exportBtn.title = 'Export chart data';
-        toolbarInner.appendChild(exportBtn);
 
         // V55-stats: Statistics button — opens modal with comprehensive
         //   statistical analysis of the visible range.
