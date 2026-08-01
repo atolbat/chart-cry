@@ -19454,6 +19454,13 @@ class IndicatorBrick extends IndicatorBase {
                             lastNCloses.push(anchorClose[k]?.toFixed(2));
                         }
                         const manualSMA = lastNCloses.reduce((s,v) => s + parseFloat(v), 0) / lastNCloses.length;
+                        const _f_dbg = lastFormingIdx >= 0
+                            ? Math.max(0, Math.min(1, (chartX[lastFormingIdx] - formingStart) / anchorIntervalMs))
+                            : 0;
+                        const _emaForming_dbg = anchorData[anchorCount-1];
+                        const _emaVirtual_dbg = isFinite(_emaForming_dbg)
+                            ? EMA_last_closed + _f_dbg * (_emaForming_dbg - EMA_last_closed)
+                            : NaN;
                         devLog('[V62] debug', {
                             indId: this.id,
                             indType: this.constructor?.META?.type,
@@ -19465,7 +19472,9 @@ class IndicatorBrick extends IndicatorBase {
                             lastClosedIdx,
                             lastClosedOpenTime: new Date(anchorX[lastClosedIdx]).toISOString(),
                             EMA_last_closed,
-                            EMA_forming: anchorData[anchorCount-1],
+                            EMA_forming: _emaForming_dbg,
+                            EMA_virtual_timeWeighted: _emaVirtual_dbg,
+                            timeFraction_f: _f_dbg.toFixed(3),
                             manualSMA: manualSMA.toFixed(2),
                             lastNCloses,
                             formingStart: new Date(formingStart).toISOString(),
@@ -19483,9 +19492,28 @@ class IndicatorBrick extends IndicatorBase {
                         // V65: virtual dot Y = forming candle's indicator
                         //   value (already computed by the indicator with
                         //   today's close).
-                        const EMA_virtual = anchorData[anchorCount - 1];
-                        if (isFinite(EMA_virtual)) {
+                        const EMA_forming = anchorData[anchorCount - 1];
+                        if (isFinite(EMA_forming)) {
                             const x_end = chartX[lastFormingIdx];
+                            // V70-time-weighted-virtual: scale the virtual dot's
+                            //   Y by the fraction of the forming period that has
+                            //   elapsed. At f=0 (start of day), virtual_Y =
+                            //   EMA_last_closed (no movement yet). At f=1 (end of
+                            //   day), virtual_Y = EMA_forming (full day's effect).
+                            //   In between, linearly interpolate. This prevents
+                            //   the line from "jumping" to the final EMA value
+                            //   at the start of the day when only a fraction of
+                            //   the day's price action has occurred.
+                            //   Rationale: EMA[today] = α·close + (1-α)·EMA[yest]
+                            //   uses the CURRENT price as if the day closed now.
+                            //   But the day isn't closed — only f of it has
+                            //   elapsed. The "expected final EMA" given current
+                            //   price is EMA_forming, but the "current effective
+                            //   EMA" should be weighted by how much of the day
+                            //   has actually passed.
+                            const f_raw = (x_end - formingStart) / anchorIntervalMs;
+                            const f = Math.max(0, Math.min(1, f_raw));  // clamp [0,1]
+                            const EMA_virtual = EMA_last_closed + f * (EMA_forming - EMA_last_closed);
                             _v62FormingStart = formingStart;
                             _v62FormingEnd = x_end;
                             _v62EMAstart = EMA_last_closed;
