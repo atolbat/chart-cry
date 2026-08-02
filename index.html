@@ -11679,7 +11679,7 @@ class PanelLabelRenderer {
         //   main panel, regardless of label alignment. Clicking toggles
         //   IndicatorManager._hideAllIndicators.
         if (pId === 'main') {
-            const eyeSz = 18;  // V77b: reduced 10% from 20px
+            const eyeSz = 15;  // V80: smaller button
             const eyeMargin = 6;
             // Position at the right edge of the plot area, before Y-axis column
             const eyeX = layout.plotRight - eyeSz - eyeMargin;
@@ -17056,7 +17056,7 @@ class MultiTfDataManager {
         //   switches instant on the second BTC visit.
         //   Structure: Map<symbol, Map<tf, {close, high, low, open, vol, x, firstX, lastX, size}>>
         this._symbolCache = new Map();
-        this._maxCachedSymbols = 8;  // LRU cap — evict oldest beyond this
+        this._maxCachedSymbols = 30;  // V89: increased from 8 to 30
     }
 
     setOnTfReady(fn) { this._onTfReady = fn; }
@@ -17174,11 +17174,27 @@ class MultiTfDataManager {
         //   'no-data' (because a follow-up prefetch returned empty) would
         //   re-trigger prefetch every frame instead of skipping. State is
         //   now only used for backoff decisions, not for "do we have data".
-        if (store.size > 0 && (Date.now() - store.lastFetchTs) < this._ttlMs) {
-            if (store.covers(xMin, xMax)) {
+        // V86-ttl-fix: skip prefetch if store covers the target range,
+        //   regardless of TTL. TTL was causing unnecessary re-fetches when
+        //   the user panned around for >5 min and came back — even though
+        //   the data was still valid. Now: TTL only matters for fetching
+        //   NEW candles (e.g. the latest forming bar); if the store already
+        //   covers [xMin, xMax], we skip. The lazy-prefetch loop will catch
+        //   up on the latest bar via live updates.
+        // V87-history-start: also skip if we've reached the beginning of
+        //   available history (store._historyStart is set). For coins listed
+        //   after xMin (e.g. SOL listed 2025 but chart starts 2017), the
+        //   store will never cover [xMin, xMax] on the left side. But if
+        //   we've already tried fetching backward and got empty, there's no
+        //   more history — skip to avoid infinite re-fetch.
+        if (store.size > 0) {
+            const _coversRight = store.lastX >= xMax - anchorMs;
+            const _coversLeft = store.firstX <= xMin + anchorMs || store._historyStart != null;
+            if (_coversLeft && _coversRight) {
                 if (__dbg && !this._prefetchSkipLogged) {
                     devLog('[anchor-TF] prefetch skip — full range covered', {
                         tf, xMin, xMax, storeFirstX: store.firstX, storeLastX: store.lastX,
+                        historyStart: store._historyStart,
                     });
                     this._prefetchSkipLogged = true;
                     setTimeout(() => { this._prefetchSkipLogged = false; }, 3000);
@@ -17257,7 +17273,15 @@ class MultiTfDataManager {
                 //   (recent history), then walks backwards. Each iteration
                 //   extends further back. The store's mergeHistory handles
                 //   out-of-order insertion correctly.
-                let fetchStartTime = Math.max(0, xMax - limit * anchorMs);
+                // V83-recent-fix: start from the END (most recent) and walk
+                //   backwards. Binance returns max 1000 candles per request,
+                //   starting from startTime FORWARD. So to get the most
+                //   recent 1000 candles, we set startTime = xMax - 1000*anchorMs.
+                //   Then walk backwards: store.firstX - 1000*anchorMs, etc.
+                //   Previous V72 used `limit` (up to 1500) but Binance caps
+                //   at 1000, so the first fetch returned candles up to
+                //   ~2025 instead of 2026 → right chunk missing.
+                let fetchStartTime = Math.max(0, xMax - 1000 * anchorMs);
                 // V72: 8 iterations max. Weekly chart with 8 years of history
                 //   needs ~7 fetches of 1000 candles to cover 2017→2026.
                 //   Each fetch is ~200-400ms, so worst case ~3s total. But
@@ -17268,7 +17292,9 @@ class MultiTfDataManager {
 
                 for (let iter = 0; iter < maxIterations; iter++) {
                     const fetchLimit = Math.min(1500, Math.ceil((xMax - fetchStartTime) / anchorMs) + 5);
+                    if (__dbg) devLog('[V86-prefetch] fetch attempt', { tf, iter, fetchStartTime: new Date(fetchStartTime).toISOString(), fetchLimit, xMax: new Date(xMax).toISOString() });
                     const candles = await adapter.fetchHistoryTf(tf, fetchLimit, fetchStartTime);
+                    if (__dbg) devLog('[V86-prefetch] fetch result', { tf, iter, candlesLen: candles?.length, firstCx: candles?.[0]?._x, lastCx: candles?.[candles?.length-1]?._x });
                     // V49n-fix: abort if clearAnchorData was called during fetch.
                     //   The candles are from the OLD symbol — writing them would
                     //   make the indicator show stale data.
@@ -17325,6 +17351,14 @@ class MultiTfDataManager {
                                 tf, storeSize: store.size,
                                 storeFirstX: store.firstX, storeLastX: store.lastX,
                             });
+                            // V87-history-start: mark that we've reached the
+                            //   beginning of available history. This prevents
+                            //   coversTarget from failing forever on coins
+                            //   listed after xMin (e.g. SOL listed 2025 but
+                            //   chart xMin = 2017). Without this, prefetch
+                            //   re-runs every frame trying to fill history
+                            //   that doesn't exist.
+                            store._historyStart = store.firstX;
                             // Light retry backoff so we don't immediately
                             // re-query the same empty range, but DON'T mark
                             // no-data (state stays 'ready').
@@ -17523,6 +17557,7 @@ class MultiTfDataManager {
                 store.firstX = NaN; store.lastX = NaN;
                 store.state = 'empty';
                 store.lastFetchTs = 0;  // force re-fetch (bypass TTL)
+                store._historyStart = null;  // V87: reset history-start marker
             } catch (e) { /* per-store best-effort */ }
         }
         // Clear inflight promises so the next prefetch starts fresh
@@ -17568,6 +17603,7 @@ class MultiTfDataManager {
                     lastX: store.lastX,
                     size: store.size,
                     state: store.state,
+                    _historyStart: store._historyStart || null,  // V87: save
                     lastFetchTs: store.lastFetchTs,
                 });
             } catch (e) { /* per-store best-effort */ }
@@ -17594,6 +17630,13 @@ class MultiTfDataManager {
         if (!symbol) return false;
         const snapshot = this._symbolCache.get(symbol);
         if (!snapshot || snapshot.size === 0) return false;
+        // V84-cache-race: increment generation so any in-flight prefetch
+        //   from the OLD symbol aborts before writing stale data to the
+        //   store. Without this, a prefetch started for BTC could complete
+        //   AFTER we restored ETH's cached data → BTC candles overwrite
+        //   ETH candles → wrong lines on chart.
+        this._generation = (this._generation || 0) + 1;
+        this._inflight.clear();
         let restored = 0;
         for (const [tf, store] of this._stores) {
             const cached = snapshot.get(tf);
@@ -17609,6 +17652,7 @@ class MultiTfDataManager {
                     store.firstX = NaN; store.lastX = NaN;
                     store.state = 'empty';
                     store.lastFetchTs = 0;
+                    store._historyStart = null;  // V87: reset
                 } catch (e) { /* best-effort */ }
                 continue;
             }
@@ -17632,6 +17676,7 @@ class MultiTfDataManager {
                 store.firstX = cached.firstX;
                 store.lastX = cached.lastX;
                 store.state = cached.state || 'ready';
+                store._historyStart = cached._historyStart || null;  // V87: restore
                 store.lastFetchTs = cached.lastFetchTs || Date.now();
                 restored++;
             } catch (e) { /* per-store best-effort */ }
@@ -18271,16 +18316,16 @@ class IndicatorManager {
 
     /** Render all indicators. Called from MainRenderer._indicators(). */
     renderAll(ctx, layout, xScale, yScales, xData, indicatorResults, visibleRange) {
-        // V74-hide-all: global toggle to hide all indicator lines.
-        //   Toggled by the eye button drawn on the canvas. When true,
-        //   skip rendering all indicators (but keep computing them so
-        //   toggling back is instant).
-        if (this._hideAllIndicators === true) return;
+        // V74-hide-all: global toggle to hide indicator lines on the MAIN
+        //   panel only. Indicators on separate panels (RSI, MACD, etc.)
+        //   remain visible. Toggled by the eye button on the canvas.
         for (const [id, ind] of this._indicators) {
             if (!ind.visible) continue;
             const computed = indicatorResults?.get(id);
             if (!computed) continue;
             const panelId = ind.panelId || 'main';
+            // V80: only hide indicators on the main panel
+            if (this._hideAllIndicators === true && panelId === 'main') continue;
             // V37: for 'separate' indicators, use overlay axis Y-scale if available.
             // This gives RSI/MACD their own scale (0-100) without a separate panel.
             let yS = yScales[panelId];
@@ -21619,7 +21664,10 @@ function createMABrick(spec) {
                 const paramKey = spec.type + ':multi:' + n;
                 // V49m: invalidate on data version change (ticker/timeframe switch)
                 const dataVersion = ds._version || 0;
-                if (this._derivedSeq && this._derivedDataVersion !== dataVersion) {
+                // V81-derived-fix: also invalidate if derived length doesn't
+                //   match parent length (catches race during prependPoints).
+                const _parentLen = closeSeq.length;
+                if (this._derivedSeq && (this._derivedDataVersion !== dataVersion || this._derivedSeq.length !== _parentLen)) {
                     if (this._derivedSeq.dispose) this._derivedSeq.dispose();
                     this._derivedSeq = null;
                 }
@@ -21659,7 +21707,15 @@ function createMABrick(spec) {
                 //   Recreating the Derived is O(N) but only happens on data
                 //   version change (lazy-load, symbol switch), not every frame.
                 const dataVersion = ds._version || 0;
-                if (this._derivedSeq && this._derivedDataVersion !== dataVersion) {
+                // V81-derived-fix: also invalidate if derived length doesn't
+                //   match parent length. During prependPoints, clear() bumps
+                //   _version, and compute() may run between clear() and the
+                //   re-push completing. The Derived is created with an empty
+                //   parent → _densestN=0 → no values. Then push completes but
+                //   Derived isn't recreated (same _version). Checking length
+                //   mismatch catches this case and forces recreation.
+                const _parentLen = closeSeq.length;
+                if (this._derivedSeq && (this._derivedDataVersion !== dataVersion || this._derivedSeq.length !== _parentLen)) {
                     if (this._derivedSeq.dispose) this._derivedSeq.dispose();
                     this._derivedSeq = null;
                 }
@@ -21677,11 +21733,29 @@ function createMABrick(spec) {
                 // Read from derived Sequence (already up-to-date via reactive push)
                 if (this._derivedSeq && this._derivedSeq.length >= count) {
                     const line = new Float64Array(count);
+                    let nanCount = 0;
                     for (let i = 0; i < count; i++) {
                         line[i] = this._derivedSeq.read(i);
+                        if (!isFinite(line[i])) nanCount++;
+                    }
+                    // V81-debug: log when derived has significant NaN gaps
+                    if (nanCount > count * 0.05 && (typeof isDevMode === 'function') && isDevMode() && !this._derivedGapLogged) {
+                        devLog('[V81-derived-gap] ' + spec.type + ' has NaN gaps', {
+                            indId: this.id, count, derivedLen: this._derivedSeq.length,
+                            nanCount, nanPct: (nanCount / count * 100).toFixed(1) + '%',
+                            dataVersion,
+                        });
+                        this._derivedGapLogged = true;
+                        setTimeout(() => { this._derivedGapLogged = false; }, 5000);
                     }
                     this._computed = { line, count, visibleRange };
                     return this._computed;
+                } else if ((typeof isDevMode === 'function') && isDevMode() && !this._derivedShortLogged) {
+                    devLog('[V81-derived-short] ' + spec.type + ' derived too short, falling back to maFn', {
+                        indId: this.id, count, derivedLen: this._derivedSeq?.length, dataVersion,
+                    });
+                    this._derivedShortLogged = true;
+                    setTimeout(() => { this._derivedShortLogged = false; }, 5000);
                 }
             }
 
@@ -22655,7 +22729,10 @@ function createOscillatorBrick(spec) {
                 const paramKey = spec.type + ':multi:' + JSON.stringify(this.params);
                 // V49m: invalidate on data version change
                 const dataVersion = ds._version || 0;
-                if (this._derivedSeq && this._derivedDataVersion !== dataVersion) {
+                // V81-derived-fix: also invalidate if derived length doesn't
+                //   match parent length (catches race during prependPoints).
+                const _parentLen = closeSeq.length;
+                if (this._derivedSeq && (this._derivedDataVersion !== dataVersion || this._derivedSeq.length !== _parentLen)) {
                     if (this._derivedSeq.dispose) this._derivedSeq.dispose();
                     this._derivedSeq = null;
                 }
@@ -22685,7 +22762,10 @@ function createOscillatorBrick(spec) {
                 const paramKey = spec.type + ':' + JSON.stringify(this.params);
                 // V49m: invalidate on data version change
                 const dataVersion = ds._version || 0;
-                if (this._derivedSeq && this._derivedDataVersion !== dataVersion) {
+                // V81-derived-fix: also invalidate if derived length doesn't
+                //   match parent length (catches race during prependPoints).
+                const _parentLen = closeSeq.length;
+                if (this._derivedSeq && (this._derivedDataVersion !== dataVersion || this._derivedSeq.length !== _parentLen)) {
                     if (this._derivedSeq.dispose) this._derivedSeq.dispose();
                     this._derivedSeq = null;
                 }
@@ -51780,7 +51860,10 @@ class RatioAdapter extends DataSourceAdapter {
     _buildKlineUrl(symbol, limit, startTime, endTime, perp = false) {
         const base = perp ? 'https://fapi.binance.com' : this.restBase;
         const path = perp ? '/fapi/v1/klines' : '/api/v3/klines';
-        let url = `${base}${path}?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(this.timeframe)}&limit=${limit}`;
+        // V85-ratio-3d: use nativeTf so non-native TFs (3d, 2w) fetch the
+        //   sub-TF from Binance, then aggregate client-side in _transformKlines.
+        const { nativeTf } = this._nativeTfFor(this.timeframe);
+        let url = `${base}${path}?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(nativeTf)}&limit=${limit}`;
         if (startTime) url += `&startTime=${Math.round(startTime)}`;
         if (endTime) url += `&endTime=${Math.round(endTime)}`;
         return url;
@@ -51860,7 +51943,7 @@ class RatioAdapter extends DataSourceAdapter {
 
     /** Transform Binance kline array → internal candle format. */
     _transformKlines(klines) {
-        return klines.map(k => ({
+        const raw = klines.map(k => ({
             _x: k[0],
             open:  parseFloat(k[1]),
             high:  parseFloat(k[2]),
@@ -51868,6 +51951,62 @@ class RatioAdapter extends DataSourceAdapter {
             close: parseFloat(k[4]),
             vol:   parseFloat(k[5]),
         }));
+        // V85-ratio-3d: aggregate non-native timeframes (3d, 2w) the same
+        //   way BinanceAdapter does. Without this, '3d' is passed directly
+        //   to Binance API which doesn't support it → error → fallback to
+        //   USDT instead of ratio.
+        const { factor, nativeTf } = this._nativeTfFor(this.timeframe);
+        if (factor > 1) {
+            // V88-ratio-align: align aggregated _x to native-TF period
+            //   boundaries so numerator and denominator candles have
+            //   matching _x values. Without alignment, BTC (listed 2017-08-17)
+            //   and ETH (listed 2017-08-08) would start 3d groups on different
+            //   days → _x mismatch → _computeRatio returns empty → fallback
+            //   to USDT.
+            const nativeMs = tfToMs(nativeTf);
+            const groupMs = nativeMs * factor;
+            // Align each candle's _x to the start of its group period.
+            // Epoch (1970-01-01) is the alignment origin for all TFs.
+            for (const c of raw) {
+                const groupStart = Math.floor(c._x / groupMs) * groupMs;
+                c._x = groupStart;
+            }
+            // Now group by aligned _x and aggregate.
+            const groups = new Map();
+            for (const c of raw) {
+                if (!groups.has(c._x)) groups.set(c._x, []);
+                groups.get(c._x).push(c);
+            }
+            const out = [];
+            for (const [x, group] of groups) {
+                const first = group[0];
+                const last  = group[group.length - 1];
+                let high = -Infinity, low = Infinity, vol = 0;
+                for (const c of group) {
+                    if (isFinite(c.high) && c.high > high) high = c.high;
+                    if (isFinite(c.low)  && c.low  < low)  low  = c.low;
+                    if (isFinite(c.vol)) vol += c.vol;
+                }
+                out.push({
+                    _x: x,
+                    open: first.open,
+                    high: isFinite(high) ? high : last.close,
+                    low:  isFinite(low)  ? low  : last.close,
+                    close: last.close,
+                    vol: vol,
+                });
+            }
+            return out;
+        }
+        return raw;
+    }
+
+    /** V85-ratio-3d: resolve non-native timeframes to native sub-TF.
+     *   Same mapping as BinanceAdapter: 3d→1d(×3), 2w→1w(×2). */
+    _nativeTfFor(tf) {
+        if (tf === '3d') return { nativeTf: '1d', factor: 3 };
+        if (tf === '2w') return { nativeTf: '1w', factor: 2 };
+        return { nativeTf: tf, factor: 1 };
     }
 
     /** Compute ratio candles from numerator + denominator arrays. */
@@ -51971,12 +52110,18 @@ class RatioAdapter extends DataSourceAdapter {
             // the transition window.
 
             this._markRequest();
+            // V85-ratio-3d: when using a non-native TF (3d, 2w), we fetch
+            //   the native sub-TF and aggregate. Binance caps at 1000 per
+            //   request, so for 3d we get 1000 1d candles → ~333 3d candles
+            //   after aggregation. That's enough for most charts.
+            const { factor: _aggFactor } = this._nativeTfFor(this.timeframe);
+            const effFetchLimit = Math.min(1000, this.fetchLimit * _aggFactor);
             // V52-perp-ratio: fetch both symbols in parallel using the
             //   spot→futures fallback. Previously this hit spot-only URLs,
             //   which 404'd for perp-only numerators (1000PEPEUSDT etc.).
             const [numRes, denRes] = await Promise.all([
-                this._fetchKlinesWithFallback(this.numerator, this.fetchLimit),
-                this._fetchKlinesWithFallback(this.denominator, this.fetchLimit),
+                this._fetchKlinesWithFallback(this.numerator, effFetchLimit),
+                this._fetchKlinesWithFallback(this.denominator, effFetchLimit),
             ]);
             if (isStale()) return;
             const numCandles = numRes.candles;
@@ -54855,50 +55000,44 @@ class DataSourceOrchestrator {
                     }
                 } catch (_) { /* best-effort — switchAsset below will retry */ }
             } else if (param === 'symbol') {
-                // V73-symbol-cache: Symbol switch.
-                //   1. Save the OLD symbol's anchor data to the LRU cache.
-                //   2. Try to restore the NEW symbol's data from cache.
-                //   3. If restore succeeded, the indicator can render
-                //      immediately — no prefetch needed (unless coverage
-                //      check fails on next frame).
-                //   4. If restore failed (new symbol not cached), clear
-                //      anchor data so prefetch starts fresh.
+                // V83-cache-restore: Save old symbol's anchor data, then
+                //   set adapter.symbol to the NEW value BEFORE switchAsset
+                //   so restore + prefetch use the correct symbol. switchAsset
+                //   will still load chart data, but anchor data is restored
+                //   from cache instantly (no delay).
                 try {
                     const engine = this.api?._ctx?.engine || window._chart?.engine;
                     const im = engine?.indicatorManager;
                     if (im) {
-                        // Save old symbol's data BEFORE switching
                         const oldSymbol = adapter.symbol;
                         if (oldSymbol && typeof im.saveAnchorToSymbolCache === 'function') {
                             im.saveAnchorToSymbolCache(oldSymbol);
                         }
-                        // Try to restore new symbol's data
+                        // Set adapter.symbol to new value BEFORE restore/prefetch
+                        // so they use the correct symbol. switchAsset will
+                        // also set it, but setting it early lets us restore
+                        // from cache without waiting for switchAsset to complete.
+                        adapter.symbol = value;
+                        // Try to restore from cache (instant if cached)
                         const restored = typeof im.restoreAnchorFromSymbolCache === 'function'
                             ? im.restoreAnchorFromSymbolCache(value)
                             : false;
                         if (!restored) {
-                            // New symbol not in cache — clear and prefetch fresh
+                            // Not in cache — clear so prefetch starts fresh
                             if (typeof im.clearAnchorData === 'function') {
                                 im.clearAnchorData();
                             }
                         } else {
-                            // Restored from cache — invalidate compute caches
-                            // so indicators re-compute against restored data.
-                            // restoreAnchorFromSymbolCache already did this,
-                            // but we also need to trigger a re-render.
-                            if (engine) {
-                                engine.dirty?.setAll?.();
-                                engine.requestRender?.();
-                            }
+                            engine.dirty?.setAll?.();
+                            engine.requestRender?.();
                         }
                     }
                 } catch (_) { /* best-effort */ }
             }
             await adapter.switchAsset({ [param]: value });
-            // V71-speed: kick off anchor-TF prefetch IMMEDIATELY after
-            //   switchAsset, before autoFitY and requestRender. This gives
-            //   the fetch a ~50ms head start while the chart does its
-            //   layout work. The prefetch is async and non-blocking.
+            // V83: prefetch AFTER switchAsset (adapter.symbol is now set by
+            //   both our early set AND switchAsset). This fills any gaps
+            //   in the restored cache data (e.g. new candles since cache save).
             if (param === 'symbol') {
                 try {
                     const engine = this.api?._ctx?.engine || window._chart?.engine;
