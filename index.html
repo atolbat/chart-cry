@@ -17190,7 +17190,10 @@ class MultiTfDataManager {
         if (store.size > 0) {
             const _coversRight = store.lastX >= xMax - anchorMs;
             const _coversLeft = store.firstX <= xMin + anchorMs || store._historyStart != null;
-            if (_coversLeft && _coversRight) {
+            // V91-stale-cache: don't skip if lastFetchTs = 0 (just restored
+            //   from cache — need to refresh the forming candle).
+            const _needsRefresh = !store.lastFetchTs;
+            if (_coversLeft && _coversRight && !_needsRefresh) {
                 if (__dbg && !this._prefetchSkipLogged) {
                     devLog('[anchor-TF] prefetch skip — full range covered', {
                         tf, xMin, xMax, storeFirstX: store.firstX, storeLastX: store.lastX,
@@ -17677,7 +17680,12 @@ class MultiTfDataManager {
                 store.lastX = cached.lastX;
                 store.state = cached.state || 'ready';
                 store._historyStart = cached._historyStart || null;  // V87: restore
-                store.lastFetchTs = cached.lastFetchTs || Date.now();
+                // V91-stale-cache: set lastFetchTs to 0 so the next prefetch
+                //   cycle WILL run (even though we restored from cache). This
+                //   ensures the forming candle gets refreshed with current
+                //   price data. Without this, the stale forming candle from
+                //   cache time is shown until the user pans/zooms.
+                store.lastFetchTs = 0;
                 restored++;
             } catch (e) { /* per-store best-effort */ }
         }
@@ -49163,6 +49171,23 @@ class DataSourceAdapter {
             this._statusBus.emit('data:tick-applied', { ts: tick._x }, this.constructor.name);
         }
 
+        // V93-tick-cache-save: debounce cache save after tick. Every WS tick
+        //   updates the forming candle, but saving to DataCache on every tick
+        //   (multiple per second) would be too expensive. We debounce: save
+        //   at most once every 5 seconds. This ensures the cache stays
+        //   reasonably fresh — when the user switches symbols and comes back,
+        //   the cached forming candle is at most 5s stale (vs. potentially
+        //   minutes/forever without this fix).
+        if (applied && this.isCacheEnabled && this._tfToMs) {
+            if (!this._tickCacheSaveTimer) {
+                this._tickCacheSaveTimer = setTimeout(() => {
+                    this._tickCacheSaveTimer = null;
+                    const intervalMs = this._tfToMs(this.timeframe);
+                    this._saveCacheFromChart(intervalMs).catch(() => {});
+                }, 5000);
+            }
+        }
+
         return applied;
     }
 }
@@ -50007,7 +50032,10 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
             //    hours/days stale, the REST endpoint returns ALL candles
             //    since lastX (Binance/Bybit kline endpoints return up to
             //    1000-1500 candles per request — covers ~16 hours of 1m data).
-            await this._refreshRecentCandles(intervalMs);
+            // V92-catchup-fix: pass expectedMissing as lookbackBars so
+            //   _refreshRecentCandles requests from far enough back to
+            //   capture ALL missed candles (not just the latest one).
+            await this._refreshRecentCandles(intervalMs, { lookbackBars: expectedMissing + 2 });
 
             // Stale guard after the first await
             if (this._switchGen !== catchGen) return;
@@ -50038,6 +50066,37 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
             if (!this._wsConnected && this._active && !this._reconnectScheduled) {
                 this._openWebSocket();
             }
+
+            // V91-anchor-catchup: refresh anchor-TF data after returning to
+            //   the tab. While hidden, the WS for the chart TF may have
+            //   missed updates, but anchor-TF data (1d, 1w) also needs
+            //   refreshing — the forming candle changed while we were away.
+            //   Without this, the anchor line shows a stale forming candle
+            //   (e.g. green instead of red) until the next prefetch cycle.
+            try {
+                const engine = this.chartApi?._ctx?.engine;
+                const im = engine?.indicatorManager;
+                if (im && typeof im.clearAnchorData === 'function') {
+                    // Clear anchor data so the next render frame triggers
+                    // a fresh prefetch with up-to-date candles.
+                    im.clearAnchorData();
+                    // Also clear the symbol cache for the current symbol
+                    // so stale cached data isn't restored.
+                    if (this.symbol && typeof im.saveAnchorToSymbolCache === 'function') {
+                        // Don't save — just clear the cache entry
+                        const multiTf = im.multiTf;
+                        if (multiTf && multiTf._symbolCache) {
+                            multiTf._symbolCache.delete(this.symbol);
+                        }
+                    }
+                }
+                if (im && typeof im.prefetchAnchorTfs === 'function') {
+                    const ds = engine?.dataContext?.dataStore;
+                    if (ds && ds.size > 0) {
+                        im.prefetchAnchorTfs(this, ds).catch(() => {});
+                    }
+                }
+            } catch (_) { /* best-effort */ }
 
             // 4. If after all the above the chart still has no data at all
             //    (e.g. cache was empty AND REST failed), surface the failure
@@ -50323,15 +50382,33 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
      * merges them into the chart (updates forming candle, adds new ones).
      * Then updates the cache with the full chart data.
      */
-    async _refreshRecentCandles(intervalMs) {
+    async _refreshRecentCandles(intervalMs, opts = {}) {
         try {
             const range = this.chartApi.getDataRange();
             if (range.count === 0) return;
 
             const refreshGen = this._switchGen;  // capture generation for stale guard
-            const startTime = range.lastX;
+            // V92-catchup-fix: when called from _catchUpAfterHidden, we may
+            //   have missed multiple candles. WS reconnect may have already
+            //   pushed the LATEST candle, making range.lastX = current time.
+            //   But intermediate candles were never fetched. We need to
+            //   request from an EARLIER time to capture them.
+            //   opts.lookbackBars = how many bars to look back from lastX.
+            //   Default = 2 (one before lastX + lastX itself). For catch-up,
+            //   this is set to expectedMissing + 2 to cover the full gap.
+            const lookback = opts.lookbackBars || 2;
+            const startTime = Math.max(0, range.lastX - intervalMs * lookback);
             const url = this._buildRefreshUrl(startTime);
-            const data = await this._fetchJson(url);
+            // V92: also increase the limit proportionally
+            const origLimit = this._refreshCandleLimit || 50;
+            const { factor } = this._nativeTfFor ? this._nativeTfFor(this.timeframe) : { factor: 1 };
+            const effLimit = Math.max(origLimit, lookback + 5) * factor;
+            // Temporarily override _refreshCandleLimit for this call
+            const savedLimit = this._refreshCandleLimit;
+            this._refreshCandleLimit = effLimit / factor;
+            const urlWithLimit = this._buildRefreshUrl(startTime);
+            this._refreshCandleLimit = savedLimit;
+            const data = await this._fetchJson(urlWithLimit);
 
             // Stale guard — a switchAsset happened while we were fetching
             if (this._switchGen !== refreshGen) return;
