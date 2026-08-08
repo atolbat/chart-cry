@@ -24947,22 +24947,66 @@ class VolRevFractalsBrick extends IndicatorBrick {
 
 brickRegistry.register('volrevfractals', VolRevFractalsBrick);
 
-// ─── Z-Score Anomaly Detector ─────────────────────────────────────────────
+// ─── Z-Score Anomaly Detector (V106 — 10 modes) ──────────────────────────
 // V49n: Detects anomalous price movements using rolling Z-score.
+// V106: 10 different anomaly detection modes selectable via `mode` param.
+//
+// MODES:
+//   classic     — Z = (v - rolling_mean) / rolling_std (original)
+//   robust_mad  — Z = 0.6745 * (v - median) / MAD (robust to outliers)
+//   robust_iqr  — Z = (v - median) / (IQR / 1.349) (robust, IQR-based)
+//   ewma        — Exponentially weighted mean/std (recency-weighted)
+//   vol_weighted — Volume-weighted mean/std (high-vol bars dominate baseline)
+//   returns     — Z-score of log returns (more stationary than prices)
+//   multiscale  — Max(|Z|) across 5/20/50/100/200 windows (multi-scale view)
+//   asymmetric  — Separate mean/std for up-moves vs down-moves
+//   garch       — GARCH(1,1) volatility forecast (anticipates regime shifts)
+//   detrended   — HP-filter residual Z-score (removes trend bias)
+//   evt         — Extreme Value Theory: GPD tail-fit threshold (heavy-tail aware)
+//
 // Z = (currentClose - mean) / std over N bars.
 // |Z| > threshold → anomaly (highlight on chart).
-// Uses series.js Window for O(1) mean/std via incremental sum/sumSq.
+// Uses series.js Window for O(1) mean/std via incremental sum/sumSq (classic mode).
 class ZScoreBrick extends IndicatorBrick {
     static META = {
         type: 'zscore',
         label: 'Z-Score Anomaly',
-        description: 'Detects anomalous price movements. Z = (close - rolling mean) / rolling std. |Z| > threshold = anomaly.',
+        description: 'Detects anomalous price movements. 10 modes: classic, robust (MAD/IQR), EWMA, volume-weighted, returns-based, multi-scale, asymmetric, GARCH(1,1), HP-detrended, EVT (GPD tail). |Z| > threshold = anomaly.',
         category: 'composite',
-        tags: ['anomaly', 'zscore', 'outlier', 'statistics', 'volatility'],
+        tags: ['anomaly', 'zscore', 'outlier', 'statistics', 'volatility', 'robust', 'garch', 'evt'],
         panelMode: 'separate',
         params: [
-            new BrickParam({ name: 'period', label: 'Period', default: 50, min: 5, max: 500, step: 1 }),
-            new BrickParam({ name: 'threshold', label: 'Threshold', default: 2.5, min: 1, max: 5, step: 0.1 }),
+            new BrickParam({ name: 'mode', label: 'Mode', type: 'select', default: 'classic', group: 'Model',
+                options: [
+                    { value: 'classic', label: 'Classic (mean/std)' },
+                    { value: 'robust_mad', label: 'Robust (Median/MAD)' },
+                    { value: 'robust_iqr', label: 'Robust (Median/IQR)' },
+                    { value: 'ewma', label: 'EWMA (exponentially weighted)' },
+                    { value: 'vol_weighted', label: 'Volume-Weighted' },
+                    { value: 'returns', label: 'Returns-based (log returns)' },
+                    { value: 'multiscale', label: 'Multi-scale (5/20/50/100/200)' },
+                    { value: 'asymmetric', label: 'Asymmetric up/down' },
+                    { value: 'garch', label: 'GARCH(1,1) vol-forecast' },
+                    { value: 'detrended', label: 'HP-detrended residual' },
+                    { value: 'evt', label: 'EVT (GPD tail-fit)' },
+                ] }),
+            new BrickParam({ name: 'period', label: 'Period', default: 50, min: 5, max: 500, step: 1, group: 'Model' }),
+            new BrickParam({ name: 'threshold', label: 'Threshold', default: 2.5, min: 1, max: 5, step: 0.1, group: 'Model' }),
+            // V106: per-mode params
+            new BrickParam({ name: 'ewmaAlpha', label: 'EWMA Alpha', default: 0.1, min: 0.001, max: 1, step: 0.001, group: 'Advanced' }),
+            new BrickParam({ name: 'garchP', label: 'GARCH α (ARCH)', default: 0.1, min: 0.001, max: 0.5, step: 0.001, group: 'Advanced' }),
+            new BrickParam({ name: 'garchQ', label: 'GARCH β (GARCH)', default: 0.85, min: 0.001, max: 0.999, step: 0.001, group: 'Advanced' }),
+            new BrickParam({ name: 'hpLambda', label: 'HP λ (detrend)', default: 1600, min: 10, max: 500000, step: 10, group: 'Advanced' }),
+            // V107b: detrended mode HP filter type — one-sided (no lookahead) by default
+            new BrickParam({ name: 'detrendMode', label: 'HP Detrend Mode', type: 'select', default: 'one-sided', group: 'Advanced',
+                options: [
+                    { value: 'one-sided', label: 'One-sided (no lookahead) ✓' },
+                    { value: 'two-sided', label: 'Two-sided (has lookahead)' },
+                    { value: 'kalman', label: 'Kalman (no lookahead)' },
+                ],
+                tooltip: 'One-sided: solve HP on growing window (causal, no lookahead bias). Two-sided: solve on full series (uses future data, lookahead bias at the end). Kalman: state-space approximation (causal, faster).' }),
+            new BrickParam({ name: 'evtQuantile', label: 'EVT quantile', default: 0.995, min: 0.95, max: 0.9999, step: 0.001, group: 'Advanced' }),
+            new BrickParam({ name: 'evtTailFrac', label: 'EVT tail fraction', default: 0.1, min: 0.05, max: 0.3, step: 0.01, group: 'Advanced' }),
         ],
         inputs: [new BrickInput({ name: 'source', label: 'Source', default: 'close' })],
         outputs: [
@@ -24975,68 +25019,54 @@ class ZScoreBrick extends IndicatorBrick {
         ],
     };
 
-    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
-        const n = Math.max(5, Math.floor(this.params.period || 50));
-        const threshold = this.params.threshold || 2.5;
+    constructor(cfg) {
+        super(cfg);
+        // V106: vol_weighted, detrended, GARCH (if computing returns) modes need OHLC
+        this.needsOHLC = true;
+    }
 
-        if (manager?._lastDataStore?.getCloseSequence) {
-            const ds = manager._lastDataStore;
-            const closeSeq = ds.getCloseSequence();
-            const dataVersion = ds._version || 0;
-
-            if (this._zDerived && this._zDataVersion !== dataVersion) {
-                if (this._zDerived.dispose) this._zDerived.dispose();
-                this._zDerived = null;
-            }
-            this._zDataVersion = dataVersion;
-
-            if (!this._zDerived) {
-                // Reactive derive: rolling Z-score
-                // step maintains rolling sum, sumSq for O(1) mean/std
-                this._zDerived = derive(closeSeq, [closeSeq], {
-                    init: () => ({ buf: new RingBuffer(n, { bounded: true }), sum: 0, sumSq: 0 }),
-                    step: (s, v, idx) => {
-                        if (!isFinite(v)) return NaN;
-                        // Add new value
-                        if (s.buf.length >= n) {
-                            const old = s.buf.at(0);
-                            s.sum -= old;
-                            s.sumSq -= old * old;
-                        }
-                        s.buf.push(v);
-                        s.sum += v;
-                        s.sumSq += v * v;
-                        const cnt = s.buf.length;
-                        if (cnt < 5) return NaN;  // need at least 5 for meaningful std
-                        const mean = s.sum / cnt;
-                        const variance = Math.max(0, s.sumSq / cnt - mean * mean);
-                        const std = Math.sqrt(variance);
-                        if (std < 1e-10) return 0;
-                        return (v - mean) / std;
-                    },
-                    revert: (s, v) => {
-                        if (isFinite(v) && s.buf.length > 0) {
-                            const popped = s.buf.pop();
-                            if (popped !== undefined) {
-                                s.sum -= popped;
-                                s.sumSq -= popped * popped;
-                            }
-                        }
-                    },
-                });
-            }
-
-            if (this._zDerived && this._zDerived.length >= count) {
-                const line = new Float64Array(count);
-                for (let i = 0; i < count; i++) {
-                    line[i] = this._zDerived.read(i);
-                }
-                this._computed = { line, count, visibleRange };
-                return this._computed;
-            }
+    // ── Helper: rational approximation for the inverse of the standard normal CDF ──
+    // (used by EVT GPD quantile inversion back to Z-scale)
+    _invNormCDF(p) {
+        if (p <= 0) return -Infinity;
+        if (p >= 1) return Infinity;
+        // Acklam's algorithm
+        const a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02, 1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00];
+        const b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02, 6.680131188771972e+01, -1.328068155288572e+01];
+        const c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00, -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00];
+        const d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00, 3.754408661907416e+00];
+        const plow = 0.02425, phigh = 1 - plow;
+        let q, r;
+        if (p < plow) {
+            q = Math.sqrt(-2 * Math.log(p));
+            return (((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) /
+                   ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1);
+        } else if (p <= phigh) {
+            q = p - 0.5; r = q*q;
+            return (((((a[0]*r + a[1])*r + a[2])*r + a[3])*r + a[4])*r + a[5])*q /
+                   (((((b[0]*r + b[1])*r + b[2])*r + b[3])*r + b[4])*r + 1);
+        } else {
+            q = Math.sqrt(-2 * Math.log(1 - p));
+            return -(((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) /
+                    ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1);
         }
+    }
 
-        // Fallback: manual computation
+    // ── Helper: rational approximation for standard normal CDF Φ(x) ──
+    // Used by VPIN BVC (not strictly needed here, but kept for detrended/GARCH diagnostics).
+    _normCDF(x) {
+        // Abramowitz & Stegun 7.1.26 — max error 7.5e-8
+        const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
+        const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+        const sign = x < 0 ? -1 : 1;
+        x = Math.abs(x) / Math.sqrt(2);
+        const t = 1 / (1 + p * x);
+        const y = 1 - ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+        return 0.5 * (1 + sign * y);
+    }
+
+    // ── Mode: classic — Z = (v - rolling_mean) / rolling_std (original) ──
+    _computeClassic(sourceData, count, n) {
         const line = new Float64Array(count).fill(NaN);
         const buf = new RingBuffer(n, { bounded: true });
         let sum = 0, sumSq = 0;
@@ -25058,6 +25088,498 @@ class ZScoreBrick extends IndicatorBrick {
             const std = Math.sqrt(variance);
             line[i] = std < 1e-10 ? 0 : (v - mean) / std;
         }
+        return line;
+    }
+
+    // ── Mode: robust_mad — Z = 0.6745 * (v - median) / MAD ──
+    // MAD = median(|x - median(x)|). The 0.6745 = 1/0.75 makes it consistent
+    // with std for normal data. Robust: 50% breakdown point.
+    _computeRobustMAD(sourceData, count, n) {
+        const line = new Float64Array(count).fill(NaN);
+        const buf = new RingBuffer(n, { bounded: true });
+        for (let i = 0; i < count; i++) {
+            const v = sourceData[i];
+            if (!isFinite(v)) { line[i] = NaN; continue; }
+            buf.push(v);
+            const cnt = buf.length;
+            if (cnt < 5) { line[i] = NaN; continue; }
+            const arr = [];
+            for (let j = 0; j < cnt; j++) arr.push(buf.at(j));
+            arr.sort((a, b) => a - b);
+            const med = arr[Math.floor(cnt / 2)];
+            const devs = arr.map(x => Math.abs(x - med)).sort((a, b) => a - b);
+            const mad = devs[Math.floor(cnt / 2)];
+            if (mad < 1e-10) { line[i] = 0; continue; }
+            line[i] = 0.6745 * (v - med) / mad;
+        }
+        return line;
+    }
+
+    // ── Mode: robust_iqr — Z = (v - median) / (IQR / 1.349) ──
+    // IQR = Q3 - Q1. The 1.349 = Φ⁻¹(0.75) makes it consistent with std for normal data.
+    // Robust to outliers, less efficient than MAD for small samples.
+    _computeRobustIQR(sourceData, count, n) {
+        const line = new Float64Array(count).fill(NaN);
+        const buf = new RingBuffer(n, { bounded: true });
+        for (let i = 0; i < count; i++) {
+            const v = sourceData[i];
+            if (!isFinite(v)) { line[i] = NaN; continue; }
+            buf.push(v);
+            const cnt = buf.length;
+            if (cnt < 10) { line[i] = NaN; continue; }  // need more for IQR stability
+            const arr = [];
+            for (let j = 0; j < cnt; j++) arr.push(buf.at(j));
+            arr.sort((a, b) => a - b);
+            const q1 = arr[Math.floor(cnt * 0.25)];
+            const med = arr[Math.floor(cnt * 0.5)];
+            const q3 = arr[Math.floor(cnt * 0.75)];
+            const iqr = q3 - q1;
+            if (iqr < 1e-10) { line[i] = 0; continue; }
+            line[i] = (v - med) / (iqr / 1.349);
+        }
+        return line;
+    }
+
+    // ── Mode: ewma — exponentially weighted mean & variance ──
+    // mean_t = (1-α)*mean_{t-1} + α*v
+    // var_t  = (1-α)*(var_{t-1} + α*(v - mean_{t-1})²)
+    // Z = (v - mean_t) / sqrt(var_t)
+    // Recency-weighted — old data decays at rate (1-α)^k. Smooth transitions.
+    _computeEWMA(sourceData, count, n, alpha) {
+        const line = new Float64Array(count).fill(NaN);
+        const a = Math.max(0.001, Math.min(1, alpha));
+        const burnIn = Math.min(n, 30);
+        let mean = 0, varE = 0;
+        let samples = 0;
+        for (let i = 0; i < count; i++) {
+            const v = sourceData[i];
+            if (!isFinite(v)) { line[i] = NaN; continue; }
+            if (samples === 0) {
+                mean = v; varE = 1;
+            } else if (samples < burnIn) {
+                // Use simple average during burn-in for stable init
+                const oldMean = mean;
+                mean = (mean * samples + v) / (samples + 1);
+                varE = ((samples) * varE + (v - oldMean) * (v - mean)) / (samples + 1);
+            } else {
+                const oldMean = mean;
+                mean = (1 - a) * mean + a * v;
+                varE = (1 - a) * (varE + a * (v - oldMean) * (v - oldMean));
+            }
+            samples++;
+            if (samples < 5) { line[i] = NaN; continue; }
+            const std = Math.sqrt(Math.max(1e-12, varE));
+            line[i] = (v - mean) / std;
+        }
+        return line;
+    }
+
+    // ── Mode: vol_weighted — volume-weighted mean/std ──
+    // High-volume bars count more in establishing the "normal" baseline.
+    // mean_vw = Σ(v*w) / Σ(w), std_vw = sqrt(Σ(w*(v-mean)²) / Σ(w))
+    _computeVolWeighted(sourceData, count, n, ohlc) {
+        const line = new Float64Array(count).fill(NaN);
+        if (!ohlc?.vol) return line;
+        const V = ohlc.vol;
+        // Sliding window with running sum(v*w), sum(w), sum(v²*w), sum(w)
+        const bufV = new RingBuffer(n, { bounded: true });
+        const bufW = new RingBuffer(n, { bounded: true });
+        let sumVW = 0, sumW = 0, sumV2W = 0;
+        for (let i = 0; i < count; i++) {
+            const v = sourceData[i];
+            const w = V[i];
+            if (!isFinite(v) || !isFinite(w) || w <= 0) { line[i] = NaN; continue; }
+            if (bufV.length >= n) {
+                const oldV = bufV.at(0);
+                const oldW = bufW.at(0);
+                sumVW -= oldV * oldW;
+                sumW  -= oldW;
+                sumV2W -= oldV * oldV * oldW;
+            }
+            bufV.push(v); bufW.push(w);
+            sumVW += v * w;
+            sumW  += w;
+            sumV2W += v * v * w;
+            const cnt = bufV.length;
+            if (cnt < 5 || sumW <= 0) { line[i] = NaN; continue; }
+            const mean = sumVW / sumW;
+            const variance = Math.max(0, sumV2W / sumW - mean * mean);
+            const std = Math.sqrt(variance);
+            line[i] = std < 1e-10 ? 0 : (v - mean) / std;
+        }
+        return line;
+    }
+
+    // ── Mode: returns — Z-score of log returns ──
+    // r_t = ln(P_t / P_{t-1}). Returns are more stationary than prices,
+    // so the Z-score is more meaningful in trending markets.
+    _computeReturns(sourceData, count, n) {
+        const line = new Float64Array(count).fill(NaN);
+        const buf = new RingBuffer(n, { bounded: true });
+        let sum = 0, sumSq = 0;
+        let prev = NaN;
+        for (let i = 0; i < count; i++) {
+            const v = sourceData[i];
+            if (!isFinite(v) || v <= 0 || !isFinite(prev) || prev <= 0) {
+                prev = v; line[i] = NaN; continue;
+            }
+            const r = Math.log(v / prev);
+            prev = v;
+            if (buf.length >= n) {
+                const old = buf.at(0);
+                sum -= old; sumSq -= old * old;
+            }
+            buf.push(r);
+            sum += r; sumSq += r * r;
+            const cnt = buf.length;
+            if (cnt < 5) { line[i] = NaN; continue; }
+            const mean = sum / cnt;
+            const variance = Math.max(0, sumSq / cnt - mean * mean);
+            const std = Math.sqrt(variance);
+            line[i] = std < 1e-10 ? 0 : (r - mean) / std;
+        }
+        return line;
+    }
+
+    // ── Mode: multiscale — Max(|Z|) across 5/20/50/100/200 windows ──
+    // Captures anomalies at different time scales simultaneously.
+    // A bar that's anomalous at multiple scales = stronger signal.
+    _computeMultiscale(sourceData, count, n) {
+        const line = new Float64Array(count).fill(NaN);
+        // V106: use 5 scales relative to `period` (or absolute values, whichever is larger)
+        const scales = [Math.max(5, Math.floor(n * 0.1)), Math.max(20, Math.floor(n * 0.4)), n, Math.max(50, n * 2), Math.max(100, n * 4)];
+        const uniqueScales = [...new Set(scales)].filter(s => s <= count);
+        if (uniqueScales.length === 0) return line;
+        // Compute Z for each scale and take the max |Z| (with sign of strongest)
+        const zArrs = uniqueScales.map(s => this._computeClassic(sourceData, count, s));
+        for (let i = 0; i < count; i++) {
+            let maxAbs = 0, maxSign = 0;
+            for (let s = 0; s < zArrs.length; s++) {
+                const z = zArrs[s][i];
+                if (!isFinite(z)) continue;
+                if (Math.abs(z) > maxAbs) { maxAbs = Math.abs(z); maxSign = z; }
+            }
+            line[i] = maxAbs > 0 ? maxSign : NaN;
+        }
+        return line;
+    }
+
+    // ── Mode: asymmetric — separate mean/std for up-moves vs down-moves ──
+    // Markets have different dynamics for up vs down (crashes are sharper).
+    // For positive returns, use up-history; for negative, use down-history.
+    _computeAsymmetric(sourceData, count, n) {
+        const line = new Float64Array(count).fill(NaN);
+        const upBuf = new RingBuffer(n, { bounded: true });
+        const dnBuf = new RingBuffer(n, { bounded: true });
+        let upSum = 0, upSumSq = 0, dnSum = 0, dnSumSq = 0;
+        let prev = NaN;
+        for (let i = 0; i < count; i++) {
+            const v = sourceData[i];
+            if (!isFinite(v) || !isFinite(prev)) { prev = v; line[i] = NaN; continue; }
+            const r = v - prev;
+            prev = v;
+            if (r >= 0) {
+                if (upBuf.length >= n) {
+                    const old = upBuf.at(0);
+                    upSum -= old; upSumSq -= old * old;
+                }
+                upBuf.push(r); upSum += r; upSumSq += r * r;
+                const cnt = upBuf.length;
+                if (cnt < 5) { line[i] = NaN; continue; }
+                const mean = upSum / cnt;
+                const variance = Math.max(0, upSumSq / cnt - mean * mean);
+                const std = Math.sqrt(variance);
+                line[i] = std < 1e-10 ? 0 : (r - mean) / std;
+            } else {
+                if (dnBuf.length >= n) {
+                    const old = dnBuf.at(0);
+                    dnSum -= old; dnSumSq -= old * old;
+                }
+                dnBuf.push(r); dnSum += r; dnSumSq += r * r;
+                const cnt = dnBuf.length;
+                if (cnt < 5) { line[i] = NaN; continue; }
+                const mean = dnSum / cnt;
+                const variance = Math.max(0, dnSumSq / cnt - mean * mean);
+                const std = Math.sqrt(variance);
+                line[i] = std < 1e-10 ? 0 : (r - mean) / std;
+            }
+        }
+        return line;
+    }
+
+    // ── Mode: garch — GARCH(1,1) volatility forecast Z-score ──
+    // σ²_t = ω + α*ε²_{t-1} + β*σ²_{t-1}
+    // Where ω = (1-α-β)*var_init (unconditional variance scaling)
+    // Z_t = ε_t / σ_t (standardized residual)
+    // Anticipates regime shifts (vs rolling std which lags).
+    _computeGARCH(sourceData, count, n, alpha, beta) {
+        const line = new Float64Array(count).fill(NaN);
+        // Compute log returns
+        const rets = new Float64Array(count);
+        let prev = NaN;
+        for (let i = 0; i < count; i++) {
+            const v = sourceData[i];
+            if (!isFinite(v) || v <= 0 || !isFinite(prev) || prev <= 0) { rets[i] = NaN; prev = v; continue; }
+            rets[i] = Math.log(v / prev);
+            prev = v;
+        }
+        // Compute initial variance from first n returns
+        let initVar = 0, initCnt = 0, initSum = 0;
+        for (let i = 0; i < count && i < n; i++) {
+            if (isFinite(rets[i])) { initSum += rets[i]; initCnt++; }
+        }
+        if (initCnt < 5) return line;
+        const initMean = initSum / initCnt;
+        for (let i = 0; i < count && i < n; i++) {
+            if (isFinite(rets[i])) { const d = rets[i] - initMean; initVar += d * d; }
+        }
+        initVar /= initCnt;
+        if (initVar < 1e-12) initVar = 1e-6;
+        // GARCH parameters (enforce stationarity: α + β < 1)
+        const a = Math.max(0.001, Math.min(0.5, alpha));
+        const b = Math.max(0.001, Math.min(0.999 - a, beta));
+        const omega = (1 - a - b) * initVar;
+        let sigma2 = initVar;
+        for (let i = 0; i < count; i++) {
+            if (!isFinite(rets[i])) { line[i] = NaN; continue; }
+            const eps = rets[i];
+            // Update σ²_{t+1} = ω + α*ε²_t + β*σ²_t  (forecast for next bar)
+            // For current bar's Z, use σ_t (forecast from previous bar)
+            const sigma = Math.sqrt(Math.max(1e-12, sigma2));
+            line[i] = eps / sigma;
+            // Update for next bar
+            sigma2 = omega + a * eps * eps + b * sigma2;
+        }
+        return line;
+    }
+
+    // ── Mode: detrended — HP-filter residual Z-score ──
+    // Removes trend bias: resid = price - HP_trend(price),
+    // then Z = (resid - mean(resid)) / std(resid).
+    // Useful for trending markets where classic Z-score is meaningless.
+    _solveHP(y, n, lambda) {
+        // Inline HP solver (pentadiagonal LDL^T) — same as HPResidualBrick._solveHP
+        if (n < 4) { const t = new Float64Array(n); for (let i = 0; i < n; i++) t[i] = y[i]; return t; }
+        const d0 = new Float64Array(n), d1 = new Float64Array(n - 1), d2 = new Float64Array(n - 2);
+        for (let i = 0; i < n; i++) {
+            if (i === 0 || i === n - 1) d0[i] = 1 + lambda;
+            else if (i === 1 || i === n - 2) d0[i] = 1 + 5 * lambda;
+            else d0[i] = 1 + 6 * lambda;
+        }
+        for (let i = 0; i < n - 1; i++) d1[i] = (i === 0 || i === n - 2) ? -2 * lambda : -4 * lambda;
+        for (let i = 0; i < n - 2; i++) d2[i] = lambda;
+        const m1 = new Float64Array(n - 1), m2 = new Float64Array(n - 2), dd = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+            let a = d0[i];
+            if (i >= 1) a -= m1[i-1] * m1[i-1] * (dd[i-1] || 0);
+            if (i >= 2) a -= m2[i-2] * m2[i-2] * (dd[i-2] || 0);
+            dd[i] = a;
+            if (i < n - 1) { let b = d1[i]; if (i >= 1) b -= m1[i-1]*m2[i-1]*(dd[i-1]||0); m1[i] = a > 0 ? b/a : 0; }
+            if (i < n - 2) m2[i] = a > 0 ? d2[i]/a : 0;
+        }
+        const z = new Float64Array(n), w = new Float64Array(n), tau = new Float64Array(n);
+        for (let i = 0; i < n; i++) { let s = y[i]; if (i>=1) s -= m1[i-1]*z[i-1]; if (i>=2) s -= m2[i-2]*z[i-2]; z[i] = s; }
+        for (let i = 0; i < n; i++) w[i] = Math.abs(dd[i]) > 1e-20 ? z[i]/dd[i] : 0;
+        for (let i = n-1; i >= 0; i--) { let s = w[i]; if (i<n-1) s -= m1[i]*tau[i+1]; if (i<n-2) s -= m2[i]*tau[i+2]; tau[i] = s; }
+        return tau;
+    }
+
+    // V107b: One-sided HP solver — NO lookahead bias.
+    // For each bar i, solve HP on y[0..i] and take tau[i].
+    // O(n²) but capped at maxWindow (500) for performance.
+    _solveHPOneSided(y, n, lambda) {
+        if (n < 4) { const t = new Float64Array(n); for (let i = 0; i < n; i++) t[i] = y[i]; return t; }
+        const tau = new Float64Array(n);
+        const maxWindow = Math.min(n, 500);
+        for (let i = 0; i < n; i++) {
+            const start = Math.max(0, i - maxWindow + 1);
+            const len = i - start + 1;
+            if (len < 4) { tau[i] = y[i]; continue; }
+            const sub = new Float64Array(len);
+            for (let j = 0; j < len; j++) sub[j] = y[start + j];
+            const subTau = this._solveHP(sub, len, lambda);
+            tau[i] = subTau[len - 1];
+        }
+        return tau;
+    }
+
+    // V107b: Kalman HP — state-space approximation, O(n), causal (no lookahead)
+    _solveHPKalman(y, n, lambda) {
+        if (n < 4) { const t = new Float64Array(n); for (let i = 0; i < n; i++) t[i] = y[i]; return t; }
+        const tau = new Float64Array(n);
+        // Scale noise by data variance for scale-invariant tuning
+        let dataVar = 1;
+        if (n >= 10) {
+            let sum = 0, sumSq = 0;
+            for (let i = 0; i < n; i++) { sum += y[i]; sumSq += y[i] * y[i]; }
+            const mean = sum / n;
+            dataVar = Math.max(1e-12, sumSq / n - mean * mean);
+        }
+        let x0 = y[0], x1 = 0;
+        let p00 = dataVar, p01 = 0, p11 = dataVar * 0.01;
+        const q = dataVar / (1 + lambda);
+        const r = dataVar * lambda / (1 + lambda);
+        for (let i = 0; i < n; i++) {
+            const predX0 = x0 + x1;
+            const predP00 = p00 + p01 + p11 + q;
+            const predP01 = p01 + p11;
+            const predP11 = p11 + q;
+            const innov = y[i] - predX0;
+            const s = predP00 + r;
+            if (Math.abs(s) < 1e-20) { tau[i] = predX0; continue; }
+            const k0 = predP00 / s;
+            const k1 = predP01 / s;
+            x0 = predX0 + k0 * innov;
+            x1 = x1 + k1 * innov;
+            // Joseph form covariance update (numerically stable)
+            const omk0 = 1 - k0;
+            p00 = omk0 * omk0 * predP00 + r * k0 * k0;
+            p01 = omk0 * (predP01 - k1 * predP00) + r * k0 * k1;
+            p11 = predP11 - 2 * k1 * predP01 + predP00 * k1 * k1 + r * k1 * k1;
+            tau[i] = x0;
+        }
+        return tau;
+    }
+
+    _computeDetrended(sourceData, count, n, lambda, detrendMode) {
+        const line = new Float64Array(count).fill(NaN);
+        const y = new Float64Array(count);
+        for (let i = 0; i < count; i++) y[i] = isFinite(sourceData[i]) ? sourceData[i] : 0;
+        if (count < 10) return line;
+        // V107b: choose HP solver based on detrendMode
+        //   - 'one-sided' (DEFAULT): causal, no lookahead bias
+        //   - 'two-sided': uses future data, has lookahead at the end
+        //   - 'kalman': causal, faster, state-space approximation
+        const mode = detrendMode || 'one-sided';
+        let tau;
+        if (mode === 'two-sided') {
+            tau = this._solveHP(y, count, lambda);
+        } else if (mode === 'kalman') {
+            tau = this._solveHPKalman(y, count, lambda);
+        } else {
+            // one-sided (default) — NO lookahead bias
+            tau = this._solveHPOneSided(y, count, lambda);
+        }
+        // Residual = y - tau
+        // Now compute rolling Z-score of the residual
+        const buf = new RingBuffer(n, { bounded: true });
+        let sum = 0, sumSq = 0;
+        for (let i = 0; i < count; i++) {
+            const r = y[i] - tau[i];
+            if (!isFinite(r)) { line[i] = NaN; continue; }
+            if (buf.length >= n) {
+                const old = buf.at(0);
+                sum -= old; sumSq -= old * old;
+            }
+            buf.push(r); sum += r; sumSq += r * r;
+            const cnt = buf.length;
+            if (cnt < 5) { line[i] = NaN; continue; }
+            const mean = sum / cnt;
+            const variance = Math.max(0, sumSq / cnt - mean * mean);
+            const std = Math.sqrt(variance);
+            line[i] = std < 1e-10 ? 0 : (r - mean) / std;
+        }
+        return line;
+    }
+
+    // ── Mode: evt — Extreme Value Theory, GPD tail-fit threshold ──
+    // Fits Generalized Pareto Distribution to the top `tailFrac` of |residuals|.
+    // Then computes the quantile corresponding to `quantile` (e.g. 99.5%).
+    // Bars exceeding this quantile get Z = EVT threshold + scaled excess.
+    // Better calibrated for heavy-tailed (financial) data than normal Z.
+    _computeEVT(sourceData, count, n, quantile, tailFrac) {
+        // Step 1: compute classic Z (returns-based, more stationary)
+        const classicZ = this._computeReturns(sourceData, count, n);
+        const line = new Float64Array(count).fill(NaN);
+        // Step 2: collect |Z| values in rolling window, fit GPD to tail
+        const buf = new RingBuffer(n, { bounded: true });
+        for (let i = 0; i < count; i++) {
+            const z = classicZ[i];
+            if (!isFinite(z)) { line[i] = NaN; continue; }
+            buf.push(z);
+            const cnt = buf.length;
+            if (cnt < 30) { line[i] = z; continue; }  // need enough for tail fit
+            // Collect abs values
+            const arr = [];
+            for (let j = 0; j < cnt; j++) arr.push(Math.abs(buf.at(j)));
+            arr.sort((a, b) => a - b);
+            // Threshold = (1 - tailFrac) quantile of |Z|
+            const k = Math.max(10, Math.floor(cnt * tailFrac));
+            const threshold = arr[cnt - k - 1];
+            // Tail sample (excesses over threshold)
+            const excess = [];
+            for (let j = cnt - k; j < cnt; j++) excess.push(arr[j] - threshold);
+            // GPD fit via method of moments: ξ = (mean² / var) / 2, σ = mean / (2 * ξ)
+            //   where mean, var are of excesses
+            if (excess.length < 5) { line[i] = z; continue; }
+            let exSum = 0;
+            for (const e of excess) exSum += e;
+            const exMean = exSum / excess.length;
+            let exVar = 0;
+            for (const e of excess) exVar += (e - exMean) * (e - exMean);
+            exVar /= excess.length;
+            if (exVar < 1e-12) { line[i] = z; continue; }
+            // GPD parameters via method of moments.
+            // For GPD with support x ≥ 0, ξ > -0.5 (for variance to exist):
+            //   E[X] = σ / (1 - ξ),  Var[X] = σ² / ((1-ξ)²(1-2ξ))
+            // Solving: ξ = 0.5 * (1 - mean²/var), σ = mean * (1 - ξ)
+            const xiMoM = 0.5 * (1 - exMean * exMean / exVar);
+            const xi2 = Math.max(-0.4, Math.min(0.5, xiMoM));  // clamp to reasonable range
+            const sigmaMoM = Math.max(1e-6, exMean * (1 - xi2));
+            // EVT quantile: Q(p) = threshold + (σ/ξ) * ((1-p)^(-ξ) - 1)  for ξ ≠ 0
+            // p = quantile (e.g. 0.995) — i.e., we want the value exceeded with prob (1-p)
+            const p = Math.max(0.5, Math.min(0.9999, quantile));
+            let evtThreshold;
+            if (Math.abs(xi2) < 1e-6) {
+                // ξ ≈ 0: exponential tail, Q(p) = threshold - σ * ln(1-p)
+                evtThreshold = threshold - sigmaMoM * Math.log(1 - p);
+            } else {
+                evtThreshold = threshold + (sigmaMoM / xi2) * (Math.pow(1 - p, -xi2) - 1);
+            }
+            // V106: scale Z so that EVT threshold maps to user's threshold (e.g. 2.5)
+            // Z_scaled = Z * (userThreshold / evtThreshold)
+            const userThreshold = this.params.threshold || 2.5;
+            const scale = evtThreshold > 1e-6 ? userThreshold / evtThreshold : 1;
+            line[i] = z * scale;
+        }
+        return line;
+    }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        const n = Math.max(5, Math.floor(this.params.period || 50));
+        const threshold = this.params.threshold || 2.5;
+        const mode = this.params.mode || 'classic';
+        const ewmaAlpha = this.params.ewmaAlpha || 0.1;
+        const garchP = this.params.garchP || 0.1;
+        const garchQ = this.params.garchQ || 0.85;
+        const hpLambda = Math.max(10, this.params.hpLambda || 1600);
+        const evtQuantile = this.params.evtQuantile || 0.995;
+        const evtTailFrac = this.params.evtTailFrac || 0.1;
+
+        // V106: cache by mode + params + version + count
+        const cacheKey = `${version}:${count}:${n}:${mode}:${ewmaAlpha}:${garchP}:${garchQ}:${hpLambda}:${this.params.detrendMode || 'one-sided'}:${evtQuantile}:${evtTailFrac}`;
+        if (this._zCacheKey === cacheKey && this._zCache) {
+            this._computed = { line: this._zCache, count, visibleRange };
+            return this._computed;
+        }
+        this._zCacheKey = cacheKey;
+
+        let line;
+        switch (mode) {
+            case 'robust_mad':  line = this._computeRobustMAD(sourceData, count, n); break;
+            case 'robust_iqr':  line = this._computeRobustIQR(sourceData, count, n); break;
+            case 'ewma':        line = this._computeEWMA(sourceData, count, n, ewmaAlpha); break;
+            case 'vol_weighted':line = this._computeVolWeighted(sourceData, count, n, ohlc); break;
+            case 'returns':     line = this._computeReturns(sourceData, count, n); break;
+            case 'multiscale':  line = this._computeMultiscale(sourceData, count, n); break;
+            case 'asymmetric':  line = this._computeAsymmetric(sourceData, count, n); break;
+            case 'garch':       line = this._computeGARCH(sourceData, count, n, garchP, garchQ); break;
+            case 'detrended':   line = this._computeDetrended(sourceData, count, n, hpLambda, this.params.detrendMode || 'one-sided'); break;
+            case 'evt':         line = this._computeEVT(sourceData, count, n, evtQuantile, evtTailFrac); break;
+            default:            line = this._computeClassic(sourceData, count, n); break;
+        }
+
+        this._zCache = line;
         this._computed = { line, count, visibleRange };
         return this._computed;
     }
@@ -25112,6 +25634,403 @@ class ZScoreBrick extends IndicatorBrick {
 }
 
 brickRegistry.register('zscore', ZScoreBrick);
+
+// ─── Z-Score Ensemble (V107) ───────────────────────────────────────────────
+// Combines up to 6 Z-score methods into ONE overlay view on the main chart.
+// Each slot has its own: mode, period, threshold. All anomaly dots from all
+// enabled slots are drawn at the price level, so you can see where methods
+// AGREE (clustered dots) and where they DIFFER (isolated dots).
+//
+// Visualization:
+//   • Each enabled slot gets a marker at the candle's high (up anomaly) or
+//     low (down anomaly), offset vertically by slot index so they don't
+//     overlap.
+//   • Color: red = up anomaly (Z > +threshold), green = down anomaly (Z < -threshold).
+//   • Size: proportional to |Z| (bigger = more extreme).
+//   • Consensus highlighting: bars where ≥ consensusMin methods agree get a
+//     vertical highlight band behind the candle.
+//
+// The ensemble extends ZScoreBrick to reuse all 10 compute methods
+// (_computeClassic, _computeRobustMAD, _computeEWMA, etc.) without duplication.
+class ZScoreEnsembleBrick extends ZScoreBrick {
+    static META = {
+        type: 'zscore_ensemble',
+        label: 'Z-Score Ensemble',
+        description: 'Combines up to 6 Z-score methods on one chart. Each slot has its own mode/period/threshold. Shows all anomaly dots at price level — see where methods agree (clusters) and differ (isolated). Consensus band highlights bars where ≥N methods agree.',
+        category: 'composite',
+        tags: ['anomaly', 'zscore', 'ensemble', 'consensus', 'overlay', 'multi-method'],
+        panelMode: 'overlay',
+        params: [
+            // ── Slot 1 ──
+            new BrickParam({ name: 'slot1Enabled', label: 'Slot 1', type: 'bool', default: true, group: 'Slot 1' }),
+            new BrickParam({ name: 'slot1Mode', label: 'S1 Mode', type: 'select', default: 'classic', group: 'Slot 1',
+                options: [
+                    { value: 'classic', label: 'Classic' },
+                    { value: 'robust_mad', label: 'Robust MAD' },
+                    { value: 'robust_iqr', label: 'Robust IQR' },
+                    { value: 'ewma', label: 'EWMA' },
+                    { value: 'vol_weighted', label: 'Vol-Weighted' },
+                    { value: 'returns', label: 'Returns' },
+                    { value: 'multiscale', label: 'Multi-scale' },
+                    { value: 'asymmetric', label: 'Asymmetric' },
+                    { value: 'garch', label: 'GARCH(1,1)' },
+                    { value: 'detrended', label: 'HP-Detrended' },
+                    { value: 'evt', label: 'EVT (GPD)' },
+                ] }),
+            new BrickParam({ name: 'slot1Period', label: 'S1 Period', default: 50, min: 5, max: 500, step: 1, group: 'Slot 1' }),
+            new BrickParam({ name: 'slot1Threshold', label: 'S1 |Z| limit', default: 2.5, min: 1, max: 5, step: 0.1, group: 'Slot 1' }),
+            // ── Slot 2 ──
+            new BrickParam({ name: 'slot2Enabled', label: 'Slot 2', type: 'bool', default: true, group: 'Slot 2' }),
+            new BrickParam({ name: 'slot2Mode', label: 'S2 Mode', type: 'select', default: 'robust_mad', group: 'Slot 2',
+                options: [
+                    { value: 'classic', label: 'Classic' },
+                    { value: 'robust_mad', label: 'Robust MAD' },
+                    { value: 'robust_iqr', label: 'Robust IQR' },
+                    { value: 'ewma', label: 'EWMA' },
+                    { value: 'vol_weighted', label: 'Vol-Weighted' },
+                    { value: 'returns', label: 'Returns' },
+                    { value: 'multiscale', label: 'Multi-scale' },
+                    { value: 'asymmetric', label: 'Asymmetric' },
+                    { value: 'garch', label: 'GARCH(1,1)' },
+                    { value: 'detrended', label: 'HP-Detrended' },
+                    { value: 'evt', label: 'EVT (GPD)' },
+                ] }),
+            new BrickParam({ name: 'slot2Period', label: 'S2 Period', default: 50, min: 5, max: 500, step: 1, group: 'Slot 2' }),
+            new BrickParam({ name: 'slot2Threshold', label: 'S2 |Z| limit', default: 2.5, min: 1, max: 5, step: 0.1, group: 'Slot 2' }),
+            // ── Slot 3 ──
+            new BrickParam({ name: 'slot3Enabled', label: 'Slot 3', type: 'bool', default: true, group: 'Slot 3' }),
+            new BrickParam({ name: 'slot3Mode', label: 'S3 Mode', type: 'select', default: 'returns', group: 'Slot 3',
+                options: [
+                    { value: 'classic', label: 'Classic' },
+                    { value: 'robust_mad', label: 'Robust MAD' },
+                    { value: 'robust_iqr', label: 'Robust IQR' },
+                    { value: 'ewma', label: 'EWMA' },
+                    { value: 'vol_weighted', label: 'Vol-Weighted' },
+                    { value: 'returns', label: 'Returns' },
+                    { value: 'multiscale', label: 'Multi-scale' },
+                    { value: 'asymmetric', label: 'Asymmetric' },
+                    { value: 'garch', label: 'GARCH(1,1)' },
+                    { value: 'detrended', label: 'HP-Detrended' },
+                    { value: 'evt', label: 'EVT (GPD)' },
+                ] }),
+            new BrickParam({ name: 'slot3Period', label: 'S3 Period', default: 30, min: 5, max: 500, step: 1, group: 'Slot 3' }),
+            new BrickParam({ name: 'slot3Threshold', label: 'S3 |Z| limit', default: 3.0, min: 1, max: 5, step: 0.1, group: 'Slot 3' }),
+            // ── Slot 4 ──
+            new BrickParam({ name: 'slot4Enabled', label: 'Slot 4', type: 'bool', default: false, group: 'Slot 4' }),
+            new BrickParam({ name: 'slot4Mode', label: 'S4 Mode', type: 'select', default: 'garch', group: 'Slot 4',
+                options: [
+                    { value: 'classic', label: 'Classic' },
+                    { value: 'robust_mad', label: 'Robust MAD' },
+                    { value: 'robust_iqr', label: 'Robust IQR' },
+                    { value: 'ewma', label: 'EWMA' },
+                    { value: 'vol_weighted', label: 'Vol-Weighted' },
+                    { value: 'returns', label: 'Returns' },
+                    { value: 'multiscale', label: 'Multi-scale' },
+                    { value: 'asymmetric', label: 'Asymmetric' },
+                    { value: 'garch', label: 'GARCH(1,1)' },
+                    { value: 'detrended', label: 'HP-Detrended' },
+                    { value: 'evt', label: 'EVT (GPD)' },
+                ] }),
+            new BrickParam({ name: 'slot4Period', label: 'S4 Period', default: 50, min: 5, max: 500, step: 1, group: 'Slot 4' }),
+            new BrickParam({ name: 'slot4Threshold', label: 'S4 |Z| limit', default: 2.5, min: 1, max: 5, step: 0.1, group: 'Slot 4' }),
+            // ── Slot 5 ──
+            new BrickParam({ name: 'slot5Enabled', label: 'Slot 5', type: 'bool', default: false, group: 'Slot 5' }),
+            new BrickParam({ name: 'slot5Mode', label: 'S5 Mode', type: 'select', default: 'ewma', group: 'Slot 5',
+                options: [
+                    { value: 'classic', label: 'Classic' },
+                    { value: 'robust_mad', label: 'Robust MAD' },
+                    { value: 'robust_iqr', label: 'Robust IQR' },
+                    { value: 'ewma', label: 'EWMA' },
+                    { value: 'vol_weighted', label: 'Vol-Weighted' },
+                    { value: 'returns', label: 'Returns' },
+                    { value: 'multiscale', label: 'Multi-scale' },
+                    { value: 'asymmetric', label: 'Asymmetric' },
+                    { value: 'garch', label: 'GARCH(1,1)' },
+                    { value: 'detrended', label: 'HP-Detrended' },
+                    { value: 'evt', label: 'EVT (GPD)' },
+                ] }),
+            new BrickParam({ name: 'slot5Period', label: 'S5 Period', default: 50, min: 5, max: 500, step: 1, group: 'Slot 5' }),
+            new BrickParam({ name: 'slot5Threshold', label: 'S5 |Z| limit', default: 2.5, min: 1, max: 5, step: 0.1, group: 'Slot 5' }),
+            // ── Slot 6 ──
+            new BrickParam({ name: 'slot6Enabled', label: 'Slot 6', type: 'bool', default: false, group: 'Slot 6' }),
+            new BrickParam({ name: 'slot6Mode', label: 'S6 Mode', type: 'select', default: 'evt', group: 'Slot 6',
+                options: [
+                    { value: 'classic', label: 'Classic' },
+                    { value: 'robust_mad', label: 'Robust MAD' },
+                    { value: 'robust_iqr', label: 'Robust IQR' },
+                    { value: 'ewma', label: 'EWMA' },
+                    { value: 'vol_weighted', label: 'Vol-Weighted' },
+                    { value: 'returns', label: 'Returns' },
+                    { value: 'multiscale', label: 'Multi-scale' },
+                    { value: 'asymmetric', label: 'Asymmetric' },
+                    { value: 'garch', label: 'GARCH(1,1)' },
+                    { value: 'detrended', label: 'HP-Detrended' },
+                    { value: 'evt', label: 'EVT (GPD)' },
+                ] }),
+            new BrickParam({ name: 'slot6Period', label: 'S6 Period', default: 100, min: 5, max: 500, step: 1, group: 'Slot 6' }),
+            new BrickParam({ name: 'slot6Threshold', label: 'S6 |Z| limit', default: 2.5, min: 1, max: 5, step: 0.1, group: 'Slot 6' }),
+            // ── Display ──
+            new BrickParam({ name: 'consensusMin', label: 'Consensus min (draw)', default: 1, min: 1, max: 6, step: 1, group: 'Display',
+                tooltip: 'Draw band for bars where ≥ this many methods agree. 1 = draw even for single-signal bars.' }),
+            new BrickParam({ name: 'minAlpha', label: 'Min alpha (weak)', default: 0.10, min: 0.02, max: 0.5, step: 0.01, group: 'Display',
+                tooltip: 'Band opacity for consensus=1 (weakest signal). Even single-signal bars are visible.' }),
+            new BrickParam({ name: 'maxAlpha', label: 'Max alpha (strong)', default: 0.45, min: 0.1, max: 0.9, step: 0.05, group: 'Display',
+                tooltip: 'Band opacity for consensus=numSlots (strongest signal). Non-stacking: overlapping bands do NOT add up.' }),
+            new BrickParam({ name: 'bandWidth', label: 'Band width (× candle)', default: 0.8, min: 0.1, max: 2, step: 0.1, group: 'Display',
+                tooltip: 'Band width as fraction of candle spacing. 0.8 = bands slightly narrower than candles.' }),
+            new BrickParam({ name: 'colorScheme', label: 'Color scheme', type: 'select', default: 'direction', group: 'Display',
+                options: [
+                    { value: 'direction', label: 'By direction (red=up, green=down, orange=mixed)' },
+                    { value: 'intensity', label: 'By intensity (purple, brighter=more consensus)' },
+                    { value: 'rainbow', label: 'Rainbow (hue by consensus count)' },
+                ] }),
+        ],
+        inputs: [new BrickInput({ name: 'source', label: 'Source', default: 'close' })],
+        outputs: [
+            new BrickOutput({ name: 'line', label: 'Consensus Count', type: 'line', color: '#bc8cff', optional: true, defaultVisible: false }),
+        ],
+    };
+
+    constructor(cfg) {
+        super(cfg);
+        this.needsOHLC = true;
+    }
+
+    // ── Compute Z-score for a single slot by temporarily swapping params ──
+    // We bypass the ZScoreBrick cache (this._zCache) because each slot has
+    // different params — the cache would thrash. Instead, the ensemble has
+    // its own cache keyed on all slot configs.
+    _computeSlotZ(slotNum, sourceData, count, version, ohlc) {
+        const p = this.params;
+        const enabled = p[`slot${slotNum}Enabled`] === true;
+        if (!enabled) return null;
+        const mode = p[`slot${slotNum}Mode`] || 'classic';
+        const period = Math.max(5, Math.floor(p[`slot${slotNum}Period`] || 50));
+        const threshold = p[`slot${slotNum}Threshold`] || 2.5;
+        const n = period;
+
+        // Dispatch to the inherited compute method
+        let line;
+        switch (mode) {
+            case 'robust_mad':   line = this._computeRobustMAD(sourceData, count, n); break;
+            case 'robust_iqr':   line = this._computeRobustIQR(sourceData, count, n); break;
+            case 'ewma':         line = this._computeEWMA(sourceData, count, n, p.ewmaAlpha || 0.1); break;
+            case 'vol_weighted': line = this._computeVolWeighted(sourceData, count, n, ohlc); break;
+            case 'returns':      line = this._computeReturns(sourceData, count, n); break;
+            case 'multiscale':   line = this._computeMultiscale(sourceData, count, n); break;
+            case 'asymmetric':   line = this._computeAsymmetric(sourceData, count, n); break;
+            case 'garch':        line = this._computeGARCH(sourceData, count, n, p.garchP || 0.1, p.garchQ || 0.85); break;
+            case 'detrended':    line = this._computeDetrended(sourceData, count, n, p.hpLambda || 1600, p.detrendMode || 'one-sided'); break;
+            case 'evt':          line = this._computeEVT(sourceData, count, n, p.evtQuantile || 0.995, p.evtTailFrac || 0.1); break;
+            default:             line = this._computeClassic(sourceData, count, n); break;
+        }
+        return { line, mode, period, threshold, slotNum };
+    }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        // V107: build cache key from all slot configs
+        const p = this.params;
+        const slotKeys = [];
+        for (let s = 1; s <= 6; s++) {
+            slotKeys.push(`${s}:${p[`slot${s}Enabled`]}:${p[`slot${s}Mode`]}:${p[`slot${s}Period`]}:${p[`slot${s}Threshold`]}`);
+        }
+        const cacheKey = `${version}:${count}:${slotKeys.join('|')}`;
+        if (this._ensCacheKey === cacheKey && this._ensCache) {
+            this._computed = { ...this._ensCache, count, visibleRange };
+            return this._computed;
+        }
+        this._ensCacheKey = cacheKey;
+
+        // Compute all enabled slots
+        const slots = [];
+        for (let s = 1; s <= 6; s++) {
+            const result = this._computeSlotZ(s, sourceData, count, version, ohlc);
+            if (result) slots.push(result);
+        }
+
+        // Build consensus count per bar (how many slots flagged an anomaly)
+        // V107d: also track upCount and downCount separately for color determination
+        const consensus = new Float64Array(count).fill(0);
+        const upCount = new Float64Array(count).fill(0);
+        const downCount = new Float64Array(count).fill(0);
+        const anomalies = []; // {barIdx, slotIdx, z, threshold, direction: +1/-1}
+        for (let si = 0; si < slots.length; si++) {
+            const slot = slots[si];
+            const thr = slot.threshold;
+            for (let i = 0; i < count; i++) {
+                const z = slot.line[i];
+                if (!isFinite(z)) continue;
+                if (Math.abs(z) >= thr) {
+                    consensus[i] += 1;
+                    if (z > 0) upCount[i] += 1; else downCount[i] += 1;
+                    anomalies.push({
+                        barIdx: i,
+                        slotIdx: si,  // 0-based index among enabled slots
+                        z,
+                        threshold: thr,
+                        direction: z > 0 ? 1 : -1,
+                        mode: slot.mode,
+                    });
+                }
+            }
+        }
+
+        // Output: 'line' = consensus count (for optional separate-panel view),
+        //         'slots' = array of slot results,
+        //         'anomalies' = flat list of all anomaly points,
+        //         'consensus' = per-bar count,
+        //         'upCount'/'downCount' = per-bar directional breakdown,
+        //         'numSlots' = number of enabled slots
+        const result = {
+            line: consensus,  // consensus count per bar (0 to numSlots)
+            slots,
+            anomalies,
+            consensus,
+            upCount,
+            downCount,
+            numSlots: slots.length,
+            count,
+            visibleRange,
+        };
+        this._ensCache = result;
+        this._lastEnsSource = sourceData;  // V107: store for render() to position markers at price
+        this._lastEnsOHLC = ohlc;          // V107c: store OHLC for high/low-based marker positioning
+        this._computed = result;
+        return result;
+    }
+
+    render(ctx, xScale, yScale, xData, computed, visibleRange, layout) {
+        if (!computed?.consensus) return;
+        const [iMin, iMax] = visibleRange;
+        const p = this.params;
+        const consensusMin = Math.max(1, Math.floor(p.consensusMin || 1));
+        const minAlpha = Math.max(0.02, Math.min(0.9, p.minAlpha ?? 0.10));
+        const maxAlpha = Math.max(minAlpha, Math.min(0.95, p.maxAlpha ?? 0.45));
+        const bandWidthFrac = Math.max(0.1, Math.min(2, p.bandWidth ?? 0.8));
+        const colorScheme = p.colorScheme || 'direction';
+        const numSlots = Math.max(1, computed.numSlots || 1);
+        const plotTop = layout?.plotTop ?? 0;
+        const plotBottom = layout?.plotBottom ?? 0;
+        const plotH = plotBottom - plotTop;
+
+        // V107d: Draw bands ONLY — no triangle markers, no labels.
+        //   To prevent alpha stacking when bands overlap (zoom out), we group
+        //   bars by color and draw each group as a SINGLE path (one beginPath
+        //   + multiple rect + one fill). With a single path, overlapping
+        //   regions are filled ONCE (non-zero winding rule), so alpha doesn't
+        //   add up even when bands overlap.
+        //
+        // Color determination per bar:
+        //   direction scheme: red (up-dominant), green (down-dominant), orange (mixed)
+        //   intensity scheme: purple, alpha scales with consensus
+        //   rainbow scheme: hue = consensus/numSlots × 270° (red→violet)
+        //
+        // Alpha per bar: maps consensus [1, numSlots] → [minAlpha, maxAlpha].
+        //   consensus=1 → minAlpha (weak but visible)
+        //   consensus=numSlots → maxAlpha (strong, capped)
+
+        // Group bars by color key
+        // Color key = "r,g,b" string; we collect bar indices per color,
+        // then draw one path per color.
+        const groups = new Map(); // colorKey → { r, g, b, alpha, bars: [{px, w}] }
+
+        // Precompute x-spacing for band width
+        // Use the gap between consecutive bars in pixel space
+        let barGap = 6; // fallback
+        if (iMax > iMin) {
+            const x0 = xScale.valToPix(xData[0]);
+            const x1 = xScale.valToPix(xData[Math.min(1, xData.length - 1)]);
+            barGap = Math.abs(x1 - x0);
+        }
+        const bandW = Math.max(2, barGap * bandWidthFrac);
+
+        for (let i = iMin; i <= iMax; i++) {
+            const c = computed.consensus[i];
+            if (c < consensusMin) continue;
+            const px = xScale.valToPix(xData[i - iMin]);
+
+            // Compute alpha from consensus count (linear map, clamped)
+            // consensus=1 → minAlpha, consensus=numSlots → maxAlpha
+            const t = numSlots > 1 ? (c - 1) / (numSlots - 1) : 1;
+            const alpha = minAlpha + (maxAlpha - minAlpha) * Math.max(0, Math.min(1, t));
+
+            // Determine color
+            let r, g, b;
+            if (colorScheme === 'intensity') {
+                // Purple, always same hue, alpha carries the signal
+                r = 188; g = 140; b = 255;
+            } else if (colorScheme === 'rainbow') {
+                // Hue from red (consensus=1) to violet (consensus=numSlots)
+                const hue = (c / numSlots) * 270; // 0=red, 270=violet
+                const rgb = this._hslToRgb(hue, 70, 55);
+                r = rgb[0]; g = rgb[1]; b = rgb[2];
+            } else {
+                // direction (default)
+                const up = computed.upCount[i] || 0;
+                const dn = computed.downCount[i] || 0;
+                if (up > dn) { r = 248; g = 81; b = 73; }       // red (up-dominant)
+                else if (dn > up) { r = 63; g = 185; b = 80; }   // green (down-dominant)
+                else { r = 255; g = 165; b = 0; }                // orange (mixed)
+            }
+
+            const colorKey = `${r},${g},${b}`;
+            if (!groups.has(colorKey)) {
+                groups.set(colorKey, { r, g, b, bars: [] });
+            }
+            groups.get(colorKey).bars.push({ px, alpha, w: bandW });
+        }
+
+        // Draw each color group as a single path.
+        // V107d: within a single path, overlapping rects are filled once
+        // (non-zero winding), so alpha does NOT stack.
+        // But alpha varies per bar (based on consensus), so we can't use a
+        // single fill for the whole path. Instead, we sub-group by alpha
+        // within each color group.
+        ctx.save();
+        for (const [, group] of groups) {
+            // Sub-group by alpha (rounded to 2 decimals to limit unique values)
+            const byAlpha = new Map();
+            for (const bar of group.bars) {
+                const aKey = Math.round(bar.alpha * 100) / 100;
+                if (!byAlpha.has(aKey)) byAlpha.set(aKey, []);
+                byAlpha.get(aKey).push(bar);
+            }
+            for (const [alpha, bars] of byAlpha) {
+                ctx.beginPath();
+                for (const bar of bars) {
+                    ctx.rect(bar.px - bar.w / 2, plotTop, bar.w, plotH);
+                }
+                ctx.fillStyle = `rgba(${group.r},${group.g},${group.b},${alpha})`;
+                ctx.fill();
+            }
+        }
+        ctx.restore();
+    }
+
+    // V107d: HSL → RGB helper for rainbow color scheme
+    _hslToRgb(h, s, l) {
+        // h: 0-360, s: 0-100, l: 0-100 → returns [r, g, b] 0-255
+        s /= 100; l /= 100;
+        const c = (1 - Math.abs(2 * l - 1)) * s;
+        const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+        const m = l - c / 2;
+        let r, g, b;
+        if (h < 60) { r = c; g = x; b = 0; }
+        else if (h < 120) { r = x; g = c; b = 0; }
+        else if (h < 180) { r = 0; g = c; b = x; }
+        else if (h < 240) { r = 0; g = x; b = c; }
+        else if (h < 300) { r = x; g = 0; b = c; }
+        else { r = c; g = 0; b = x; }
+        return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+    }
+
+    getAutoFitRange(computed, count, visibleRange) {
+        // V107: ensemble is an overlay — don't auto-fit (stay on main chart's range)
+        return null;
+    }
+}
+
+brickRegistry.register('zscore_ensemble', ZScoreEnsembleBrick);
 // ─── Ornstein-Uhlenbeck Mean Reversion Bands ──────────────────────────────
 // Statistical mean-reversion overlay based on a rolling AR(1) fit converted
 // to Ornstein-Uhlenbeck parameters. Outputs an adaptive equilibrium mean
@@ -26054,13 +26973,54 @@ class HPResidualBrick extends IndicatorBrick {
     static META = {
         type: 'hpresidual',
         label: 'HP Residual',
-        description: 'Hodrick-Prescott filter residual (cycle component). Large |residual| = price detached from long-term trend. Lambda controls smoothness (higher = smoother trend). Solves on the FULL loaded history (lazy-load friendly).',
+        description: 'Hodrick-Prescott filter residual (cycle component). Large |residual| = price detached from long-term trend. Lambda controls smoothness (higher = smoother trend). V105 filter modes: two-sided (lookahead), one-sided, Kalman, Rolling-Window HP, EWMA Trend, Savitzky-Golay (causal), Christiano-Fitzgerald BP (causal), Henderson (causal), Local Linear Trend Kalman. Plus: robust HP (IRLS), adaptive lambda (ATR), endpoint correction, forecast augmentation, z-score, decay weighting.',
         category: 'composite',
         tags: ['anomaly', 'hp', 'hodrick-prescott', 'trend', 'cycle', 'detrend'],
         panelMode: 'separate',
         params: [
-            new BrickParam({ name: 'lambda', label: 'Lambda (smoothness)', default: 1600, min: 10, max: 500000, step: 10 }),
-            new BrickParam({ name: 'threshold', label: 'Anomaly σ', default: 2.0, min: 0.5, max: 5, step: 0.1 }),
+            new BrickParam({ name: 'lambda', label: 'Lambda (smoothness)', default: 1600, min: 10, max: 500000, step: 10, group: 'Model' }),
+            new BrickParam({ name: 'threshold', label: 'Anomaly σ', default: 2.0, min: 0.5, max: 5, step: 0.1, group: 'Model' }),
+            // V104: filter mode — mutually exclusive
+            new BrickParam({ name: 'filterMode', label: 'Filter Mode', type: 'select', default: 'two-sided', group: 'Advanced',
+                options: [
+                    { value: 'two-sided', label: 'Two-sided (lookahead)' },
+                    { value: 'one-sided', label: 'One-sided (no lookahead)' },
+                    { value: 'kalman', label: 'Kalman (online)' },
+                    // V105: additional causal filter modes (no lookahead bias)
+                    { value: 'rolling', label: 'Rolling Window HP (causal)' },
+                    { value: 'ewma', label: 'EWMA Trend (causal)' },
+                    { value: 'savgol', label: 'Savitzky-Golay (causal)' },
+                    { value: 'cf', label: 'Christiano-Fitzgerald BP (causal)' },
+                    { value: 'henderson', label: 'Henderson (causal)' },
+                    { value: 'llt', label: 'Local Linear Trend Kalman (causal)' },
+                ] }),
+            // V104: robust HP — iterative reweighting
+            new BrickParam({ name: 'robustHP', label: 'Robust HP (IRLS)', type: 'bool', default: false, group: 'Advanced' }),
+            new BrickParam({ name: 'robustIters', label: 'Robust Iterations', default: 3, min: 1, max: 10, step: 1, group: 'Advanced' }),
+            // V104: adaptive lambda — lambda scales with ATR
+            new BrickParam({ name: 'adaptiveLambda', label: 'Adaptive Lambda (ATR)', type: 'bool', default: false, group: 'Advanced' }),
+            new BrickParam({ name: 'atrPeriod', label: 'ATR Period', default: 14, min: 5, max: 200, step: 1, group: 'Advanced' }),
+            // V105: per-mode tuning parameters
+            new BrickParam({ name: 'rollingWindow', label: 'Rolling Window', default: 200, min: 30, max: 2000, step: 10, group: 'Advanced' }),
+            new BrickParam({ name: 'ewmaAlpha', label: 'EWMA Alpha', default: 0.1, min: 0.001, max: 1, step: 0.001, group: 'Advanced' }),
+            new BrickParam({ name: 'savgolWindow', label: 'SG Window', default: 31, min: 5, max: 201, step: 2, group: 'Advanced' }),
+            new BrickParam({ name: 'savgolOrder', label: 'SG Poly Order', default: 3, min: 1, max: 6, step: 1, group: 'Advanced' }),
+            new BrickParam({ name: 'cfPl', label: 'CF Lower Period', default: 2, min: 2, max: 50, step: 0.5, group: 'Advanced' }),
+            new BrickParam({ name: 'cfPu', label: 'CF Upper Period', default: 100, min: 10, max: 1000, step: 5, group: 'Advanced' }),
+            new BrickParam({ name: 'hendersonLength', label: 'Henderson Length', default: 13, min: 5, max: 33, step: 2, group: 'Advanced' }),
+            new BrickParam({ name: 'lltQLevel', label: 'LLT Q Level', default: 0.001, min: 0.000001, max: 1, step: 0.0001, group: 'Advanced' }),
+            new BrickParam({ name: 'lltQSlope', label: 'LLT Q Slope', default: 0.0001, min: 0.000001, max: 1, step: 0.00001, group: 'Advanced' }),
+            new BrickParam({ name: 'lltRMeas', label: 'LLT R Measure', default: 1.0, min: 0.0001, max: 100, step: 0.01, group: 'Advanced' }),
+            // V105: two-sided endpoint bias correction (applies only to two-sided mode)
+            new BrickParam({ name: 'endpointCorrection', label: 'Endpoint Correction (2-sided)', type: 'bool', default: false, group: 'Display' }),
+            new BrickParam({ name: 'endpointHorizon', label: 'Endpoint Horizon', default: 40, min: 5, max: 200, step: 1, group: 'Display' }),
+            new BrickParam({ name: 'forecastAugment', label: 'Forecast Augment (2-sided)', type: 'bool', default: false, group: 'Display' }),
+            new BrickParam({ name: 'forecastLen', label: 'Forecast Length', default: 40, min: 5, max: 200, step: 1, group: 'Display' }),
+            // V104: z-score normalization
+            new BrickParam({ name: 'zscoreNorm', label: 'Z-Score Normalize', type: 'bool', default: false, group: 'Display' }),
+            // V104: half-life decay weighting
+            new BrickParam({ name: 'decayWeight', label: 'Decay Weighting', type: 'bool', default: false, group: 'Display' }),
+            new BrickParam({ name: 'decayAlpha', label: 'Decay Rate', default: 0.01, min: 0.001, max: 0.5, step: 0.001, group: 'Display' }),
         ],
         inputs: [new BrickInput({ name: 'source', label: 'Source', default: 'close' })],
         outputs: [
@@ -26073,102 +27033,47 @@ class HPResidualBrick extends IndicatorBrick {
         ],
     };
 
-    /**
-     * Solve the HP filter tridiagonal system using the Thomas algorithm.
-     * Builds Q'Q + lambda D'D as a pentadiagonal-ish matrix; the standard
-     * form for HP is tridiagonal in the second-difference operator:
-     *   (I + lambda * D'D) * tau = y
-     * where D is the (n-2) x n second-difference matrix.
-     * The result is tridiagonal: diagonal = 1 + 6λ, off-diagonals = -4λ,
-     * second-off-diagonals = λ. We solve with Thomas (extended for
-     * second off-diagonals — the system is banded with bandwidth 2).
-     *
-     * For simplicity + speed we use the LDL^T variant for symmetric
-     * tridiagonal-with-corner systems, which is what HP reduces to after
-     * a permutation trick (McCulloch 2007). For a JS chart indicator the
-     * straight Thomas algorithm on the 5-band matrix is more than fast
-     * enough up to ~2000 unknowns.
-     */
+    constructor(cfg) {
+        super(cfg);
+        // V104b: always request OHLC — needed for adaptive lambda (ATR)
+        this.needsOHLC = true;
+    }
+
+    // ── Two-sided HP solver (original, has lookahead) ──
     _solveHP(y, n, lambda) {
         if (n < 4) {
-            // Too small to compute second differences — trend = y itself.
             const tau = new Float64Array(n);
             for (let i = 0; i < n; i++) tau[i] = y[i];
             return tau;
         }
-        // Build the banded matrix A = I + lambda * D'D, where D is (n-2) x n
-        // second-difference operator. A is symmetric pentadiagonal:
-        //   A[i][i]   = 1 + 6λ           (interior)
-        //   A[i][i±1] = -4λ               (interior)
-        //   A[i][i±2] = λ                 (interior)
-        // Boundary rows have different coefficients (1 + λ at i=0,n-1,
-        // 1 + 5λ at i=1, n-2).
-        //
-        // We solve with a sparse Cholesky-style decomposition tailored for
-        // banded matrices (bandwidth 2). For n ≤ 2000 this is ~16k FLOPs,
-        // <1ms on modern hardware.
-
-        // Band storage: diagonals stored as arrays of length n.
-        //   d0[i] = main diagonal
-        //   d1[i] = first super/sub diagonal (length n-1)
-        //   d2[i] = second super/sub diagonal (length n-2)
         const d0 = new Float64Array(n);
         const d1 = new Float64Array(n - 1);
         const d2 = new Float64Array(n - 2);
         for (let i = 0; i < n; i++) {
-            if (i === 0 || i === n - 1) {
-                d0[i] = 1 + lambda;
-            } else if (i === 1 || i === n - 2) {
-                d0[i] = 1 + 5 * lambda;
-            } else {
-                d0[i] = 1 + 6 * lambda;
-            }
+            if (i === 0 || i === n - 1) d0[i] = 1 + lambda;
+            else if (i === 1 || i === n - 2) d0[i] = 1 + 5 * lambda;
+            else d0[i] = 1 + 6 * lambda;
         }
         for (let i = 0; i < n - 1; i++) {
-            if (i === 0 || i === n - 2) {
-                d1[i] = -2 * lambda;
-            } else {
-                d1[i] = -4 * lambda;
-            }
+            d1[i] = (i === 0 || i === n - 2) ? -2 * lambda : -4 * lambda;
         }
-        for (let i = 0; i < n - 2; i++) {
-            d2[i] = lambda;
-        }
+        for (let i = 0; i < n - 2; i++) d2[i] = lambda;
 
-        // LDL^T decomposition for symmetric banded matrix (bandwidth 2).
-        // L is unit lower triangular with at most 2 non-zero sub-diagonals.
-        // We store the multipliers in place in d1, d2.
-        const m1 = new Float64Array(n - 1);  // L[i+1, i]
-        const m2 = new Float64Array(n - 2);  // L[i+2, i]
-        const dd = new Float64Array(n);      // D (diagonal of L D L^T)
-        // Forward elimination
+        const m1 = new Float64Array(n - 1);
+        const m2 = new Float64Array(n - 2);
+        const dd = new Float64Array(n);
         for (let i = 0; i < n; i++) {
             let a = d0[i];
-            if (i >= 1) {
-                // Subtract contribution from previous column
-                const p1 = m1[i - 1];
-                a -= p1 * p1 * (dd[i - 1] || 0);
-            }
-            if (i >= 2) {
-                const p2 = m2[i - 2];
-                a -= p2 * p2 * (dd[i - 2] || 0);
-            }
+            if (i >= 1) a -= m1[i - 1] * m1[i - 1] * (dd[i - 1] || 0);
+            if (i >= 2) a -= m2[i - 2] * m2[i - 2] * (dd[i - 2] || 0);
             dd[i] = a;
-            // Compute L[i+1, i] and L[i+2, i]
             if (i < n - 1) {
                 let b = d1[i];
-                if (i >= 1) {
-                    b -= m1[i - 1] * m2[i - 1] * (dd[i - 1] || 0);
-                }
+                if (i >= 1) b -= m1[i - 1] * m2[i - 1] * (dd[i - 1] || 0);
                 m1[i] = a > 0 ? b / a : 0;
             }
-            if (i < n - 2) {
-                const c = d2[i];
-                m2[i] = a > 0 ? c / a : 0;
-            }
+            if (i < n - 2) m2[i] = a > 0 ? d2[i] / a : 0;
         }
-
-        // Forward substitution (solve L z = y)
         const z = new Float64Array(n);
         for (let i = 0; i < n; i++) {
             let s = y[i];
@@ -26176,12 +27081,8 @@ class HPResidualBrick extends IndicatorBrick {
             if (i >= 2) s -= m2[i - 2] * z[i - 2];
             z[i] = s;
         }
-        // Diagonal solve (D w = z)
         const w = new Float64Array(n);
-        for (let i = 0; i < n; i++) {
-            w[i] = Math.abs(dd[i]) > 1e-20 ? z[i] / dd[i] : 0;
-        }
-        // Back substitution (solve L^T tau = w)
+        for (let i = 0; i < n; i++) w[i] = Math.abs(dd[i]) > 1e-20 ? z[i] / dd[i] : 0;
         const tau = new Float64Array(n);
         for (let i = n - 1; i >= 0; i--) {
             let s = w[i];
@@ -26192,17 +27093,481 @@ class HPResidualBrick extends IndicatorBrick {
         return tau;
     }
 
-    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
-        const lambda = Math.max(1, this.params.lambda || 1600);
-        const threshold = this.params.threshold || 2.0;
+    // ── One-sided HP: no lookahead, solves on growing window ──
+    // For each bar i, solve HP on y[0..i] and take tau[i].
+    // O(n²) but with early termination for large n (use last 500 bars).
+    _solveHPOneSided(y, n, lambda) {
+        if (n < 4) { const t = new Float64Array(n); for (let i = 0; i < n; i++) t[i] = y[i]; return t; }
+        const tau = new Float64Array(n);
+        const maxWindow = Math.min(n, 500); // cap window for performance
+        for (let i = 0; i < n; i++) {
+            const start = Math.max(0, i - maxWindow + 1);
+            const len = i - start + 1;
+            if (len < 4) { tau[i] = y[i]; continue; }
+            const sub = new Float64Array(len);
+            for (let j = 0; j < len; j++) sub[j] = y[start + j];
+            const subTau = this._solveHP(sub, len, lambda);
+            tau[i] = subTau[len - 1];
+        }
+        return tau;
+    }
 
-        // FIX V51-hp-lazyload: solve on the FULL count, not just the last
-        //   `window` bars. This is what makes the indicator lazy-load
-        //   friendly — when the user pans into older lazy-loaded history,
-        //   the residual line is there too. The solver is O(n) and runs in
-        //   ~5ms for 5000 bars, so this is cheap. The cache by
-        //   (version, count, lambda) ensures we don't re-solve every frame.
-        const cacheKey = `${version}:${count}:${lambda}`;
+    // ── Kalman HP: state-space approximation, O(n), online, no lookahead ──
+    // Model: x[t] = x[t-1] + v[t-1] + noise
+    //        v[t] = v[t-1] + noise2
+    //        y[t] = x[t] + noise3
+    // Measurement noise R ∝ 1/lambda, process noise Q ∝ lambda
+    // V105b: covariance update uses numerically stable Joseph form
+    //   (P_new = (I-KH) P (I-KH)' + R K K') to avoid p11 going negative.
+    // V105c: noise scaled by data variance for scale-invariant tuning.
+    _solveHPKalman(y, n, lambda) {
+        if (n < 4) { const t = new Float64Array(n); for (let i = 0; i < n; i++) t[i] = y[i]; return t; }
+        const tau = new Float64Array(n);
+        // V105c: scale noise by data variance
+        let dataVar = 1;
+        if (n >= 10) {
+            let sum = 0, sumSq = 0;
+            for (let i = 0; i < n; i++) { sum += y[i]; sumSq += y[i] * y[i]; }
+            const mean = sum / n;
+            dataVar = Math.max(1e-12, sumSq / n - mean * mean);
+        }
+        // State: [level, slope]
+        let x0 = y[0], x1 = 0;
+        let p00 = dataVar, p01 = 0, p11 = dataVar * 0.01;
+        // Tuning: higher lambda → smoother (less measurement noise relative to process)
+        const q = dataVar / (1 + lambda);
+        const r = dataVar * lambda / (1 + lambda);
+        for (let i = 0; i < n; i++) {
+            // Predict
+            const predX0 = x0 + x1;
+            const predX1 = x1;
+            const predP00 = p00 + p01 + p11 + q;
+            const predP01 = p01 + p11;
+            const predP11 = p11 + q;
+            // Update
+            const innov = y[i] - predX0;
+            const s = predP00 + r;
+            if (Math.abs(s) < 1e-20) { tau[i] = predX0; continue; }
+            const k0 = predP00 / s;
+            const k1 = predP01 / s;
+            x0 = predX0 + k0 * innov;
+            x1 = predX1 + k1 * innov;
+            // V105b: Joseph form covariance update (numerically stable)
+            const omk0 = 1 - k0;
+            p00 = omk0 * omk0 * predP00 + r * k0 * k0;
+            p01 = omk0 * (predP01 - k1 * predP00) + r * k0 * k1;
+            p11 = predP11 - 2 * k1 * predP01 + predP00 * k1 * k1 + r * k1 * k1;
+            tau[i] = x0;
+        }
+        return tau;
+    }
+
+    // ── Robust HP: IRLS (iteratively reweighted least squares) ──
+    // Run HP, compute residuals, downweight large residuals (Huber), re-run.
+    _solveHPRobust(y, n, lambda, iters) {
+        let tau = this._solveHP(y, n, lambda);
+        for (let iter = 0; iter < iters; iter++) {
+            const resid = new Float64Array(n);
+            for (let i = 0; i < n; i++) resid[i] = y[i] - tau[i];
+            // Compute MAD (median absolute deviation)
+            const absResid = Array.from(resid).map(Math.abs).sort((a, b) => a - b);
+            const med = absResid[Math.floor(n / 2)] || 1;
+            const mad = 1.4826 * med;
+            if (mad < 1e-10) break;
+            // Huber weights
+            const c = 1.345 * mad;
+            const w = new Float64Array(n);
+            for (let i = 0; i < n; i++) {
+                w[i] = Math.abs(resid[i]) <= c ? 1 : c / Math.abs(resid[i]);
+            }
+            // Weighted HP: solve (W + lambda*D'D) tau = W*y
+            // Approximation: weight y and re-solve (not exact but fast)
+            const wy = new Float64Array(n);
+            for (let i = 0; i < n; i++) wy[i] = y[i] * w[i];
+            tau = this._solveHPWeighted(wy, n, lambda, w);
+        }
+        return tau;
+    }
+
+    // Weighted HP solver — applies per-bar weights
+    _solveHPWeighted(y, n, lambda, w) {
+        if (n < 4) { const t = new Float64Array(n); for (let i = 0; i < n; i++) t[i] = y[i]; return t; }
+        // A = diag(w) + lambda * D'D
+        const d0 = new Float64Array(n);
+        const d1 = new Float64Array(n - 1);
+        const d2 = new Float64Array(n - 2);
+        for (let i = 0; i < n; i++) {
+            const wi = w[i] || 1;
+            if (i === 0 || i === n - 1) d0[i] = wi + lambda;
+            else if (i === 1 || i === n - 2) d0[i] = wi + 5 * lambda;
+            else d0[i] = wi + 6 * lambda;
+        }
+        for (let i = 0; i < n - 1; i++) d1[i] = (i === 0 || i === n - 2) ? -2 * lambda : -4 * lambda;
+        for (let i = 0; i < n - 2; i++) d2[i] = lambda;
+        // Same LDL^T solver as _solveHP
+        const m1 = new Float64Array(n - 1), m2 = new Float64Array(n - 2), dd = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+            let a = d0[i];
+            if (i >= 1) a -= m1[i-1] * m1[i-1] * (dd[i-1] || 0);
+            if (i >= 2) a -= m2[i-2] * m2[i-2] * (dd[i-2] || 0);
+            dd[i] = a;
+            if (i < n - 1) { let b = d1[i]; if (i >= 1) b -= m1[i-1]*m2[i-1]*(dd[i-1]||0); m1[i] = a > 0 ? b/a : 0; }
+            if (i < n - 2) m2[i] = a > 0 ? d2[i]/a : 0;
+        }
+        const z = new Float64Array(n), w_arr = new Float64Array(n), tau = new Float64Array(n);
+        for (let i = 0; i < n; i++) { let s = y[i]; if (i>=1) s -= m1[i-1]*z[i-1]; if (i>=2) s -= m2[i-2]*z[i-2]; z[i] = s; }
+        for (let i = 0; i < n; i++) w_arr[i] = Math.abs(dd[i]) > 1e-20 ? z[i]/dd[i] : 0;
+        for (let i = n-1; i >= 0; i--) { let s = w_arr[i]; if (i<n-1) s -= m1[i]*tau[i+1]; if (i<n-2) s -= m2[i]*tau[i+2]; tau[i] = s; }
+        return tau;
+    }
+
+    // V105: ── Rolling Window HP: solve HP on a sliding window of last W bars ──
+    // Causal (no lookahead). For each bar i, solve HP on y[max(0,i-W+1)..i]
+    // and take tau[i]. O(n*W) but W is small (default 200).
+    _solveHPRolling(y, n, lambda, window) {
+        if (n < 4) { const t = new Float64Array(n); for (let i = 0; i < n; i++) t[i] = y[i]; return t; }
+        const W = Math.max(20, Math.min(n, window));
+        const tau = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+            const start = Math.max(0, i - W + 1);
+            const len = i - start + 1;
+            if (len < 4) { tau[i] = y[i]; continue; }
+            const sub = new Float64Array(len);
+            for (let j = 0; j < len; j++) sub[j] = y[start + j];
+            const subTau = this._solveHP(sub, len, lambda);
+            tau[i] = subTau[len - 1];
+        }
+        return tau;
+    }
+
+    // V105: ── EWMA Trend: classic exponential smoothing, O(n), causal ──
+    _solveEWMA(y, n, alpha) {
+        const tau = new Float64Array(n);
+        if (n === 0) return tau;
+        tau[0] = y[0];
+        const a = Math.max(0.001, Math.min(1, alpha));
+        for (let i = 1; i < n; i++) tau[i] = a * y[i] + (1 - a) * tau[i-1];
+        return tau;
+    }
+
+    // V105: ── Helper: Savitzky-Golay weight computation ──
+    // Given x positions and polynomial order, returns weights for evaluating
+    // the fitted polynomial at x = 0 (i.e., the intercept coefficient).
+    _sgWeights(xs, order) {
+        const W = xs.length;
+        const K = Math.max(1, Math.min(W - 1, order));
+        const M = K + 1;
+        const A = new Float64Array(M * M);
+        for (let i = 0; i < W; i++) {
+            const x = xs[i];
+            let xpow = 1;
+            for (let j = 0; j < M; j++) {
+                let xpow2 = xpow;
+                for (let k = 0; k < M; k++) {
+                    A[j * M + k] += xpow2;
+                    xpow2 *= x;
+                }
+                xpow *= x;
+            }
+        }
+        // Invert A via Gauss-Jordan
+        const aug = new Float64Array(M * 2 * M);
+        for (let i = 0; i < M; i++) {
+            for (let j = 0; j < M; j++) aug[i * 2 * M + j] = A[i * M + j];
+            aug[i * 2 * M + M + i] = 1;
+        }
+        for (let i = 0; i < M; i++) {
+            let piv = aug[i * 2 * M + i];
+            if (Math.abs(piv) < 1e-20) {
+                for (let r = i + 1; r < M; r++) {
+                    if (Math.abs(aug[r * 2 * M + i]) > 1e-20) {
+                        for (let c = 0; c < 2 * M; c++) {
+                            const tmp = aug[i * 2 * M + c];
+                            aug[i * 2 * M + c] = aug[r * 2 * M + c];
+                            aug[r * 2 * M + c] = tmp;
+                        }
+                        piv = aug[i * 2 * M + i];
+                        break;
+                    }
+                }
+            }
+            if (Math.abs(piv) < 1e-20) continue;
+            for (let c = 0; c < 2 * M; c++) aug[i * 2 * M + c] /= piv;
+            for (let r = 0; r < M; r++) {
+                if (r === i) continue;
+                const factor = aug[r * 2 * M + i];
+                if (Math.abs(factor) < 1e-20) continue;
+                for (let c = 0; c < 2 * M; c++) aug[r * 2 * M + c] -= factor * aug[i * 2 * M + c];
+            }
+        }
+        // Weights for value at x=0: w_i = sum_k inv[0,k] * xs[i]^k
+        const w = new Float64Array(W);
+        for (let i = 0; i < W; i++) {
+            let s = 0;
+            let xpow = 1;
+            for (let k = 0; k < M; k++) {
+                s += aug[0 * 2 * M + M + k] * xpow;
+                xpow *= xs[i];
+            }
+            w[i] = s;
+        }
+        return w;
+    }
+
+    // V105: ── One-sided Savitzky-Golay: polynomial fit on past W bars, O(n*W) ──
+    // Causal. Fits polynomial of order K to past W bars (x = -(W-1), ..., 0)
+    // and returns the value at x = 0 (i.e., extrapolated to current bar).
+    _solveSavGolCausal(y, n, window, order) {
+        if (n < 4) { const t = new Float64Array(n); for (let i = 0; i < n; i++) t[i] = y[i]; return t; }
+        const W = Math.max(5, Math.min(n, window | 1)); // odd
+        const xs = new Float64Array(W);
+        for (let i = 0; i < W; i++) xs[i] = i - (W - 1); // -(W-1), ..., 0
+        const w = this._sgWeights(xs, order);
+        const tau = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+            if (i < W - 1) {
+                // EMA fallback at the start of the series
+                const a = 2 / (i + 2);
+                let e = y[0];
+                for (let j = 1; j <= i; j++) e = a * y[j] + (1 - a) * e;
+                tau[i] = e;
+            } else {
+                let s = 0;
+                for (let j = 0; j < W; j++) s += w[j] * y[i - (W - 1) + j];
+                tau[i] = s;
+            }
+        }
+        return tau;
+    }
+
+    // V105: ── One-sided Henderson: past-half of symmetric Henderson (SG order 3) weights ──
+    // Causal. Henderson weights ARE SG weights of order 3 with symmetric window.
+    // One-sided version uses only the past half (j ≤ 0), renormalized.
+    _solveHendersonCausal(y, n, length) {
+        if (n < 4) { const t = new Float64Array(n); for (let i = 0; i < n; i++) t[i] = y[i]; return t; }
+        const H = Math.max(5, Math.min(n, length | 1)); // odd
+        const m = (H - 1) / 2;
+        const xsSym = new Float64Array(H);
+        for (let i = 0; i < H; i++) xsSym[i] = i - m;
+        const wSym = this._sgWeights(xsSym, 3);
+        // Past-half: indices 0..m correspond to x = -m..0
+        const W = m + 1;
+        const w = new Float64Array(W);
+        let sum = 0;
+        for (let j = 0; j < W; j++) { w[j] = wSym[j]; sum += w[j]; }
+        if (Math.abs(sum) < 1e-10) sum = 1;
+        for (let j = 0; j < W; j++) w[j] /= sum;
+        const tau = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+            if (i < W - 1) {
+                const a = 2 / (i + 2);
+                let e = y[0];
+                for (let j = 1; j <= i; j++) e = a * y[j] + (1 - a) * e;
+                tau[i] = e;
+            } else {
+                let s = 0;
+                for (let j = 0; j < W; j++) s += w[j] * y[i - (W - 1) + j];
+                tau[i] = s;
+            }
+        }
+        return tau;
+    }
+
+    // V105: ── Christiano-Fitzgerald one-sided band-pass filter (causal) ──
+    // Approximates HP by band-passing with cutoffs pl (high-freq, period pl) and
+    // pu (low-freq, period pu). Trend = y - cycle. One-sided: uses only past data.
+    _solveCFOneSided(y, n, pl, pu) {
+        if (n < 4) { const t = new Float64Array(n); for (let i = 0; i < n; i++) t[i] = y[i]; return t; }
+        const o1 = 2 * Math.PI / Math.max(pu, 2.1);   // low-frequency cutoff (smaller omega)
+        const o2 = 2 * Math.PI / Math.max(pl, 2);     // high-frequency cutoff (larger omega)
+        const maxLag = Math.min(n - 1, Math.max(10, Math.ceil(pu * 2)));
+        const b = new Float64Array(maxLag + 1);
+        b[0] = (o2 - o1) / Math.PI;
+        for (let k = 1; k <= maxLag; k++) {
+            b[k] = (Math.sin(k * o2) - Math.sin(k * o1)) / (Math.PI * k);
+        }
+        // Enforce band-pass property: sum of weights = 0 (zero DC gain)
+        let sumB = 0;
+        for (let k = 0; k <= maxLag; k++) sumB += b[k];
+        b[0] -= sumB;
+        const tau = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+            const lag = Math.min(maxLag, i);
+            let cycle = 0;
+            for (let k = 0; k <= lag; k++) cycle += b[k] * y[i - k];
+            tau[i] = y[i] - cycle;
+        }
+        return tau;
+    }
+
+    // V105: ── Local Linear Trend Kalman: state = [level, slope], both stochastic ──
+    // Better trend tracking than basic Kalman for trending series. O(n), causal.
+    //   level[t] = level[t-1] + slope[t-1] + N(0, qLevel)
+    //   slope[t] = slope[t-1] + N(0, qSlope)
+    //   y[t]     = level[t] + N(0, rMeas)
+    // V105b: covariance update uses Joseph form for numerical stability.
+    // V105c: noise params (qLevel, qSlope, rMeas) are scaled by data variance,
+    //   so tuning is scale-invariant (works the same on $1 and $100,000 assets).
+    // V105c: better init — linear regression on burn-in window for slope/level.
+    _solveLLTKalman(y, n, qLevel, qSlope, rMeas) {
+        if (n < 4) { const t = new Float64Array(n); for (let i = 0; i < n; i++) t[i] = y[i]; return t; }
+        const tau = new Float64Array(n);
+        // V105c: scale noise by data variance for scale-invariant tuning
+        let dataVar = 1;
+        if (n >= 10) {
+            let sum = 0, sumSq = 0;
+            for (let i = 0; i < n; i++) { sum += y[i]; sumSq += y[i] * y[i]; }
+            const mean = sum / n;
+            dataVar = Math.max(1e-12, sumSq / n - mean * mean);
+        }
+        const qL = Math.max(1e-12, qLevel * dataVar);
+        const qS = Math.max(1e-12, qSlope * dataVar);
+        const r  = Math.max(1e-12, rMeas  * dataVar);
+        // V105c: better initial state via linear regression on burn-in window
+        const burnIn = Math.min(20, Math.max(4, Math.floor(n / 10)));
+        let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+        for (let i = 0; i < burnIn; i++) {
+            sumX += i; sumY += y[i]; sumXY += i * y[i]; sumX2 += i * i;
+        }
+        const meanX = sumX / burnIn, meanY = sumY / burnIn;
+        const varX = sumX2 / burnIn - meanX * meanX;
+        const covXY = sumXY / burnIn - meanX * meanY;
+        const initSlope = varX > 1e-10 ? covXY / varX : 0;
+        const initLevel = meanY - initSlope * meanX;
+        let x0 = initLevel, x1 = initSlope;
+        let p00 = dataVar, p01 = 0, p11 = dataVar * 0.01; // smaller p11 = trust init slope
+        for (let i = 0; i < n; i++) {
+            // Predict
+            const predX0 = x0 + x1;
+            const predX1 = x1;
+            const predP00 = p00 + p01 + p11 + qL;
+            const predP01 = p01 + p11;
+            const predP11 = p11 + qS;
+            // Update
+            const innov = y[i] - predX0;
+            const s = predP00 + r;
+            if (Math.abs(s) < 1e-20) { tau[i] = predX0; continue; }
+            const k0 = predP00 / s;
+            const k1 = predP01 / s;
+            x0 = predX0 + k0 * innov;
+            x1 = predX1 + k1 * innov;
+            // V105b: Joseph form covariance update (numerically stable)
+            const omk0 = 1 - k0;
+            p00 = omk0 * omk0 * predP00 + r * k0 * k0;
+            p01 = omk0 * (predP01 - k1 * predP00) + r * k0 * k1;
+            p11 = predP11 - 2 * k1 * predP01 + predP00 * k1 * k1 + r * k1 * k1;
+            tau[i] = x0;
+        }
+        return tau;
+    }
+
+    // V105: ── AR(1) Forecast Extension: extend series by N bars using AR(1) forecast ──
+    // Reduces endpoint bias of two-sided HP by providing "future" data.
+    // Returns extended series of length n + forecastLen (real data first).
+    _extendAR1(y, n, forecastLen) {
+        if (n < 10 || forecastLen < 1) return y;
+        let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, m = 0;
+        for (let i = 1; i < n; i++) {
+            sumX += y[i-1]; sumY += y[i]; sumXY += y[i-1]*y[i];
+            sumX2 += y[i-1]*y[i-1]; m++;
+        }
+        if (m < 5) return y;
+        const mx = sumX/m, my = sumY/m;
+        const cov = sumXY/m - mx*my;
+        const varX = sumX2/m - mx*mx;
+        if (varX < 1e-10) return y;
+        // Stationarity constraint: phi in [0, 0.99]
+        const phi = Math.max(0, Math.min(0.99, cov / varX));
+        const ext = new Float64Array(n + forecastLen);
+        for (let i = 0; i < n; i++) ext[i] = y[i];
+        let last = y[n-1];
+        for (let i = 0; i < forecastLen; i++) {
+            const f = my + phi * (last - my);
+            ext[n + i] = f;
+            last = f;
+        }
+        return ext;
+    }
+
+    // V105: ── Endpoint blending: replace last horizon bars with one-sided estimate (smooth blend) ──
+    // Reduces lookahead bias at the end of two-sided HP estimate.
+    _blendEndpoint(tauTS, tauOS, n, horizon) {
+        if (n < 4 || horizon < 1) return tauTS;
+        const H = Math.min(horizon, n);
+        const start = n - H;
+        const out = new Float64Array(n);
+        for (let i = 0; i < start; i++) out[i] = tauTS[i];
+        for (let i = start; i < n; i++) {
+            // Weight goes from 0 (at start of horizon) to 1 (at end), so the
+            // last bar is fully one-sided, the bar at start of horizon is unchanged.
+            const w = H > 1 ? (i - start) / (H - 1) : 1;
+            out[i] = (1 - w) * tauTS[i] + w * tauOS[i];
+        }
+        return out;
+    }
+
+    // ── Adaptive lambda: lambda scales with ATR ──
+    _computeAdaptiveLambda(baseLambda, sourceData, ohlc, count, atrPeriod) {
+        // V104b: always return an array, even on early exit
+        const fallback = new Float64Array(count).fill(baseLambda);
+        if (!ohlc?.high || !ohlc?.low || !ohlc?.close) return fallback;
+        const atr = new Float64Array(count).fill(NaN);
+        const tr = new Float64Array(count).fill(NaN);
+        for (let i = 1; i < count; i++) {
+            const h = ohlc.high[i] ?? 0, l = ohlc.low[i] ?? 0, pc = ohlc.close[i-1] ?? 0;
+            tr[i] = Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
+        }
+        // Wilder's RMA for ATR
+        let e = 0;
+        for (let i = 1; i <= atrPeriod && i < count; i++) e += tr[i] ?? 0;
+        if (atrPeriod < count) atr[atrPeriod] = e / atrPeriod;
+        for (let i = atrPeriod + 1; i < count; i++) atr[i] = (tr[i] ?? 0) / atrPeriod + atr[i-1] * (1 - 1/atrPeriod);
+        // Adaptive lambda: scale baseLambda by ratio of current ATR to median ATR
+        const validAtr = Array.from(atr.slice(atrPeriod)).filter(isFinite).sort((a,b) => a-b);
+        if (validAtr.length < 10) return fallback;
+        const medAtr = validAtr[Math.floor(validAtr.length / 2)];
+        if (medAtr < 1e-10) return fallback;
+        // Lambda[i] = baseLambda * (ATR[i] / median_ATR)^2
+        // High ATR → higher lambda → smoother trend (more robust to volatile bars)
+        const adaptiveLambda = new Float64Array(count).fill(baseLambda);
+        for (let i = atrPeriod; i < count; i++) {
+            if (isFinite(atr[i]) && atr[i] > 0) {
+                const ratio = atr[i] / medAtr;
+                adaptiveLambda[i] = baseLambda * ratio * ratio;
+            }
+        }
+        return adaptiveLambda;
+    }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        const baseLambda = Math.max(1, this.params.lambda || 1600);
+        const threshold = this.params.threshold || 2.0;
+        const filterMode = this.params.filterMode || 'two-sided';
+        const robustHP = this.params.robustHP === true;
+        const robustIters = Math.max(1, Math.min(10, this.params.robustIters || 3));
+        const adaptiveLambda = this.params.adaptiveLambda === true;
+        const atrPeriod = Math.max(5, this.params.atrPeriod || 14);
+        const zscoreNorm = this.params.zscoreNorm === true;
+        const decayWeight = this.params.decayWeight === true;
+        const decayAlpha = Math.max(0.001, this.params.decayAlpha || 0.01);
+        // V105: per-mode parameters
+        const rollingWindow = Math.max(30, this.params.rollingWindow || 200);
+        const ewmaAlpha = Math.max(0.001, Math.min(1, this.params.ewmaAlpha || 0.1));
+        const savgolWindow = Math.max(5, this.params.savgolWindow || 31);
+        const savgolOrder = Math.max(1, Math.min(6, this.params.savgolOrder || 3));
+        const cfPl = Math.max(2, this.params.cfPl || 2);
+        const cfPu = Math.max(10, this.params.cfPu || 100);
+        const hendersonLength = Math.max(5, Math.min(33, this.params.hendersonLength || 13));
+        const lltQLevel = Math.max(0.000001, this.params.lltQLevel || 0.001);
+        const lltQSlope = Math.max(0.000001, this.params.lltQSlope || 0.0001);
+        const lltRMeas = Math.max(0.0001, this.params.lltRMeas || 1.0);
+        // V105: two-sided endpoint bias correction / forecast augmentation
+        const endpointCorrection = this.params.endpointCorrection === true;
+        const endpointHorizon = Math.max(5, this.params.endpointHorizon || 40);
+        const forecastAugment = this.params.forecastAugment === true;
+        const forecastLen = Math.max(5, this.params.forecastLen || 40);
+
+        const cacheKey = `${version}:${count}:${baseLambda}:${filterMode}:${robustHP}:${robustIters}:${adaptiveLambda}:${atrPeriod}:${zscoreNorm}:${decayWeight}:${decayAlpha}:${rollingWindow}:${ewmaAlpha}:${savgolWindow}:${savgolOrder}:${cfPl}:${cfPu}:${hendersonLength}:${lltQLevel}:${lltQSlope}:${lltRMeas}:${endpointCorrection}:${endpointHorizon}:${forecastAugment}:${forecastLen}`;
         if (this._hpCacheKey === cacheKey && this._hpCache) {
             this._computed = { line: this._hpCache, count, visibleRange };
             return this._computed;
@@ -26211,28 +27576,119 @@ class HPResidualBrick extends IndicatorBrick {
 
         const line = new Float64Array(count).fill(NaN);
         if (count < 10) {
-            // Too few bars to compute second differences — return all-NaN.
             this._hpCache = line;
             this._computed = { line, count, visibleRange };
             return this._computed;
         }
 
-        // Solve HP on the FULL count — every loaded bar gets a residual.
         const y = new Float64Array(count);
         for (let i = 0; i < count; i++) y[i] = isFinite(sourceData[i]) ? sourceData[i] : 0;
-        const tau = this._solveHP(y, count, lambda);
+
+        // ── Step 1: Compute trend (tau) based on filter mode ──
+        let tau;
+        switch (filterMode) {
+            case 'one-sided':
+                tau = this._solveHPOneSided(y, count, baseLambda);
+                break;
+            case 'kalman':
+                tau = this._solveHPKalman(y, count, baseLambda);
+                break;
+            // V105: new causal filter modes
+            case 'rolling':
+                tau = this._solveHPRolling(y, count, baseLambda, rollingWindow);
+                break;
+            case 'ewma':
+                tau = this._solveEWMA(y, count, ewmaAlpha);
+                break;
+            case 'savgol':
+                tau = this._solveSavGolCausal(y, count, savgolWindow, savgolOrder);
+                break;
+            case 'cf':
+                tau = this._solveCFOneSided(y, count, cfPl, cfPu);
+                break;
+            case 'henderson':
+                tau = this._solveHendersonCausal(y, count, hendersonLength);
+                break;
+            case 'llt':
+                tau = this._solveLLTKalman(y, count, lltQLevel, lltQSlope, lltRMeas);
+                break;
+            default:
+                // two-sided (default)
+                // V105: optional forecast augmentation — extend y with AR(1) forecast,
+                // solve two-sided HP on extended series, truncate to original count.
+                if (forecastAugment) {
+                    const ext = this._extendAR1(y, count, forecastLen);
+                    const extTau = robustHP
+                        ? this._solveHPRobust(ext, count + forecastLen, baseLambda, robustIters)
+                        : this._solveHP(ext, count + forecastLen, baseLambda);
+                    tau = extTau.slice(0, count);
+                } else if (robustHP) {
+                    tau = this._solveHPRobust(y, count, baseLambda, robustIters);
+                } else {
+                    tau = this._solveHP(y, count, baseLambda);
+                }
+                // V105: optional endpoint correction — blend last horizon bars with
+                // one-sided HP estimate to reduce lookahead bias at the end.
+                if (endpointCorrection) {
+                    const tauOS = this._solveHPOneSided(y, count, baseLambda);
+                    tau = this._blendEndpoint(tau, tauOS, count, endpointHorizon);
+                }
+                break;
+        }
+
+        // ── Step 2: Compute residual ──
         for (let i = 0; i < count; i++) {
             line[i] = sourceData[i] - tau[i];
         }
 
-        // Compute std of residual for anomaly thresholding
+        // ── Step 3: Adaptive lambda (re-solve with per-bar lambda if enabled) ──
+        // Note: adaptive lambda only works with two-sided mode (one-sided/kalman
+        //   don't support per-bar lambda easily). When enabled with other modes,
+        //   we apply it as a post-hoc scaling of the residual.
+        if (adaptiveLambda && ohlc?.high && ohlc?.low) {
+            const adaptiveLambdas = this._computeAdaptiveLambda(baseLambda, sourceData, ohlc, count, atrPeriod);
+            // Scale residual: higher lambda → expect smaller residual, so scale up
+            for (let i = 0; i < count; i++) {
+                if (isFinite(adaptiveLambdas[i]) && adaptiveLambdas[i] > 0) {
+                    const scale = Math.sqrt(adaptiveLambdas[i] / baseLambda);
+                    line[i] = line[i] * scale;
+                }
+            }
+        }
+
+        // ── Step 4: Z-score normalization ──
+        if (zscoreNorm) {
+            let sum = 0, sumSq = 0, n = 0;
+            for (let i = 0; i < count; i++) {
+                if (isFinite(line[i])) { sum += line[i]; sumSq += line[i] * line[i]; n++; }
+            }
+            if (n >= 5) {
+                const mean = sum / n;
+                const std = Math.sqrt(Math.max(0, sumSq / n - mean * mean));
+                if (std > 1e-10) {
+                    for (let i = 0; i < count; i++) {
+                        if (isFinite(line[i])) line[i] = (line[i] - mean) / std;
+                    }
+                }
+            }
+        }
+
+        // ── Step 5: Half-life decay weighting ──
+        if (decayWeight) {
+            for (let i = 0; i < count; i++) {
+                if (isFinite(line[i])) {
+                    // Weight = exp(-alpha * (count - 1 - i))
+                    // Recent bars (high i) get weight ~1, old bars get less
+                    const w = Math.exp(-decayAlpha * (count - 1 - i));
+                    line[i] = line[i] * w;
+                }
+            }
+        }
+
+        // ── Step 6: Compute stats for anomaly detection ──
         let sum = 0, sumSq = 0, n = 0;
         for (let i = 0; i < count; i++) {
-            if (isFinite(line[i])) {
-                sum += line[i];
-                sumSq += line[i] * line[i];
-                n++;
-            }
+            if (isFinite(line[i])) { sum += line[i]; sumSq += line[i] * line[i]; n++; }
         }
         this._hpStd = n >= 5 ? Math.sqrt(Math.max(0, sumSq / n - (sum / n) ** 2)) : 0;
         this._hpMean = n > 0 ? sum / n : 0;
@@ -26716,17 +28172,31 @@ class VPINBrick extends IndicatorBrick {
     static META = {
         type: 'vpin',
         label: 'VPIN (Toxicity)',
-        description: 'Volume-Synchronized Probability of Informed Trading. Measures order flow toxicity from buy/sell volume imbalance. High VPIN = toxic flow = informed traders active = expect sharp moves. VPIN > 0.3 = toxic, > 0.7 = toxic shock.',
+        description: 'Volume-Synchronized Probability of Informed Trading. Measures order flow toxicity from buy/sell volume imbalance. High VPIN = toxic flow = informed traders active = expect sharp moves. VPIN > 0.3 = toxic, > 0.7 = toxic shock. V106: BVC mode (linear or normal CDF), σ_tick rolling estimate, optional VPIN rate-of-change output.',
         category: 'composite',
         tags: ['vpin', 'toxicity', 'orderflow', 'informed', 'trading', 'microstructure', 'statistics'],
         panelMode: 'separate',
         params: [
             new BrickParam({ name: 'window', label: 'Window (bars)', default: 50, min: 10, max: 500, step: 5, group: 'Model' }),
             new BrickParam({ name: 'buckets', label: 'Volume buckets', default: 50, min: 5, max: 200, step: 5, group: 'Model' }),
+            // V106: BVC classification mode
+            new BrickParam({ name: 'bvcMode', label: 'BVC Mode', type: 'select', default: 'linear', group: 'Advanced',
+                options: [
+                    { value: 'linear', label: 'Linear ((c-o)/range + 0.5)' },
+                    { value: 'normal', label: 'Normal CDF (Φ((c-o)/σ_tick))' },
+                ],
+                tooltip: 'Linear: fast, naive classification. Normal CDF: proper BVC per Easley-López de Prado-O\'Hara (2012), uses tick-volatility for saturation.' }),
+            new BrickParam({ name: 'sigmaTickPeriod', label: 'σ_tick Period', default: 20, min: 5, max: 200, step: 1, group: 'Advanced',
+                tooltip: 'Rolling window for tick volatility estimate (used by Normal CDF BVC).' }),
+            // V106: VPIN rate-of-change output
+            new BrickParam({ name: 'showRate', label: 'Show dVPIN/dt', type: 'bool', default: false, group: 'Display',
+                tooltip: 'Plot VPIN rate-of-change as second line. Sudden spikes in dVPIN/dt = toxicity shock.' }),
+            new BrickParam({ name: 'ratePeriod', label: 'Rate Period', default: 5, min: 1, max: 50, step: 1, group: 'Display' }),
         ],
         inputs: [new BrickInput({ name: 'source', label: 'Source', default: 'close' })],
         outputs: [
             new BrickOutput({ name: 'line', label: 'VPIN', type: 'line', color: '#ef5350' }),
+            new BrickOutput({ name: 'rate', label: 'dVPIN/dt', type: 'line', color: '#ffa726', lineWidth: 1.5, alpha: 0.8, optional: true, defaultVisible: false }),
         ],
         levels: [
             new BrickLevel({ value: 0, label: '0', color: 'rgba(255,255,255,0.15)', lineWidth: 1, dash: [2, 4], optional: true, name: 'zero', defaultVisible: true }),
@@ -26740,39 +28210,109 @@ class VPINBrick extends IndicatorBrick {
         this.needsOHLC = true;
     }
 
+    // V106: Normal CDF Φ(x) via Abramowitz & Stegun 7.1.26 (max err 7.5e-8)
+    _normCDF(x) {
+        const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
+        const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+        const sign = x < 0 ? -1 : 1;
+        x = Math.abs(x) / Math.sqrt(2);
+        const t = 1 / (1 + p * x);
+        const y = 1 - ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+        return 0.5 * (1 + sign * y);
+    }
+
     _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
         const window = Math.max(10, Math.floor(this.params.window || 50));
         const numBuckets = Math.max(5, Math.floor(this.params.buckets || 50));
+        // V106: BVC mode + σ_tick period + rate output
+        const bvcMode = this.params.bvcMode || 'linear';
+        const sigmaTickPeriod = Math.max(5, Math.floor(this.params.sigmaTickPeriod || 20));
+        const showRate = this.params.showRate === true;
+        const ratePeriod = Math.max(1, Math.floor(this.params.ratePeriod || 5));
 
         const vpin = new Float64Array(count).fill(NaN);
+        const rate = new Float64Array(count).fill(NaN);
 
         if (!ohlc || count < window) {
-            this._computed = { line: vpin, count, visibleRange };
+            this._computed = { line: vpin, rate, count, visibleRange };
             return this._computed;
         }
 
         const O = ohlc.open, H = ohlc.high, L = ohlc.low, C = ohlc.close, V = ohlc.vol;
 
-        // V55-vpin-perf: cache buyVol/sellVol arrays by data version.
-        //   Previously these were recomputed every frame (O(N) each), causing
-        //   major slowdowns. Now we only recompute when data version changes.
+        // V55-vpin-perf: cache buyVol/sellVol arrays by data version AND BVC mode + σ_tick period.
+        //   V106: cache key extended to include BVC mode and σ_tick period,
+        //   because buy/sell classification depends on them.
         const dataVersion = manager?._lastDataStore?._version || 0;
-        if (this._vpinBuyVol && this._vpinDataVersion !== dataVersion) {
+        const classKey = `${dataVersion}:${bvcMode}:${sigmaTickPeriod}`;
+        if (this._vpinBuyVol && this._vpinClassKey !== classKey) {
             this._vpinBuyVol = null;
             this._vpinSellVol = null;
         }
+        this._vpinClassKey = classKey;
         this._vpinDataVersion = dataVersion;
 
         if (!this._vpinBuyVol || this._vpinBuyVol.length < count) {
             this._vpinBuyVol = new Float64Array(count);
             this._vpinSellVol = new Float64Array(count);
+            // V106: precompute σ_tick rolling estimate (std of close-open) for normal CDF BVC
+            let sigmaTick = 0;
+            const sigmaBuf = new Float64Array(sigmaTickPeriod);
+            let sigmaBufFill = 0, sigmaBufIdx = 0, sigmaSum = 0, sigmaSumSq = 0;
             for (let i = 0; i < count; i++) {
                 const o = O[i], h = H[i], l = L[i], c = C[i], v = V[i];
                 if (!isFinite(v) || v <= 0) continue;
-                const range = Math.max(1e-12, (isFinite(h) && isFinite(l)) ? (h - l) : Math.abs(c - o));
-                const buyFrac = isFinite(o) && isFinite(c)
-                    ? Math.max(0, Math.min(1, (c - o) / range + 0.5))
-                    : 0.5;
+                // Compute tick volatility proxy = std of (close - open) over rolling window
+                if (isFinite(o) && isFinite(c)) {
+                    const diff = c - o;
+                    // Maintain rolling variance via Welford's algorithm
+                    if (sigmaBufFill < sigmaTickPeriod) {
+                        sigmaBuf[sigmaBufIdx] = diff;
+                        sigmaSum += diff;
+                        sigmaSumSq += diff * diff;
+                        sigmaBufFill++;
+                        if (sigmaBufFill === sigmaTickPeriod) {
+                            const mean = sigmaSum / sigmaBufFill;
+                            const variance = Math.max(0, sigmaSumSq / sigmaBufFill - mean * mean);
+                            sigmaTick = Math.sqrt(variance);
+                        }
+                    } else {
+                        const old = sigmaBuf[sigmaBufIdx];
+                        sigmaSum -= old;
+                        sigmaSumSq -= old * old;
+                        sigmaBuf[sigmaBufIdx] = diff;
+                        sigmaSum += diff;
+                        sigmaSumSq += diff * diff;
+                        const mean = sigmaSum / sigmaTickPeriod;
+                        const variance = Math.max(0, sigmaSumSq / sigmaTickPeriod - mean * mean);
+                        sigmaTick = Math.sqrt(variance);
+                    }
+                    sigmaBufIdx = (sigmaBufIdx + 1) % sigmaTickPeriod;
+                }
+                let buyFrac;
+                if (bvcMode === 'normal') {
+                    // V106: proper BVC = Φ((close - open) / σ_tick)
+                    // V106b: if σ_tick ≈ 0 (no variation in close-open, e.g. constant trend),
+                    //   fall back to a fraction of the high-low range as σ_tick estimate.
+                    //   This handles the degenerate case where every bar has the same direction.
+                    let sigmaUse = sigmaTick;
+                    if (sigmaUse < 1e-10) {
+                        const range = (isFinite(h) && isFinite(l)) ? Math.max(1e-12, h - l) : 1e-12;
+                        // Heuristic: tick vol ≈ range / 6 (so range ≈ ±3σ ≈ 99.7% of moves)
+                        sigmaUse = range / 6;
+                    }
+                    if (!isFinite(o) || !isFinite(c) || sigmaUse < 1e-12) {
+                        buyFrac = 0.5;
+                    } else {
+                        buyFrac = this._normCDF((c - o) / sigmaUse);
+                    }
+                } else {
+                    // Linear: (close - open) / range + 0.5 (original fast approximation)
+                    const range = Math.max(1e-12, (isFinite(h) && isFinite(l)) ? (h - l) : Math.abs(c - o));
+                    buyFrac = isFinite(o) && isFinite(c)
+                        ? Math.max(0, Math.min(1, (c - o) / range + 0.5))
+                        : 0.5;
+                }
                 this._vpinBuyVol[i] = v * buyFrac;
                 this._vpinSellVol[i] = v * (1 - buyFrac);
             }
@@ -26854,8 +28394,62 @@ class VPINBrick extends IndicatorBrick {
             }
         }
 
-        this._computed = { line: vpin, count, visibleRange };
+        // V106: VPIN rate-of-change (dVPIN/dt)
+        //   = (VPIN[t] - VPIN[t - ratePeriod]) / ratePeriod
+        //   Sudden spikes in dVPIN/dt = toxicity shock (informed traders just entered).
+        if (showRate) {
+            for (let i = ratePeriod; i < count; i++) {
+                const cur = vpin[i];
+                const prev = vpin[i - ratePeriod];
+                if (isFinite(cur) && isFinite(prev)) {
+                    rate[i] = (cur - prev) / ratePeriod;
+                }
+            }
+        }
+
+        this._computed = { line: vpin, rate, count, visibleRange };
         return this._computed;
+    }
+
+    render(ctx, xScale, yScale, xData, computed, visibleRange, layout) {
+        if (!computed?.line) return;
+        const [iMin, iMax] = visibleRange;
+
+        this._drawLevels(ctx, yScale, layout);
+
+        // Draw VPIN line
+        const lineColor = this.outputStyles.line?.color || '#ef5350';
+        const lineWidth = this.outputStyles.line?.lineWidth || 1.5;
+        this._drawLine(ctx, computed.line, lineColor, lineWidth, 0.85,
+            xScale, yScale, xData, iMin, iMax, 'line');
+
+        // V106: optional rate-of-change line
+        if (this.params.showRate === true && computed.rate) {
+            const rateColor = this.outputStyles.rate?.color || '#ffa726';
+            const rateWidth = this.outputStyles.rate?.lineWidth || 1.5;
+            // Scale rate to fit same panel as VPIN (rate is typically small)
+            // Use a temporary scaled copy so the original isn't mutated
+            const scaledRate = new Float64Array(computed.rate.length);
+            for (let i = 0; i < scaledRate.length; i++) {
+                const r = computed.rate[i];
+                // Find max |rate| in visible range for normalization
+                scaledRate[i] = r;
+            }
+            let maxAbsRate = 0;
+            for (let i = iMin; i <= iMax; i++) {
+                if (isFinite(scaledRate[i])) {
+                    if (Math.abs(scaledRate[i]) > maxAbsRate) maxAbsRate = Math.abs(scaledRate[i]);
+                }
+            }
+            if (maxAbsRate > 1e-10) {
+                // Scale to [-0.5, 0.5] range so it overlays VPIN [0, 1] nicely
+                for (let i = 0; i < scaledRate.length; i++) {
+                    if (isFinite(scaledRate[i])) scaledRate[i] = 0.5 + 0.5 * (scaledRate[i] / maxAbsRate);
+                }
+                this._drawLine(ctx, scaledRate, rateColor, rateWidth, 0.7,
+                    xScale, yScale, xData, iMin, iMax, 'rate');
+            }
+        }
     }
 }
 
@@ -30880,10 +32474,10 @@ class VolumeProfileRenderer {
 
 
 // ── V39: явный экспорт в window (обратная совместимость) ──
-Object.assign(window, { MA_SPECS, createMABrick, OSCILLATOR_SPECS, createOscillatorBrick, AUX_DATA_SPECS, createAuxBrick, IndicatorBase, EMACloudIndicator, AOIndicator, EMABufferPool, INDICATOR_TYPES, IndicatorManager, BrickParam, BrickOutput, ColorScheme, _darkenHex, BrickInput, BrickLevel, BrickBand, IndicatorBrick, BrickRegistry, brickRegistry, _maSMA, _maEMA, _maWMA, _maLSMA, _maHMA, _maJMA, _maTEMA, _maDEMA, _maTMA, _maVAMA, _maMF, _maEDSMA, _maKijun, _resolveSrc, MACDBrick, StochasticBrick, BandsBrick, AOBrick, ZigZagBrick, SupportResistanceBrick, OrderBlockBrick, GapDetectorBrick, VolRevFractalsBrick, ZScoreBrick, OUBandsBrick, HistoricalPocBrick, HPResidualBrick, KNNAnomalyBrick, VolNormCandlesBrick, AuxDataManager, AuxSeriesBrick, FundingRateBrick, OpenInterestBrick, RelPerfBrick, GammaExposureBrick, EconEventsBrick, DivergenceDetector, VolumeProfileRenderer });
+Object.assign(window, { MA_SPECS, createMABrick, OSCILLATOR_SPECS, createOscillatorBrick, AUX_DATA_SPECS, createAuxBrick, IndicatorBase, EMACloudIndicator, AOIndicator, EMABufferPool, INDICATOR_TYPES, IndicatorManager, BrickParam, BrickOutput, ColorScheme, _darkenHex, BrickInput, BrickLevel, BrickBand, IndicatorBrick, BrickRegistry, brickRegistry, _maSMA, _maEMA, _maWMA, _maLSMA, _maHMA, _maJMA, _maTEMA, _maDEMA, _maTMA, _maVAMA, _maMF, _maEDSMA, _maKijun, _resolveSrc, MACDBrick, StochasticBrick, BandsBrick, AOBrick, ZigZagBrick, SupportResistanceBrick, OrderBlockBrick, GapDetectorBrick, VolRevFractalsBrick, ZScoreBrick, ZScoreEnsembleBrick, OUBandsBrick, HistoricalPocBrick, HPResidualBrick, KNNAnomalyBrick, VolNormCandlesBrick, AuxDataManager, AuxSeriesBrick, FundingRateBrick, OpenInterestBrick, RelPerfBrick, GammaExposureBrick, EconEventsBrick, DivergenceDetector, VolumeProfileRenderer });
 
 // ── V39: регистрация в реестре модулей ──
-CE.registerModule('ce-indicators', ['ce-data-layer', 'ce-math-utils', 'ce-renderers'], ['MA_SPECS', 'createMABrick', 'IndicatorBase', 'EMACloudIndicator', 'AOIndicator', 'EMABufferPool', 'INDICATOR_TYPES', 'IndicatorManager', 'BrickParam', 'BrickOutput', 'ColorScheme', '_darkenHex', 'BrickInput', 'BrickLevel', 'BrickBand', 'IndicatorBrick', 'BrickRegistry', 'brickRegistry', '_maSMA', '_maEMA', '_maWMA', '_maLSMA', '_maHMA', '_maJMA', '_maTEMA', '_maDEMA', '_maTMA', '_maVAMA', '_maMF', '_maEDSMA', '_maKijun', 'SMABrick', 'EMABrick', '_resolveSrc', 'WMABrick', 'DEMABrick', 'TEMABrick', 'TMABrick', 'LSMABrick', 'HMABrick', 'JMABrick', 'VAMABrick', 'MFBrick', 'EDSMABrick', 'KijunBrick', 'RSIBrick', 'BollingerBrick', 'MACDBrick', 'ATRBrick', 'StochasticBrick', 'BandsBrick', 'AOBrick', 'ALMABrick', 'KalmanBrick', 'ZigZagBrick', 'SupportResistanceBrick', 'OrderBlockBrick', 'GapDetectorBrick', 'MFIBrick', 'DPOBrick', 'VolRevFractalsBrick', 'ZScoreBrick', 'OUBandsBrick', 'HistoricalPocBrick', 'HPResidualBrick', 'KNNAnomalyBrick', 'VolNormCandlesBrick', 'AuxDataManager', 'AuxSeriesBrick', 'AUX_DATA_SPECS', 'createAuxBrick', 'FundingRateBrick', 'OpenInterestBrick', 'RelPerfBrick', 'GammaExposureBrick', 'EconEventsBrick', 'DivergenceDetector', 'VolumeProfileRenderer'], 'WORKER-SAFE');
+CE.registerModule('ce-indicators', ['ce-data-layer', 'ce-math-utils', 'ce-renderers'], ['MA_SPECS', 'createMABrick', 'IndicatorBase', 'EMACloudIndicator', 'AOIndicator', 'EMABufferPool', 'INDICATOR_TYPES', 'IndicatorManager', 'BrickParam', 'BrickOutput', 'ColorScheme', '_darkenHex', 'BrickInput', 'BrickLevel', 'BrickBand', 'IndicatorBrick', 'BrickRegistry', 'brickRegistry', '_maSMA', '_maEMA', '_maWMA', '_maLSMA', '_maHMA', '_maJMA', '_maTEMA', '_maDEMA', '_maTMA', '_maVAMA', '_maMF', '_maEDSMA', '_maKijun', 'SMABrick', 'EMABrick', '_resolveSrc', 'WMABrick', 'DEMABrick', 'TEMABrick', 'TMABrick', 'LSMABrick', 'HMABrick', 'JMABrick', 'VAMABrick', 'MFBrick', 'EDSMABrick', 'KijunBrick', 'RSIBrick', 'BollingerBrick', 'MACDBrick', 'ATRBrick', 'StochasticBrick', 'BandsBrick', 'AOBrick', 'ALMABrick', 'KalmanBrick', 'ZigZagBrick', 'SupportResistanceBrick', 'OrderBlockBrick', 'GapDetectorBrick', 'MFIBrick', 'DPOBrick', 'VolRevFractalsBrick', 'ZScoreBrick', 'ZScoreEnsembleBrick', 'OUBandsBrick', 'HistoricalPocBrick', 'HPResidualBrick', 'KNNAnomalyBrick', 'VolNormCandlesBrick', 'AuxDataManager', 'AuxSeriesBrick', 'AUX_DATA_SPECS', 'createAuxBrick', 'FundingRateBrick', 'OpenInterestBrick', 'RelPerfBrick', 'GammaExposureBrick', 'EconEventsBrick', 'DivergenceDetector', 'VolumeProfileRenderer'], 'WORKER-SAFE');
 })(window.CE, window);
 
 (function CE$module$ce$main$overlay$renderer(CE, window) {
@@ -37024,6 +38618,9 @@ class OverlayManager {
 
     // ── Rendering ──
     render(ctx, layout, xScale, yScales) {
+        // V103b: invalidate resolved cache at start of each render frame
+        //   so style changes (from settings modal) are picked up.
+        this._resolvedCache = new Map();
         const selectedKey = this._selectedTrendLineKey;
         // highlights so existing overlays don't show endpoint/vertex markers.
         const activeTool = this._ctx.config?._activeToolName;
@@ -40155,7 +41752,8 @@ const TOOL_MARKER_FILL = '#58a6ff';
 const TOOL_MARKER_STROKE = '#ffffff';
 
 // ─── Базовый style для всех trendline-based инструментов ─────────────────────
-const TRENDLINE_BASE_STYLE = {
+// V103: mutable so settings modal can change defaults for future lines
+let TRENDLINE_BASE_STYLE = {
     lineColor: TOOL_LINE_COLOR, lineStyle: 'solid', lineWidth: 1.5, lineAlpha: 0.9,
 };
 
@@ -47589,6 +49187,12 @@ class Engine {
         };
         this.overlay = new OverlayManager(this._overlayCtx);
 
+        // V103: wire onSettings callback — opens a DOM modal for editing
+        //   overlay object style (color, lineWidth, lineStyle, alpha).
+        this.overlay.setActionCallbacks({
+            onSettings: (obj) => this._openOverlaySettingsModal(obj)
+        });
+
         // V37 step 16: register overlay-state CommandBus channel for worker.
         // Worker can request: { action: 'snapshot' } → full serialized state,
         // { action: 'diff' } → incremental diff since last request.
@@ -47775,6 +49379,216 @@ class Engine {
 
         // ── Hooks: ready ──
         this.hooks.fire('ready', this.api, { config: this.config });
+    }
+
+    /**
+     * V103: Open a DOM modal for editing overlay object style.
+     * Allows changing: color, lineWidth, lineStyle, alpha.
+     * Live-updates the object as the user edits.
+     */
+    _openOverlaySettingsModal(obj) {
+        if (!obj) return;
+        const existing = document.getElementById('overlay-settings-modal');
+        if (existing) existing.remove();
+
+        const overlayEl = document.createElement('div');
+        overlayEl.id = 'overlay-settings-modal';
+        overlayEl.style.cssText = `
+            position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+            display: flex; align-items: center; justify-content: center;
+            z-index: 10000; font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            transition: padding-bottom 0.2s ease;
+        `;
+        const modal = document.createElement('div');
+        modal.style.cssText = `
+            background: #161b22; color: #e6edf3; border-radius: 8px;
+            padding: 16px 20px; min-width: 280px; max-width: 90vw;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+            border: 1px solid rgba(255,255,255,0.1);
+        `;
+        const title = document.createElement('div');
+        title.textContent = 'Line Settings';
+        title.style.cssText = 'font-size: 14px; font-weight: 600; margin-bottom: 12px; color: #fff;';
+        modal.appendChild(title);
+
+        const s = obj.style || {};
+        const makeRow = (labelText, inputEl) => {
+            const row = document.createElement('div');
+            row.style.cssText = 'display: flex; align-items: center; justify-content: space-between; margin: 8px 0;';
+            const lbl = document.createElement('label');
+            lbl.textContent = labelText;
+            lbl.style.cssText = 'font-size: 12px; color: #8b949e; flex: 1;';
+            inputEl.style.cssText = `
+                background: #0d1117; color: #e6edf3; border: 1px solid rgba(255,255,255,0.15);
+                border-radius: 4px; padding: 4px 8px; font-size: 12px; width: 100px;
+                font-family: monospace; text-align: right;
+            `;
+            row.appendChild(lbl);
+            row.appendChild(inputEl);
+            return row;
+        };
+
+        // Color
+        const colorInput = document.createElement('input');
+        colorInput.type = 'color';
+        colorInput.value = s.lineColor || '#58a6ff';
+        colorInput.style.cssText = 'width: 50px; height: 24px; padding: 0; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; background: transparent; cursor: pointer;';
+        modal.appendChild(makeRow('Color', colorInput));
+
+        // Line width — plain type=text (no inputMode — it blocks Backspace on Android)
+        const widthInput = document.createElement('input');
+        widthInput.type = 'text';
+        widthInput.value = String(s.lineWidth ?? 1.5);
+        modal.appendChild(makeRow('Width', widthInput));
+
+        // Alpha
+        const alphaInput = document.createElement('input');
+        alphaInput.type = 'text';
+        alphaInput.value = String(s.lineAlpha ?? 0.9);
+        modal.appendChild(makeRow('Alpha', alphaInput));
+
+        // Line style
+        const styleSelect = document.createElement('select');
+        for (const ls of ['solid', 'dash', 'dot', 'dashdot']) {
+            const opt = document.createElement('option');
+            opt.value = ls; opt.textContent = ls;
+            if ((s.lineStyle || 'solid') === ls) opt.selected = true;
+            styleSelect.appendChild(opt);
+        }
+        modal.appendChild(makeRow('Style', styleSelect));
+
+        // "Apply to future lines" checkbox
+        const futureRow = document.createElement('div');
+        futureRow.style.cssText = 'display: flex; align-items: center; gap: 6px; margin: 10px 0;';
+        const futureCb = document.createElement('input');
+        futureCb.type = 'checkbox';
+        futureCb.checked = true;
+        futureCb.style.cssText = 'width: 16px; height: 16px; cursor: pointer;';
+        const futureLbl = document.createElement('label');
+        futureLbl.textContent = 'Apply to future lines';
+        futureLbl.style.cssText = 'font-size: 11px; color: #8b949e; cursor: pointer;';
+        futureLbl.onclick = () => { futureCb.checked = !futureCb.checked; };
+        futureRow.appendChild(futureCb);
+        futureRow.appendChild(futureLbl);
+        modal.appendChild(futureRow);
+
+        // Close button
+        const btnRow = document.createElement('div');
+        btnRow.style.cssText = 'display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end;';
+        const closeBtn = document.createElement('button');
+        closeBtn.textContent = 'Close';
+        closeBtn.style.cssText = `
+            background: #58a6ff; color: #fff; border: none;
+            border-radius: 4px; padding: 6px 14px; font-size: 12px; cursor: pointer;
+        `;
+        btnRow.appendChild(closeBtn);
+        modal.appendChild(btnRow);
+
+        overlayEl.appendChild(modal);
+        document.body.appendChild(overlayEl);
+
+        // V103b: handle virtual keyboard — shift modal up when keyboard appears
+        const _onVpResize = () => {
+            if (window.visualViewport) {
+                const vh = window.visualViewport.height;
+                const wh = window.innerHeight;
+                const kbH = wh - vh;
+                if (kbH > 50) {
+                    // Keyboard is visible — shift modal up
+                    overlayEl.style.paddingBottom = kbH + 'px';
+                    overlayEl.style.alignItems = 'flex-start';
+                    overlayEl.style.paddingTop = '20px';
+                } else {
+                    overlayEl.style.paddingBottom = '0px';
+                    overlayEl.style.alignItems = 'center';
+                    overlayEl.style.paddingTop = '0px';
+                }
+            }
+        };
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', _onVpResize);
+        }
+        window.addEventListener('resize', _onVpResize);
+
+        const close = () => {
+            window.removeEventListener('resize', _onVpResize);
+            if (window.visualViewport) window.visualViewport.removeEventListener('resize', _onVpResize);
+            overlayEl.remove();
+        };
+        closeBtn.onclick = close;
+        // V103c: only close on backdrop click, NOT on input/select clicks
+        overlayEl.addEventListener('click', (e) => {
+            if (e.target === overlayEl) close();
+        });
+        // Prevent any touch events on the overlay from closing the modal
+        // when they land on inputs
+        overlayEl.addEventListener('touchstart', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'LABEL') {
+                e.stopPropagation();
+            }
+        }, { passive: true });
+
+        // Live updates — guard against NaN, store previous valid values
+        let _lastValidW = s.lineWidth ?? 1.5;
+        let _lastValidA = s.lineAlpha ?? 0.9;
+        const applyLive = () => {
+            const wStr = widthInput.value.trim();
+            const aStr = alphaInput.value.trim();
+            const w = parseFloat(wStr);
+            const a = parseFloat(aStr);
+            try { devLog('[V103-modal] applyLive', {
+                wStr, aStr, w, a,
+                objLineWidth: obj.style?.lineWidth,
+                objLineAlpha: obj.style?.lineAlpha,
+                objLineColor: obj.style?.lineColor,
+            }); } catch(_) {}
+            obj.style.lineColor = colorInput.value;
+            if (wStr !== '' && isFinite(w) && w > 0) {
+                obj.style.lineWidth = w;
+                _lastValidW = w;
+            }
+            if (aStr !== '' && isFinite(a) && a >= 0 && a <= 1) {
+                obj.style.lineAlpha = a;
+                _lastValidA = a;
+            }
+            obj.style.lineStyle = styleSelect.value;
+            // V103: also apply to future lines if checkbox is on
+            if (futureCb.checked) {
+                if (typeof TRENDLINE_BASE_STYLE !== 'undefined') {
+                    TRENDLINE_BASE_STYLE.lineColor = colorInput.value;
+                    if (isFinite(w) && w > 0) TRENDLINE_BASE_STYLE.lineWidth = w;
+                    if (isFinite(a) && a >= 0 && a <= 1) TRENDLINE_BASE_STYLE.lineAlpha = a;
+                    TRENDLINE_BASE_STYLE.lineStyle = styleSelect.value;
+                }
+            }
+            this.dirty?.setAll?.();
+            this.requestRender?.();
+        };
+        [colorInput].forEach(el => el.addEventListener('change', applyLive));
+        [widthInput, alphaInput].forEach(el => {
+            el.addEventListener('input', (e) => {
+                try { devLog('[V103-modal] input event', { id: e.target === widthInput ? 'width' : 'alpha', value: e.target.value, type: e.type }); } catch(_) {}
+                applyLive();
+            });
+            el.addEventListener('keydown', (e) => {
+                try { devLog('[V103-modal] keydown', { id: e.target === widthInput ? 'width' : 'alpha', key: e.key, value: e.target.value }); } catch(_) {}
+            });
+            el.addEventListener('focus', (e) => {
+                try { devLog('[V103-modal] focus', { id: e.target === widthInput ? 'width' : 'alpha' }); } catch(_) {}
+            });
+            el.addEventListener('blur', (e) => {
+                try { devLog('[V103-modal] blur', { id: e.target === widthInput ? 'width' : 'alpha', value: e.target.value }); } catch(_) {}
+                // Restore last valid value on blur if empty
+                if (!e.target.value.trim()) {
+                    if (e.target === widthInput) e.target.value = String(_lastValidW);
+                    else e.target.value = String(_lastValidA);
+                    applyLive();
+                }
+            });
+        });
+        styleSelect.addEventListener('change', applyLive);
+
+        setTimeout(() => colorInput.focus(), 0);
     }
 
     // ── Delegated accessors — maintain backward compatibility ──
@@ -52273,14 +54087,17 @@ class RatioAdapter extends DataSourceAdapter {
         return { nativeTf: tf, factor: 1 };
     }
 
-    /** Compute ratio candles from numerator + denominator arrays. */
+    /** Compute ratio candles from numerator + denominator arrays.
+     *  V107e: skip candles where denominator close is 0 or NaN (would produce
+     *    Infinity/NaN in the ratio). Original data from exchanges is never
+     *    zero, but defensive checks prevent garbage output on edge cases. */
     _computeRatio(numCandles, denCandles) {
         const denMap = new Map();
         for (const d of denCandles) denMap.set(d._x, d);
         const result = [];
         for (const n of numCandles) {
             const d = denMap.get(n._x);
-            if (!d || d.close === 0) continue;
+            if (!d || !isFinite(d.close) || d.close === 0) continue;
             result.push({
                 _x: n._x,
                 open:  n.open  / d.open,
@@ -54764,6 +56581,21 @@ class ToolbarController {
                 _safeStorage.setItem('chartEngine_headerPos', isBottom ? 'bottom' : 'top');
             } catch (err) {}
         });
+        // V103: Volume Profile width cycle
+        this._on(this._el('btn-vp-width'), 'click', (e) => {
+            const engine = window._chart?.engine;
+            if (!engine?.config?.settings?.volumeProfile) return;
+            const vp = engine.config.settings.volumeProfile;
+            const widths = [10, 15, 20, 25, 30, 35, 40, 50];
+            const cur = vp.widthPercent || 25;
+            const idx = widths.indexOf(cur);
+            const next = widths[(idx + 1) % widths.length];
+            vp.widthPercent = next;
+            e.target.textContent = `VP Width: ${next}%`;
+            try { _safeStorage.setItem('chartEngine_vpWidth', String(next)); } catch(_) {}
+            engine.dirty?.setAll?.();
+            engine.requestRender?.();
+        });
         // Restore persisted state
         try {
             const stored = _safeStorage.getItem('chartEngine_headerPos');
@@ -54779,6 +56611,18 @@ class ToolbarController {
                 }
             }
         } catch (err) {}
+        // V103: restore VP width
+        try {
+            const vpW = _safeStorage.getItem('chartEngine_vpWidth');
+            if (vpW) {
+                const engine = window._chart?.engine;
+                if (engine?.config?.settings?.volumeProfile) {
+                    engine.config.settings.volumeProfile.widthPercent = parseInt(vpW, 10) || 25;
+                }
+                const btn = this._el('btn-vp-width');
+                if (btn) btn.textContent = `VP Width: ${vpW}%`;
+            }
+        } catch (_) {}
 
         // V49n-fix: persistent ResizeObserver on wrapper — calls engine.resize()
         //   whenever the wrapper's size changes. This catches window resize
@@ -58289,6 +60133,9 @@ class ChartFactory {
         // V51-timezone: timezone selector button
         _addMenuBtn(['btn-timezone',    'TZ: ' + (getTimezone() === 'local' ? 'Local' : getTimezone()), {}]);
         _addMenuSep();
+        // V103: Volume Profile width
+        _addMenuLabel('Volume Profile');
+        _addMenuBtn(['btn-vp-width',    'VP Width: 25%', {}]);
 
         // ─── Data & Cache ───
         _addMenuLabel('Data & Cache');
@@ -60397,6 +62244,7 @@ class ChartFactory {
                             existingInd._vpinBuyVol = null;
                             existingInd._vpinSellVol = null;
                             existingInd._vpinDataVersion = -1;
+                            existingInd._vpinClassKey = null;  // V106: also clear class key
                         }
                         // V55-prob-cache: clear probability MC caches.
                         if (existingInd._hpocProbCache) {
@@ -61677,11 +63525,41 @@ class ChartFactory {
         }
 
         // Format a number with up to maxDec decimals, trimming trailing zeros.
+        // V107f-ratio-export: for very small numbers (|v| < 0.001, e.g. ratio
+        //   values like DOGE/ETH ≈ 0.0003 or SHIB/ETH ≈ 0.000000007), fixed
+        //   4-decimal precision truncates to "0.0000" → "0" — losing all
+        //   information. Fix: use more decimal places for small numbers,
+        //   and scientific notation for extremely small values.
         function _fmtNum(v, maxDec) {
             if (maxDec == null) maxDec = 4;
             if (v == null || typeof v !== 'number' || !isFinite(v)) return '\u2014';  // em dash
+            if (v === 0) return '0';
             if (Number.isInteger(v)) return String(v);
-            const s = v.toFixed(maxDec);
+            const absV = Math.abs(v);
+            // V107f: for very small numbers, use more precision to avoid
+            //   truncating to "0.0000". Scale decimals based on magnitude.
+            //   - |v| >= 1: use maxDec (default 4)
+            //   - |v| >= 0.001: use max(4, 6) decimals
+            //   - |v| >= 0.000001: use up to 10 decimals
+            //   - |v| < 0.000001: use scientific notation (6 sig figs)
+            let s;
+            if (absV >= 1) {
+                s = v.toFixed(maxDec);
+            } else if (absV >= 0.001) {
+                s = v.toFixed(Math.max(maxDec, 6));
+            } else if (absV >= 0.000001) {
+                // Use enough decimals to show at least 4 significant digits
+                // e.g. 0.000034 → 8 decimals → "0.00003400" → trim → "0.000034"
+                const sigDecs = Math.max(8, maxDec + 4);
+                s = v.toFixed(sigDecs);
+            } else {
+                // Extremely small: scientific notation with 6 significant figures
+                // e.g. 0.000000007 → "7.000000e-9" → "7e-9"
+                s = v.toExponential(6);
+                // Simplify: "7.000000e-9" → "7e-9"
+                s = s.replace(/\.?0+e/, 'e');
+                return s;
+            }
             // Trim trailing zeros + dangling dot, but keep at least one digit.
             return s.replace(/0+$/, '').replace(/\.$/, '') || '0';
         }
@@ -64913,7 +66791,17 @@ const ChartStatePersistence = (() => {
 
             try {
                 const src = state.source.type || 'binance';
-                const symbol = state.source.symbol || 'BTCUSDT';
+                // V107e-ratio-restore: for ratio mode, DO NOT use the saved
+                //   composite symbol ("DOGEUSDT/ETHUSDT") — it would be passed
+                //   to RatioAdapter.switchAsset as a "symbol" param, which the
+                //   adapter doesn't understand and silently ignores. Instead,
+                //   use the numerator from ratioConfig as the "real" symbol.
+                //   The RatioAdapter reconstructs the composite symbol itself
+                //   from numerator + denominator.
+                const isRatio = src === 'ratio';
+                const symbol = isRatio
+                    ? (state.source.ratioConfig?.numerator || state.source.symbol || 'BTCUSDT')
+                    : (state.source.symbol || 'BTCUSDT');
                 const tf = state.source.timeframe || '4h';
 
                 // Only switch if different from current
@@ -64924,11 +66812,31 @@ const ChartStatePersistence = (() => {
                 const needsSwitch = (src !== curSrc) || (symbol !== curSymbol) || (tf !== curTf);
 
                 if (needsSwitch) {
+                    // V107e-ratio-restore: set ratioConfig BEFORE source:switch
+                    //   so the RatioAdapter is created with the correct pair.
+                    //   Previously ratioConfig was emitted AFTER source:switch,
+                    //   so the adapter was created with default DOGE/ETH and
+                    //   then never re-switched (ratioConfig handler returns
+                    //   early without calling switchAsset).
+                    if (isRatio && state.source.ratioConfig) {
+                        orch._ratioConfig = state.source.ratioConfig;
+                        // V107e: also set _preRatioSymbol so switching back to
+                        //   binance restores the numerator (not the default).
+                        if (state.source.ratioConfig.numerator) {
+                            orch._preRatioSymbol = state.source.ratioConfig.numerator;
+                        }
+                    }
+
                     // Emit source:switch first (creates the right adapter type)
                     if (src !== curSrc) {
                         bus.emit('source:switch', { src }, 'StatePersistence');
-                        // Wait for adapter to be created
-                        await new Promise(r => setTimeout(r, 200));
+                        // Wait for adapter to be created + initial fetch to start.
+                        // V107e: increased from 200ms to 500ms for ratio mode
+                        //   because RatioAdapter._fetchAndStream fires TWO
+                        //   parallel kline requests (numerator + denominator)
+                        //   which take longer than a single request.
+                        const waitMs = isRatio ? 500 : 200;
+                        await new Promise(r => setTimeout(r, waitMs));
                     }
                     // Then emit source:param for symbol + timeframe
                     if (state.source.isPerp !== undefined) {
@@ -64937,11 +66845,33 @@ const ChartStatePersistence = (() => {
                     if (state.source.bybitCategory) {
                         bus.emit('source:param', { param: 'bybitCategory', value: state.source.bybitCategory }, 'StatePersistence');
                     }
-                    if (state.source.ratioConfig) {
+                    // V107e-ratio-restore: re-emit ratioConfig AFTER switch too,
+                    //   so the adapter picks up any fields not in _ratioConfig
+                    //   at switch time (numeratorIsPerp, denominatorIsPerp).
+                    //   The ratioConfig handler is idempotent — it just updates
+                    //   orch._ratioConfig and _preRatioSymbol.
+                    if (isRatio && state.source.ratioConfig) {
                         bus.emit('source:param', { param: 'ratioConfig', value: state.source.ratioConfig }, 'StatePersistence');
+                        // V107e: for ratio mode, trigger an explicit switchAsset
+                        //   on the adapter so it fetches the correct pair. The
+                        //   ratioConfig handler above returns early without
+                        //   calling switchAsset, so without this the adapter
+                        //   would stay on whatever pair it was created with.
+                        const adapter = orch._getActiveAdapter?.();
+                        if (adapter && typeof adapter.switchAsset === 'function') {
+                            // Defer slightly so the ratioConfig event is processed first
+                            setTimeout(() => {
+                                adapter.switchAsset({
+                                    timeframe: tf,
+                                    ratioConfig: state.source.ratioConfig,
+                                }).catch(e => console.warn('[StatePersistence] ratio adapter.switchAsset failed:', e?.message || e));
+                            }, 50);
+                        }
+                    } else {
+                        // Non-ratio: emit symbol + timeframe normally
+                        bus.emit('source:param', { param: 'symbol', value: symbol }, 'StatePersistence');
+                        bus.emit('source:param', { param: 'timeframe', value: tf }, 'StatePersistence');
                     }
-                    bus.emit('source:param', { param: 'symbol', value: symbol }, 'StatePersistence');
-                    bus.emit('source:param', { param: 'timeframe', value: tf }, 'StatePersistence');
                     // V49n-fix: DON'T wait for data here — the adapter's
                     //   _fetchAndStream already calls endTransition() when
                     //   done, which clears the dimming. Waiting here just
