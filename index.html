@@ -28456,100 +28456,294 @@ class VPINBrick extends IndicatorBrick {
 brickRegistry.register('ou_zscore', OUZScoreBrick);
 brickRegistry.register('vpin', VPINBrick);
 
-// ─── TimeMarkerBrick — vertical line indicator (time marker) ──────────────
-// Draws a vertical line at a specified timestamp across ALL panels.
-// Unlike drawing tools (TrendLineObject), this is an INDICATOR — it
-// persists in presets, shows on all assets, and can be customized.
+// ─── TimeMarkerBrick — vertical line indicator (V108 multi-marker) ────────
+// Draws one or more vertical lines at specified timestamps across ALL panels.
+// Unlike drawing tools (TrendLineObject), this is an INDICATOR — it persists
+// in presets, shows on all assets, and can be customized.
+//
+// V108: Multi-marker support with price-diff tracking.
+//   • markers[] — array of {timestamp, label, color} (up to 20)
+//   • For each marker, finds the candle whose median price intersects the line
+//     (closest candle by timestamp). Median price = (high+low)/2.
+//   • Diff % from previous marker shown at the bottom (optional).
+//   • Handles gaps: if no candle near a marker (gap/missing data), diff shows "—"
+//   • Custom UI: datetime-local picker + "Set to now" + add/remove buttons.
 //
 // Params:
-//   timestamp — the time (epoch ms) where the line should appear
-//   label     — optional text label shown at the top of the line
-//   color     — line color
-//   lineWidth — line width
-//   lineStyle — 'solid' | 'dash' | 'dot'
-//
+//   markers          — JSON array of {timestamp, label, color} objects
+//   showDiff         — bool, show price diff % at bottom
+//   diffLookaheadBars — how many bars to search forward when finding a candle
+//                       at a marker timestamp (handles weekend gaps, holidays)
+//   defaultColor     — color for markers without explicit color
+//   lineWidth        — line width
+//   lineStyle        — 'solid' | 'dash' | 'dot'
 class TimeMarkerBrick extends IndicatorBrick {
     static META = {
         type: 'timemarker',
-        label: 'Time Marker',
-        description: 'Vertical line at a specific timestamp. Spans all panels. Persists across assets and presets.',
+        label: 'Time Markers',
+        description: 'Vertical line(s) at specific timestamps. Multi-marker support with price-diff % between consecutive markers. Custom date/time picker UI. Persists across assets and presets.',
         category: 'overlay',
-        tags: ['vertical', 'line', 'time', 'marker', 'event'],
+        tags: ['vertical', 'line', 'time', 'marker', 'event', 'multi', 'diff'],
         panelMode: 'overlay',
         params: [
-            new BrickParam({ name: 'timestamp', label: 'Timestamp (ms)', default: Date.now(), min: 0, step: 1, group: 'Position' }),
-            new BrickParam({ name: 'markerLabel', label: 'Label', default: '', group: 'Display' }),
-            new BrickParam({ name: 'color', label: 'Color', default: '#f85149', group: 'Display' }),
+            // V108: markers stored as JSON string (UI parses/edits as array).
+            //   Each marker: { timestamp: number (epoch ms), label: string, color: string }
+            new BrickParam({ name: 'markers', label: 'Markers (JSON)', default: '[]', group: 'Markers',
+                tooltip: 'JSON array of {timestamp, label, color}. Use the marker editor below to add/edit/remove.' }),
+            new BrickParam({ name: 'showDiff', label: 'Show price diff %', type: 'bool', default: true, group: 'Display',
+                tooltip: 'Show price diff % between consecutive markers at the bottom of each line.' }),
+            new BrickParam({ name: 'diffLookaheadBars', label: 'Diff search bars', default: 5, min: 1, max: 50, step: 1, group: 'Display',
+                tooltip: 'How many bars to search forward when finding a candle at a marker timestamp. Handles weekend gaps, holidays, missing data.' }),
+            new BrickParam({ name: 'defaultColor', label: 'Default color', default: '#f85149', group: 'Display' }),
             new BrickParam({ name: 'lineWidth', label: 'Line Width', default: 1.5, min: 0.5, max: 5, step: 0.5, group: 'Display' }),
+            new BrickParam({ name: 'lineStyle', label: 'Line Style', type: 'select', default: 'dash', group: 'Display',
+                options: [
+                    { value: 'solid', label: 'Solid' },
+                    { value: 'dash', label: 'Dashed' },
+                    { value: 'dot', label: 'Dotted' },
+                ] }),
         ],
         inputs: [],
         outputs: [
-            new BrickOutput({ name: 'line', label: 'Marker', type: 'line', color: '#f85149' }),
+            new BrickOutput({ name: 'line', label: 'Markers', type: 'line', color: '#f85149' }),
         ],
     };
 
+    constructor(cfg) {
+        super(cfg);
+        this.needsOHLC = true;  // V108: need OHLC to compute median price at each marker
+    }
+
+    // V108b: get the two reference markers + their diff%.
+    //   Used by the coin picker to sort coins by price change between two points.
+    //   Returns { ts1, ts2, diffPct } or null if not enough reference markers.
+    //   - If refMarkerIndices is set (array of 2 indices into markers[]), use those.
+    //   - Else if exactly 2 markers exist, use both (auto-reference).
+    //   - Else return null.
+    //   The diffPct is computed from the CURRENT chart's candles — for the
+    //   picker's batch compute, use getReferencePoints() + compute diff per-coin.
+    getReferenceDiff() {
+        const markers = this._parseMarkers();
+        if (markers.length < 2) return null;
+        let refIdx;
+        const refParam = this.params.refMarkerIndices;
+        if (Array.isArray(refParam) && refParam.length === 2) {
+            refIdx = refParam;
+        } else if (markers.length === 2) {
+            // V108b: auto-reference when exactly 2 markers
+            refIdx = [0, 1];
+        } else {
+            return null;  // no explicit ref + not exactly 2 markers
+        }
+        const sorted = [...markers].sort((a, b) => a.timestamp - b.timestamp);
+        const i1 = Math.min(refIdx[0], refIdx[1]);
+        const i2 = Math.max(refIdx[0], refIdx[1]);
+        if (i1 >= sorted.length || i2 >= sorted.length) return null;
+        const m1 = sorted[i1], m2 = sorted[i2];
+        // Use cached candle data from _computed if available
+        const md = this._computed?.markerData;
+        if (!md) return { ts1: m1.timestamp, ts2: m2.timestamp, diffPct: null };
+        // Find the markerData entries matching m1 and m2 by timestamp
+        const md1 = md.find(x => x.timestamp === m1.timestamp);
+        const md2 = md.find(x => x.timestamp === m2.timestamp);
+        if (!md1?.candle || !md2?.candle) return { ts1: m1.timestamp, ts2: m2.timestamp, diffPct: null };
+        const diffPct = (md2.candle.medianPrice - md1.candle.medianPrice) / md1.candle.medianPrice * 100;
+        return { ts1: m1.timestamp, ts2: m2.timestamp, diffPct, price1: md1.candle.medianPrice, price2: md2.candle.medianPrice };
+    }
+
+    // V108b: get just the reference timestamps (for picker batch compute).
+    //   Returns [ts1, ts2] or null.
+    getReferencePoints() {
+        const markers = this._parseMarkers();
+        if (markers.length < 2) return null;
+        let refIdx;
+        const refParam = this.params.refMarkerIndices;
+        if (Array.isArray(refParam) && refParam.length === 2) {
+            refIdx = refParam;
+        } else if (markers.length === 2) {
+            refIdx = [0, 1];
+        } else {
+            return null;
+        }
+        const sorted = [...markers].sort((a, b) => a.timestamp - b.timestamp);
+        const i1 = Math.min(refIdx[0], refIdx[1]);
+        const i2 = Math.max(refIdx[0], refIdx[1]);
+        if (i1 >= sorted.length || i2 >= sorted.length) return null;
+        return [sorted[i1].timestamp, sorted[i2].timestamp];
+    }
+
+    // V108: parse markers from JSON string → array of {timestamp, label, color}
+    //   Returns [] on parse error (defensive — never throws).
+    _parseMarkers() {
+        const raw = this.params.markers;
+        if (!raw) return [];
+        if (Array.isArray(raw)) return raw;  // already parsed
+        try {
+            const arr = JSON.parse(raw);
+            if (!Array.isArray(arr)) return [];
+            return arr.filter(m => m && isFinite(m.timestamp)).map(m => ({
+                timestamp: Number(m.timestamp),
+                label: m.label || '',
+                color: m.color || this.params.defaultColor || '#f85149',
+            }));
+        } catch (e) { return []; }
+    }
+
+    // V108: find the candle index whose timestamp is closest to `ts`.
+    //   Searches up to `lookahead` bars forward (to handle gaps where the
+    //   marker falls between two candles or on a non-trading day).
+    //   Returns { idx, candleTs, medianPrice } or null if no candle found.
+    _findCandleAtTs(xData, ohlc, ts, count, lookahead) {
+        if (!xData || !ohlc || count === 0) return null;
+        // Binary search for the closest x value
+        let lo = 0, hi = count - 1, best = -1, bestDiff = Infinity;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            const x = xData[mid];
+            const diff = Math.abs(x - ts);
+            if (diff < bestDiff) { bestDiff = diff; best = mid; }
+            if (x < ts) lo = mid + 1;
+            else if (x > ts) hi = mid - 1;
+            else break;
+        }
+        if (best < 0) return null;
+        const candleTs = xData[best];
+        // V108: accept the candle if it's within `lookahead` bars of the marker
+        //   OR within one chart interval (whichever is larger). This handles
+        //   markers placed on weekends/holidays — the closest trading candle
+        //   is used.
+        const intervalMs = count > 1 ? (xData[count - 1] - xData[0]) / (count - 1) : 86400000;
+        const maxAcceptDiff = Math.max(intervalMs * lookahead, intervalMs);
+        if (Math.abs(candleTs - ts) > maxAcceptDiff) return null;  // too far — gap/missing data
+        // Median price = (high + low) / 2
+        const h = ohlc.high?.[best], l = ohlc.low?.[best];
+        if (!isFinite(h) || !isFinite(l) || h <= 0 || l <= 0) return null;
+        return { idx: best, candleTs, medianPrice: (h + l) / 2 };
+    }
+
     _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
-        // No actual computation — this indicator just draws a vertical line.
-        // We return an empty line array (no data points) — rendering is done
-        // entirely in render().
+        // No actual line computation — this indicator just draws vertical lines.
+        // V108: we DO compute marker→candle mapping + diff% here so it's cached.
         const line = new Float64Array(count).fill(NaN);
-        this._computed = { line, count, visibleRange };
+        const markers = this._parseMarkers();
+        const showDiff = this.params.showDiff !== false;
+        const lookahead = Math.max(1, this.params.diffLookaheadBars || 5);
+
+        // V108: get xData from the data store via manager (needed for candle lookup)
+        //   We need the x array (timestamps) to find which candle each marker hits.
+        let xData = null;
+        try {
+            const ds = manager?._lastDataStore;
+            if (ds && ds.x) xData = ds.x;
+        } catch (e) { /* no xData — diff will be unavailable */ }
+
+        // Sort markers by timestamp so "previous" = the one before in time
+        const sorted = [...markers].sort((a, b) => a.timestamp - b.timestamp);
+
+        // Compute candle + diff for each marker
+        const markerData = sorted.map((m, i) => {
+            const candle = xData ? this._findCandleAtTs(xData, ohlc, m.timestamp, count, lookahead) : null;
+            let diffPct = null;
+            if (candle && showDiff) {
+                // Find the PREVIOUS marker that ALSO has a valid candle
+                for (let j = i - 1; j >= 0; j--) {
+                    const prevMarker = sorted[j];
+                    const prevCandle = xData ? this._findCandleAtTs(xData, ohlc, prevMarker.timestamp, count, lookahead) : null;
+                    if (prevCandle && prevCandle.medianPrice > 0) {
+                        diffPct = (candle.medianPrice - prevCandle.medianPrice) / prevCandle.medianPrice * 100;
+                        break;
+                    }
+                    // else: previous marker had no candle (gap) — keep searching back
+                }
+            }
+            return {
+                timestamp: m.timestamp,
+                label: m.label,
+                color: m.color || this.params.defaultColor || '#f85149',
+                candle,
+                diffPct,
+            };
+        });
+
+        this._computed = { line, count, visibleRange, markerData };
         return this._computed;
     }
 
     render(ctx, xScale, yScale, xData, computed, visibleRange, layout) {
-        const ts = this.params.timestamp;
-        if (!ts || !isFinite(ts)) return;
+        if (!computed?.markerData || computed.markerData.length === 0) return;
 
-        const px = xScale.valToPix(ts);
-        // Skip if off-screen
-        if (px < layout.plotLeft - 5 || px > layout.plotRight + 5) return;
-
-        const color = this.params.color || '#f85149';
         const lw = this.params.lineWidth || 1.5;
-        const label = this.params.markerLabel || '';
+        const lineStyle = this.params.lineStyle || 'dash';
+        const showDiff = this.params.showDiff !== false;
 
         ctx.save();
-        // Draw across ALL panels (full plot height)
+        // Clip to plot area
         ctx.beginPath();
         ctx.rect(layout.plotLeft, layout.plotTop, layout.plotWidth, layout.plotBottom - layout.plotTop);
         ctx.clip();
 
-        // Line
-        ctx.strokeStyle = color;
-        ctx.lineWidth = lw;
-        ctx.setLineDash([6, 4]);
-        ctx.beginPath();
-        ctx.moveTo(px, layout.plotTop);
-        ctx.lineTo(px, layout.plotBottom);
-        ctx.stroke();
-        ctx.setLineDash([]);
+        // V108: set line dash pattern based on style
+        const dashPattern = lineStyle === 'solid' ? [] : lineStyle === 'dot' ? [2, 3] : [6, 4];
 
-        // Label at top
-        if (label) {
-            ctx.font = '10px -apple-system, sans-serif';
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'top';
-            const labelW = ctx.measureText(label).width;
-            // Background pill
-            ctx.fillStyle = 'rgba(0,0,0,0.7)';
-            ctx.fillRect(px + 3, layout.plotTop + 2, labelW + 6, 14);
-            // Text
-            ctx.fillStyle = color;
-            ctx.fillText(label, px + 6, layout.plotTop + 4);
+        for (const m of computed.markerData) {
+            const ts = m.timestamp;
+            if (!ts || !isFinite(ts)) continue;
+            const px = xScale.valToPix(ts);
+            // Skip if off-screen
+            if (px < layout.plotLeft - 5 || px > layout.plotRight + 5) continue;
+
+            // Draw line
+            ctx.strokeStyle = m.color;
+            ctx.lineWidth = lw;
+            ctx.setLineDash(dashPattern);
+            ctx.beginPath();
+            ctx.moveTo(px, layout.plotTop);
+            ctx.lineTo(px, layout.plotBottom);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Label at top (user-provided)
+            if (m.label) {
+                ctx.font = '10px -apple-system, sans-serif';
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'top';
+                const labelW = ctx.measureText(m.label).width;
+                ctx.fillStyle = 'rgba(0,0,0,0.7)';
+                ctx.fillRect(px + 3, layout.plotTop + 2, labelW + 6, 14);
+                ctx.fillStyle = m.color;
+                ctx.fillText(m.label, px + 6, layout.plotTop + 4);
+            }
+
+            // V108b: bottom label — ONLY diff% (no date/time, smaller font)
+            //   User feedback: date/time is redundant (x-axis already shows it),
+            //   and the label was too big. Now: only show diff% in a compact
+            //   8px font. First marker shows its price, gap markers show "—".
+            ctx.font = '8px -apple-system, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+
+            let bottomText = '';
+            let bottomColor = m.color;
+            if (showDiff && m.diffPct !== null && isFinite(m.diffPct)) {
+                const sign = m.diffPct >= 0 ? '+' : '';
+                bottomText = `${sign}${m.diffPct.toFixed(2)}%`;
+                bottomColor = m.diffPct >= 0 ? '#3fb950' : '#f85149';
+            } else if (showDiff && m.candle && m.diffPct === null) {
+                // First marker (no previous) — show the median price
+                bottomText = `@${m.candle.medianPrice.toFixed(2)}`;
+            } else if (showDiff && !m.candle) {
+                // No candle found (gap) — show em-dash
+                bottomText = `—`;
+            }
+
+            if (bottomText) {
+                const tw = ctx.measureText(bottomText).width;
+                ctx.fillStyle = 'rgba(0,0,0,0.75)';
+                ctx.fillRect(px - tw / 2 - 2, layout.plotBottom - 12, tw + 4, 12);
+                ctx.fillStyle = bottomColor;
+                ctx.fillText(bottomText, px, layout.plotBottom - 2);
+            }
         }
-
-        // Timestamp label at bottom (date/time)
-        const dt = new Date(ts);
-        const timeStr = dt.toLocaleString('default', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-        ctx.font = '9px monospace';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'bottom';
-        const tw = ctx.measureText(timeStr).width;
-        ctx.fillStyle = 'rgba(0,0,0,0.7)';
-        ctx.fillRect(px - tw / 2 - 3, layout.plotBottom - 14, tw + 6, 14);
-        ctx.fillStyle = color;
-        ctx.fillText(timeStr, px, layout.plotBottom - 2);
 
         ctx.restore();
     }
@@ -28560,6 +28754,497 @@ class TimeMarkerBrick extends IndicatorBrick {
     }
 }
 brickRegistry.register('timemarker', TimeMarkerBrick);
+
+// ─── V109: OBV (On-Balance Volume) ────────────────────────────────────────
+// Cumulative volume that adds volume on up-bars, subtracts on down-bars.
+// OBV[i] = OBV[i-1] + sign(close[i] - close[i-1]) * vol[i]
+// Divergence between OBV and price signals trend weakness.
+class OBVBrick extends IndicatorBrick {
+    static META = {
+        type: 'obv',
+        label: 'OBV (On-Balance Volume)',
+        description: 'On-Balance Volume — cumulative volume adding on up-bars, subtracting on down-bars. Divergence with price = trend weakness.',
+        category: 'momentum',
+        tags: ['volume', 'momentum', 'cumulative', 'divergence'],
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'signalPeriod', label: 'Signal SMA Period', default: 20, min: 1, max: 200, step: 1, group: 'Display',
+                tooltip: 'SMA period for the OBV signal line. Set to 1 to hide.' }),
+            new BrickParam({ name: 'logScale', label: 'Log Scale', type: 'bool', default: false, group: 'Display',
+                tooltip: 'Compress large cumulative values using asinh transform. Default OFF (raw OBV like TradingView).' }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'line', label: 'OBV', type: 'line', color: '#58a6ff' }),
+            new BrickOutput({ name: 'signal', label: 'Signal', type: 'line', color: '#f85149', lineWidth: 1.5, alpha: 0.8, optional: true, defaultVisible: true }),
+        ],
+        levels: [
+            new BrickLevel({ value: 0, label: '0', color: 'rgba(255,255,255,0.2)',
+                             lineWidth: 1, dash: [2, 4],
+                             optional: true, name: 'zero', defaultVisible: true }),
+        ],
+    };
+
+    constructor(cfg) { super(cfg); this.needsOHLC = true; }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        if (!ohlc?.vol || count === 0) {
+            return { line: new Float64Array(0), signal: new Float64Array(0), count, visibleRange };
+        }
+        const line = new Float64Array(count);
+        const V = ohlc.vol;
+        let obv = 0;
+        line[0] = 0;
+        for (let i = 1; i < count; i++) {
+            const c0 = sourceData[i - 1], c1 = sourceData[i];
+            const v = V[i] || 0;
+            if (!isFinite(c0) || !isFinite(c1)) { line[i] = obv; continue; }
+            if (c1 > c0) obv += v;
+            else if (c1 < c0) obv -= v;
+            // equal: no change
+            line[i] = obv;
+        }
+        // V109b: apply log scale BEFORE computing signal, so signal = SMA of
+        //   displayed values (not log of SMA of raw). Use asinh transform
+        //   (inverse hyperbolic sine) which is continuous at 0 — unlike
+        //   signed log which has a discontinuity at 0 (log(0.001)=-6.9 but
+        //   log(0)=0, creating wild spikes when OBV crosses zero).
+        //   asinh(x) = sign(x) * ln(|x| + sqrt(x² + 1))
+        //   asinh(0) = 0, asinh(100000) ≈ 12.2, asinh(-100000) ≈ -12.2
+        if (this.params.logScale === true) {
+            for (let i = 0; i < count; i++) {
+                if (isFinite(line[i])) {
+                    line[i] = Math.asinh(line[i]);
+                }
+            }
+        }
+        // Signal: SMA of (possibly transformed) OBV
+        const sigN = Math.max(1, Math.floor(this.params.signalPeriod || 20));
+        const signal = _maSMA(line, count, sigN);
+        this._computed = { line, signal, count, visibleRange };
+        return this._computed;
+    }
+
+    render(ctx, xScale, yScale, xData, computed, visibleRange, layout) {
+        if (!computed?.line) return;
+        const [iMin, iMax] = visibleRange;
+        this._drawLevels(ctx, yScale, layout);
+        const lineColor = this.outputStyles.line?.color || '#58a6ff';
+        const lineWidth = this.outputStyles.line?.lineWidth || 1.5;
+        this._drawLine(ctx, computed.line, lineColor, lineWidth, 0.85,
+            xScale, yScale, xData, iMin, iMax, 'line');
+        // Signal line
+        if (this.params.signalPeriod > 1 && computed.signal) {
+            const sigColor = this.outputStyles.signal?.color || '#f85149';
+            const sigWidth = this.outputStyles.signal?.lineWidth || 1.5;
+            this._drawLine(ctx, computed.signal, sigColor, sigWidth, 0.8,
+                xScale, yScale, xData, iMin, iMax, 'signal');
+        }
+    }
+
+    getAutoFitRange(computed, count, visibleRange) {
+        if (!computed?.line) return null;
+        const [iMin, iMax] = visibleRange || computed.visibleRange || [0, computed.count - 1];
+        let yMin = Infinity, yMax = -Infinity;
+        for (let i = iMin; i <= iMax; i++) {
+            if (isFinite(computed.line[i])) {
+                yMin = Math.min(yMin, computed.line[i]);
+                yMax = Math.max(yMax, computed.line[i]);
+            }
+            if (computed.signal && isFinite(computed.signal[i])) {
+                yMin = Math.min(yMin, computed.signal[i]);
+                yMax = Math.max(yMax, computed.signal[i]);
+            }
+        }
+        if (!isFinite(yMin)) return null;
+        const pad = (yMax - yMin) * 0.1 || 1;
+        return { yMin: yMin - pad, yMax: yMax + pad };
+    }
+}
+brickRegistry.register('obv', OBVBrick);
+
+// ─── V109: CMF (Chaikin Money Flow) ───────────────────────────────────────
+// CMF = sum_n(Money Flow Volume) / sum_n(Volume)
+// Money Flow Volume = ((close-low)-(high-close))/(high-low) * volume
+// Range: -1..+1. >0 = accumulation, <0 = distribution.
+class CMFBrick extends IndicatorBrick {
+    static META = {
+        type: 'cmf',
+        label: 'CMF (Chaikin Money Flow)',
+        description: 'Chaikin Money Flow — volume-weighted accumulation/distribution. Range -1..+1. Positive = buying pressure, negative = selling pressure.',
+        category: 'momentum',
+        tags: ['volume', 'momentum', 'accumulation', 'distribution', 'chaikin'],
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'period', label: 'Period', default: 20, min: 1, max: 200, step: 1 }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'line', label: 'CMF', type: 'histogram', color: '#58a6ff' }),
+        ],
+        levels: [
+            new BrickLevel({ value: 0, label: '0', color: 'rgba(255,255,255,0.25)',
+                             lineWidth: 1, dash: [],
+                             optional: true, name: 'zero', defaultVisible: true }),
+            new BrickLevel({ value: 0.1, label: '+0.1', color: 'rgba(63,185,80,0.4)',
+                             lineWidth: 1, dash: [4, 4],
+                             optional: true, name: 'pos', defaultVisible: false }),
+            new BrickLevel({ value: -0.1, label: '-0.1', color: 'rgba(248,81,73,0.4)',
+                             lineWidth: 1, dash: [4, 4],
+                             optional: true, name: 'neg', defaultVisible: false }),
+        ],
+    };
+
+    constructor(cfg) { super(cfg); this.needsOHLC = true; }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        if (!ohlc?.vol || count === 0) {
+            return { line: new Float64Array(0), count, visibleRange };
+        }
+        const n = Math.max(1, Math.floor(this.params.period || 20));
+        const H = ohlc.high, L = ohlc.low, V = ohlc.vol;
+        const line = new Float64Array(count).fill(NaN);
+        // Money Flow Volume per bar
+        const mfv = new Float64Array(count);
+        for (let i = 0; i < count; i++) {
+            const h = H[i], l = L[i], c = sourceData[i], v = V[i] || 0;
+            if (!isFinite(h) || !isFinite(l) || !isFinite(c) || !isFinite(v)) { mfv[i] = 0; continue; }
+            const range = h - l;
+            if (range < 1e-12) { mfv[i] = 0; continue; }  // avoid div-by-zero
+            // Money Flow Multiplier = ((close-low)-(high-close)) / range
+            const mfm = ((c - l) - (h - c)) / range;
+            mfv[i] = mfm * v;
+        }
+        // CMF = sum(mfv, n) / sum(vol, n)
+        let sumMfv = 0, sumVol = 0;
+        const mfvBuf = new Float64Array(n);
+        const volBuf = new Float64Array(n);
+        let bufIdx = 0;
+        for (let i = 0; i < count; i++) {
+            const oldMfv = mfvBuf[bufIdx];
+            const oldVol = volBuf[bufIdx];
+            sumMfv += mfv[i] - oldMfv;
+            sumVol += (V[i] || 0) - oldVol;
+            mfvBuf[bufIdx] = mfv[i];
+            volBuf[bufIdx] = V[i] || 0;
+            bufIdx = (bufIdx + 1) % n;
+            if (i >= n - 1 && Math.abs(sumVol) > 1e-12) {
+                line[i] = sumMfv / sumVol;
+            }
+        }
+        this._computed = { line, count, visibleRange };
+        return this._computed;
+    }
+}
+brickRegistry.register('cmf', CMFBrick);
+
+// ─── V109: Williams %R ────────────────────────────────────────────────────
+// %R = -100 * (highest_high_n - close) / (highest_high_n - lowest_low_n)
+// Range: -100..0. -20..0 = overbought, -100..-80 = oversold.
+class WilliamsRBrick extends IndicatorBrick {
+    static META = {
+        type: 'williamsr',
+        label: 'Williams %R',
+        description: 'Williams %R — momentum oscillator. Range -100..0. Above -20 = overbought, below -80 = oversold.',
+        category: 'momentum',
+        tags: ['momentum', 'oscillator', 'overbought', 'oversold', 'williams'],
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'period', label: 'Period', default: 14, min: 1, max: 200, step: 1 }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'line', label: '%R', type: 'line', color: '#bc8cff' }),
+        ],
+        levels: [
+            new BrickLevel({ value: -20, label: '-20 (overbought)', color: 'rgba(244,67,54,0.55)',
+                             lineWidth: 1, dash: [4, 4],
+                             optional: true, name: 'overbought', defaultVisible: true }),
+            new BrickLevel({ value: -80, label: '-80 (oversold)', color: 'rgba(76,175,80,0.55)',
+                             lineWidth: 1, dash: [4, 4],
+                             optional: true, name: 'oversold', defaultVisible: true }),
+            new BrickLevel({ value: -50, label: '-50', color: 'rgba(255,255,255,0.15)',
+                             lineWidth: 1, dash: [2, 4],
+                             optional: true, name: 'midline', defaultVisible: false }),
+        ],
+        bands: [
+            new BrickBand({ from: -20, to: 0, color: 'rgba(244,67,54,0.06)', optional: true, name: 'overboughtZone', defaultVisible: true }),
+            new BrickBand({ from: -100, to: -80, color: 'rgba(76,175,80,0.06)', optional: true, name: 'oversoldZone', defaultVisible: true }),
+        ],
+    };
+
+    constructor(cfg) { super(cfg); this.needsOHLC = true; }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        if (!ohlc?.high || count === 0) {
+            return { line: new Float64Array(0), count, visibleRange };
+        }
+        const n = Math.max(1, Math.floor(this.params.period || 14));
+        const H = ohlc.high, L = ohlc.low;
+        const line = new Float64Array(count).fill(NaN);
+        for (let i = n - 1; i < count; i++) {
+            let hh = -Infinity, ll = Infinity;
+            for (let j = 0; j < n; j++) {
+                const h = H[i - j], l = L[i - j];
+                if (isFinite(h) && h > hh) hh = h;
+                if (isFinite(l) && l < ll) ll = l;
+            }
+            const c = sourceData[i];
+            if (!isFinite(c) || !isFinite(hh) || !isFinite(ll)) continue;
+            const range = hh - ll;
+            if (range < 1e-12) { line[i] = -50; continue; }
+            line[i] = -100 * (hh - c) / range;
+        }
+        this._computed = { line, count, visibleRange };
+        return this._computed;
+    }
+
+    getAutoFitRange(computed, count, visibleRange) {
+        // Williams %R is bounded -100..0; fix the Y range so levels align
+        return { yMin: -100, yMax: 0 };
+    }
+}
+brickRegistry.register('williamsr', WilliamsRBrick);
+
+// ─── V109: CCI (Commodity Channel Index) ──────────────────────────────────
+// CCI = (TP - SMA(TP, n)) / (0.015 * MeanDeviation(TP, n))
+// TP = (high + low + close) / 3
+// Range: unbounded, but typically -100..+100. >+100 = overbought, <-100 = oversold.
+class CCIBrick extends IndicatorBrick {
+    static META = {
+        type: 'cci',
+        label: 'CCI (Commodity Channel Index)',
+        description: 'Commodity Channel Index — deviation of typical price from its SMA, normalized by mean deviation. >+100 overbought, <-100 oversold.',
+        category: 'momentum',
+        tags: ['momentum', 'oscillator', 'overbought', 'oversold', 'commodity'],
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'period', label: 'Period', default: 20, min: 1, max: 200, step: 1 }),
+            new BrickParam({ name: 'factor', label: 'Constant', default: 0.015, min: 0.001, max: 0.1, step: 0.001, group: 'Advanced',
+                tooltip: 'Lambert constant. 0.015 makes ±100 = 1 mean-deviation.' }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'line', label: 'CCI', type: 'line', color: '#d29922' }),
+        ],
+        levels: [
+            new BrickLevel({ value: 100, label: '+100', color: 'rgba(244,67,54,0.55)',
+                             lineWidth: 1, dash: [4, 4],
+                             optional: true, name: 'overbought', defaultVisible: true }),
+            new BrickLevel({ value: -100, label: '-100', color: 'rgba(76,175,80,0.55)',
+                             lineWidth: 1, dash: [4, 4],
+                             optional: true, name: 'oversold', defaultVisible: true }),
+            new BrickLevel({ value: 0, label: '0', color: 'rgba(255,255,255,0.15)',
+                             lineWidth: 1, dash: [2, 4],
+                             optional: true, name: 'zero', defaultVisible: false }),
+        ],
+    };
+
+    constructor(cfg) { super(cfg); this.needsOHLC = true; }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        if (!ohlc?.high || count === 0) {
+            return { line: new Float64Array(0), count, visibleRange };
+        }
+        const n = Math.max(1, Math.floor(this.params.period || 20));
+        const factor = Math.max(0.001, this.params.factor || 0.015);
+        const H = ohlc.high, L = ohlc.low;
+        // Typical price = (H + L + C) / 3
+        const tp = new Float64Array(count);
+        for (let i = 0; i < count; i++) {
+            tp[i] = ((H[i] ?? 0) + (L[i] ?? 0) + (sourceData[i] ?? 0)) / 3;
+        }
+        const smaTp = _maSMA(tp, count, n);
+        const line = new Float64Array(count).fill(NaN);
+        for (let i = n - 1; i < count; i++) {
+            if (!isFinite(smaTp[i])) continue;
+            // Mean deviation = sum(|tp[i-j] - sma|) / n
+            let sumDev = 0;
+            for (let j = 0; j < n; j++) {
+                sumDev += Math.abs(tp[i - j] - smaTp[i]);
+            }
+            const md = sumDev / n;
+            if (md < 1e-12) { line[i] = 0; continue; }
+            line[i] = (tp[i] - smaTp[i]) / (factor * md);
+        }
+        this._computed = { line, count, visibleRange };
+        return this._computed;
+    }
+}
+brickRegistry.register('cci', CCIBrick);
+
+// ─── V109: TRIX (Triple EMA Rate of Change) ───────────────────────────────
+// TRIX = (EMA3[i] - EMA3[i-1]) / EMA3[i-1] * 100
+// Signal: SMA of TRIX
+// Cuts out high-frequency noise via triple smoothing.
+class TRIXBrick extends IndicatorBrick {
+    static META = {
+        type: 'trix',
+        label: 'TRIX',
+        description: 'Triple EMA Rate of Change — momentum with triple smoothing. Filters noise. TRIX crosses signal = trend change.',
+        category: 'momentum',
+        tags: ['momentum', 'oscillator', 'ema', 'rate-of-change', 'triple'],
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'period', label: 'Period', default: 12, min: 1, max: 200, step: 1 }),
+            new BrickParam({ name: 'signalPeriod', label: 'Signal SMA Period', default: 9, min: 1, max: 200, step: 1, group: 'Display' }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'line', label: 'TRIX', type: 'line', color: '#58a6ff' }),
+            new BrickOutput({ name: 'signal', label: 'Signal', type: 'line', color: '#f85149', lineWidth: 1.5, alpha: 0.8, optional: true, defaultVisible: true }),
+        ],
+        levels: [
+            new BrickLevel({ value: 0, label: '0', color: 'rgba(255,255,255,0.25)',
+                             lineWidth: 1, dash: [],
+                             optional: true, name: 'zero', defaultVisible: true }),
+        ],
+    };
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        if (count === 0) {
+            return { line: new Float64Array(0), signal: new Float64Array(0), count, visibleRange };
+        }
+        const n = Math.max(1, Math.floor(this.params.period || 12));
+        const sigN = Math.max(1, Math.floor(this.params.signalPeriod || 9));
+        // Triple EMA
+        const e1 = _maEMA(sourceData, count, n, version, mutation, emaPool);
+        const e2 = _maEMA(e1, count, n, version, mutation, emaPool);
+        const e3 = _maEMA(e2, count, n, version, mutation, emaPool);
+        // TRIX = % change of e3
+        const line = new Float64Array(count).fill(NaN);
+        for (let i = 1; i < count; i++) {
+            if (isFinite(e3[i]) && isFinite(e3[i - 1]) && e3[i - 1] !== 0) {
+                line[i] = (e3[i] - e3[i - 1]) / e3[i - 1] * 100;
+            }
+        }
+        // Signal = SMA of TRIX
+        const signal = _maSMA(line, count, sigN);
+        this._computed = { line, signal, count, visibleRange };
+        return this._computed;
+    }
+
+    render(ctx, xScale, yScale, xData, computed, visibleRange, layout) {
+        if (!computed?.line) return;
+        const [iMin, iMax] = visibleRange;
+        this._drawLevels(ctx, yScale, layout);
+        const lineColor = this.outputStyles.line?.color || '#58a6ff';
+        const lineWidth = this.outputStyles.line?.lineWidth || 1.5;
+        this._drawLine(ctx, computed.line, lineColor, lineWidth, 0.85,
+            xScale, yScale, xData, iMin, iMax, 'line');
+        if (computed.signal) {
+            const sigColor = this.outputStyles.signal?.color || '#f85149';
+            const sigWidth = this.outputStyles.signal?.lineWidth || 1.5;
+            this._drawLine(ctx, computed.signal, sigColor, sigWidth, 0.8,
+                xScale, yScale, xData, iMin, iMax, 'signal');
+        }
+    }
+
+    getAutoFitRange(computed, count, visibleRange) {
+        if (!computed?.line) return null;
+        const [iMin, iMax] = visibleRange || computed.visibleRange || [0, computed.count - 1];
+        let yMin = Infinity, yMax = -Infinity;
+        for (let i = iMin; i <= iMax; i++) {
+            if (isFinite(computed.line[i])) {
+                yMin = Math.min(yMin, computed.line[i]);
+                yMax = Math.max(yMax, computed.line[i]);
+            }
+            if (computed.signal && isFinite(computed.signal[i])) {
+                yMin = Math.min(yMin, computed.signal[i]);
+                yMax = Math.max(yMax, computed.signal[i]);
+            }
+        }
+        if (!isFinite(yMin)) return null;
+        const pad = (yMax - yMin) * 0.1 || 1;
+        return { yMin: yMin - pad, yMax: yMax + pad };
+    }
+}
+brickRegistry.register('trix', TRIXBrick);
+
+// ─── V109: Elder's Ray (Bull/Bear Power) ──────────────────────────────────
+// Bull Power = High - EMA(close, 13)
+// Bear Power = Low - EMA(close, 13)
+// Two-line oscillator. Bull above 0, Bear below 0. Both shrinking = trend weakening.
+class EldersRayBrick extends IndicatorBrick {
+    static META = {
+        type: 'eldersray',
+        label: "Elder's Ray (Bull/Bear)",
+        description: "Elder's Ray Index — Bull Power (High - EMA) and Bear Power (Low - EMA). Both shrink before trend reversal.",
+        category: 'momentum',
+        tags: ['momentum', 'oscillator', 'bull', 'bear', 'elder', 'power'],
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'period', label: 'EMA Period', default: 13, min: 1, max: 200, step: 1 }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'line', label: 'Bull Power', type: 'histogram', color: '#3fb950' }),
+            new BrickOutput({ name: 'signal', label: 'Bear Power', type: 'histogram', color: '#f85149', lineWidth: 1.5, alpha: 0.8, optional: true, defaultVisible: true }),
+        ],
+        levels: [
+            new BrickLevel({ value: 0, label: '0', color: 'rgba(255,255,255,0.25)',
+                             lineWidth: 1, dash: [],
+                             optional: true, name: 'zero', defaultVisible: true }),
+        ],
+    };
+
+    constructor(cfg) { super(cfg); this.needsOHLC = true; }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        if (!ohlc?.high || count === 0) {
+            return { line: new Float64Array(0), signal: new Float64Array(0), count, visibleRange };
+        }
+        const n = Math.max(1, Math.floor(this.params.period || 13));
+        const H = ohlc.high, L = ohlc.low;
+        const ema = _maEMA(sourceData, count, n, version, mutation, emaPool);
+        const line = new Float64Array(count).fill(NaN);      // Bull Power
+        const signal = new Float64Array(count).fill(NaN);    // Bear Power
+        for (let i = 0; i < count; i++) {
+            if (!isFinite(ema[i])) continue;
+            const h = H[i], l = L[i];
+            if (isFinite(h)) line[i] = h - ema[i];
+            if (isFinite(l)) signal[i] = l - ema[i];
+        }
+        this._computed = { line, signal, count, visibleRange };
+        return this._computed;
+    }
+
+    render(ctx, xScale, yScale, xData, computed, visibleRange, layout) {
+        if (!computed?.line) return;
+        const [iMin, iMax] = visibleRange;
+        this._drawLevels(ctx, yScale, layout);
+        const lineColor = this.outputStyles.line?.color || '#3fb950';
+        const lineWidth = this.outputStyles.line?.lineWidth || 1.5;
+        this._drawLine(ctx, computed.line, lineColor, lineWidth, 0.85,
+            xScale, yScale, xData, iMin, iMax, 'line');
+        if (computed.signal) {
+            const sigColor = this.outputStyles.signal?.color || '#f85149';
+            const sigWidth = this.outputStyles.signal?.lineWidth || 1.5;
+            this._drawLine(ctx, computed.signal, sigColor, sigWidth, 0.8,
+                xScale, yScale, xData, iMin, iMax, 'signal');
+        }
+    }
+
+    getAutoFitRange(computed, count, visibleRange) {
+        if (!computed?.line) return null;
+        const [iMin, iMax] = visibleRange || computed.visibleRange || [0, computed.count - 1];
+        let yMin = Infinity, yMax = -Infinity;
+        for (let i = iMin; i <= iMax; i++) {
+            if (isFinite(computed.line[i])) {
+                yMin = Math.min(yMin, computed.line[i]);
+                yMax = Math.max(yMax, computed.line[i]);
+            }
+            if (computed.signal && isFinite(computed.signal[i])) {
+                yMin = Math.min(yMin, computed.signal[i]);
+                yMax = Math.max(yMax, computed.signal[i]);
+            }
+        }
+        if (!isFinite(yMin)) return null;
+        const pad = (yMax - yMin) * 0.1 || 1;
+        return { yMin: yMin - pad, yMax: yMax + pad };
+    }
+}
+brickRegistry.register('eldersray', EldersRayBrick);
 
 // ─── BTC Realized Price (on-chain overlay) ────────────────────────────────
 // Fetches realized price data from bitcoin-data.com API and overlays it on
@@ -32474,10 +33159,10 @@ class VolumeProfileRenderer {
 
 
 // ── V39: явный экспорт в window (обратная совместимость) ──
-Object.assign(window, { MA_SPECS, createMABrick, OSCILLATOR_SPECS, createOscillatorBrick, AUX_DATA_SPECS, createAuxBrick, IndicatorBase, EMACloudIndicator, AOIndicator, EMABufferPool, INDICATOR_TYPES, IndicatorManager, BrickParam, BrickOutput, ColorScheme, _darkenHex, BrickInput, BrickLevel, BrickBand, IndicatorBrick, BrickRegistry, brickRegistry, _maSMA, _maEMA, _maWMA, _maLSMA, _maHMA, _maJMA, _maTEMA, _maDEMA, _maTMA, _maVAMA, _maMF, _maEDSMA, _maKijun, _resolveSrc, MACDBrick, StochasticBrick, BandsBrick, AOBrick, ZigZagBrick, SupportResistanceBrick, OrderBlockBrick, GapDetectorBrick, VolRevFractalsBrick, ZScoreBrick, ZScoreEnsembleBrick, OUBandsBrick, HistoricalPocBrick, HPResidualBrick, KNNAnomalyBrick, VolNormCandlesBrick, AuxDataManager, AuxSeriesBrick, FundingRateBrick, OpenInterestBrick, RelPerfBrick, GammaExposureBrick, EconEventsBrick, DivergenceDetector, VolumeProfileRenderer });
+Object.assign(window, { MA_SPECS, createMABrick, OSCILLATOR_SPECS, createOscillatorBrick, AUX_DATA_SPECS, createAuxBrick, IndicatorBase, EMACloudIndicator, AOIndicator, EMABufferPool, INDICATOR_TYPES, IndicatorManager, BrickParam, BrickOutput, ColorScheme, _darkenHex, BrickInput, BrickLevel, BrickBand, IndicatorBrick, BrickRegistry, brickRegistry, _maSMA, _maEMA, _maWMA, _maLSMA, _maHMA, _maJMA, _maTEMA, _maDEMA, _maTMA, _maVAMA, _maMF, _maEDSMA, _maKijun, _resolveSrc, MACDBrick, StochasticBrick, BandsBrick, AOBrick, ZigZagBrick, SupportResistanceBrick, OrderBlockBrick, GapDetectorBrick, VolRevFractalsBrick, ZScoreBrick, ZScoreEnsembleBrick, OUBandsBrick, HistoricalPocBrick, HPResidualBrick, KNNAnomalyBrick, VolNormCandlesBrick, AuxDataManager, AuxSeriesBrick, FundingRateBrick, OpenInterestBrick, RelPerfBrick, GammaExposureBrick, EconEventsBrick, DivergenceDetector, VolumeProfileRenderer, OBVBrick, CMFBrick, WilliamsRBrick, CCIBrick, TRIXBrick, EldersRayBrick });
 
 // ── V39: регистрация в реестре модулей ──
-CE.registerModule('ce-indicators', ['ce-data-layer', 'ce-math-utils', 'ce-renderers'], ['MA_SPECS', 'createMABrick', 'IndicatorBase', 'EMACloudIndicator', 'AOIndicator', 'EMABufferPool', 'INDICATOR_TYPES', 'IndicatorManager', 'BrickParam', 'BrickOutput', 'ColorScheme', '_darkenHex', 'BrickInput', 'BrickLevel', 'BrickBand', 'IndicatorBrick', 'BrickRegistry', 'brickRegistry', '_maSMA', '_maEMA', '_maWMA', '_maLSMA', '_maHMA', '_maJMA', '_maTEMA', '_maDEMA', '_maTMA', '_maVAMA', '_maMF', '_maEDSMA', '_maKijun', 'SMABrick', 'EMABrick', '_resolveSrc', 'WMABrick', 'DEMABrick', 'TEMABrick', 'TMABrick', 'LSMABrick', 'HMABrick', 'JMABrick', 'VAMABrick', 'MFBrick', 'EDSMABrick', 'KijunBrick', 'RSIBrick', 'BollingerBrick', 'MACDBrick', 'ATRBrick', 'StochasticBrick', 'BandsBrick', 'AOBrick', 'ALMABrick', 'KalmanBrick', 'ZigZagBrick', 'SupportResistanceBrick', 'OrderBlockBrick', 'GapDetectorBrick', 'MFIBrick', 'DPOBrick', 'VolRevFractalsBrick', 'ZScoreBrick', 'ZScoreEnsembleBrick', 'OUBandsBrick', 'HistoricalPocBrick', 'HPResidualBrick', 'KNNAnomalyBrick', 'VolNormCandlesBrick', 'AuxDataManager', 'AuxSeriesBrick', 'AUX_DATA_SPECS', 'createAuxBrick', 'FundingRateBrick', 'OpenInterestBrick', 'RelPerfBrick', 'GammaExposureBrick', 'EconEventsBrick', 'DivergenceDetector', 'VolumeProfileRenderer'], 'WORKER-SAFE');
+CE.registerModule('ce-indicators', ['ce-data-layer', 'ce-math-utils', 'ce-renderers'], ['MA_SPECS', 'createMABrick', 'IndicatorBase', 'EMACloudIndicator', 'AOIndicator', 'EMABufferPool', 'INDICATOR_TYPES', 'IndicatorManager', 'BrickParam', 'BrickOutput', 'ColorScheme', '_darkenHex', 'BrickInput', 'BrickLevel', 'BrickBand', 'IndicatorBrick', 'BrickRegistry', 'brickRegistry', '_maSMA', '_maEMA', '_maWMA', '_maLSMA', '_maHMA', '_maJMA', '_maTEMA', '_maDEMA', '_maTMA', '_maVAMA', '_maMF', '_maEDSMA', '_maKijun', 'SMABrick', 'EMABrick', '_resolveSrc', 'WMABrick', 'DEMABrick', 'TEMABrick', 'TMABrick', 'LSMABrick', 'HMABrick', 'JMABrick', 'VAMABrick', 'MFBrick', 'EDSMABrick', 'KijunBrick', 'RSIBrick', 'BollingerBrick', 'MACDBrick', 'ATRBrick', 'StochasticBrick', 'BandsBrick', 'AOBrick', 'ALMABrick', 'KalmanBrick', 'ZigZagBrick', 'SupportResistanceBrick', 'OrderBlockBrick', 'GapDetectorBrick', 'MFIBrick', 'DPOBrick', 'VolRevFractalsBrick', 'ZScoreBrick', 'ZScoreEnsembleBrick', 'OUBandsBrick', 'HistoricalPocBrick', 'HPResidualBrick', 'KNNAnomalyBrick', 'VolNormCandlesBrick', 'AuxDataManager', 'AuxSeriesBrick', 'AUX_DATA_SPECS', 'createAuxBrick', 'FundingRateBrick', 'OpenInterestBrick', 'RelPerfBrick', 'GammaExposureBrick', 'EconEventsBrick', 'DivergenceDetector', 'VolumeProfileRenderer', 'OBVBrick', 'CMFBrick', 'WilliamsRBrick', 'CCIBrick', 'TRIXBrick', 'EldersRayBrick'], 'WORKER-SAFE');
 })(window.CE, window);
 
 (function CE$module$ce$main$overlay$renderer(CE, window) {
@@ -61489,6 +62174,49 @@ class ChartFactory {
                 }
             }
             closeGroup();
+            // V108: Custom marker editor for TimeMarkerBrick.
+            //   Replaces the awkward "Markers (JSON)" text input with a friendly
+            //   list of markers, each with a datetime-local picker, label, color,
+            //   and remove button. Plus "Add marker" + "Set to now" buttons.
+            if (indType === 'timemarker') {
+                // Parse current markers from selectedParams.markers (JSON string)
+                let currentMarkers = [];
+                try {
+                    const parsed = JSON.parse(selectedParams.markers || '[]');
+                    if (Array.isArray(parsed)) currentMarkers = parsed;
+                } catch (e) { currentMarkers = []; }
+
+                html += `<div class="s-section-div">`;
+                html += `<div class="s-section-label">Marker Editor</div>`;
+                html += `<div id="marker-editor" style="display:flex;flex-direction:column;gap:8px;padding:4px 0;">`;
+
+                // Render existing markers
+                currentMarkers.forEach((m, i) => {
+                    const ts = m.timestamp || Date.now();
+                    // V108: convert epoch ms → datetime-local string (local timezone)
+                    //   Format: YYYY-MM-DDTHH:MM (what <input type="datetime-local"> expects)
+                    const d = new Date(ts);
+                    const localStr = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+                        .toISOString().slice(0, 16);
+                    const label = m.label || '';
+                    const color = m.color || selectedParams.defaultColor || '#f85149';
+                    html += `<div class="s-row" data-marker-idx="${i}" style="align-items:center;gap:6px;flex-wrap:wrap;">`;
+                    html += `<input type="datetime-local" class="s-input" data-marker-ts="${i}" value="${localStr}" style="flex:1;min-width:160px;">`;
+                    html += `<input type="text" class="s-input" data-marker-label="${i}" value="${esc(label)}" placeholder="label" style="width:90px;">`;
+                    html += `<input type="color" class="s-input" data-marker-color="${i}" value="${color}" style="width:32px;padding:1px;height:28px;">`;
+                    html += `<button class="ind-btn" data-marker-now="${i}" style="padding:4px 8px;font-size:10px;">now</button>`;
+                    html += `<button class="ind-btn" data-marker-del="${i}" style="padding:4px 8px;font-size:10px;color:#f85149;">✕</button>`;
+                    html += `</div>`;
+                });
+
+                // Add + clear buttons
+                html += `<div class="s-row" style="gap:8px;">`;
+                html += `<button class="ind-btn ind-btn-add" data-marker-add style="flex:1;padding:6px;">+ Add Marker</button>`;
+                html += `<button class="ind-btn" data-marker-clear style="padding:6px 12px;color:#f85149;">Clear All</button>`;
+                html += `</div>`;
+                html += `</div>`;
+                html += `</div>`;
+            }
             // Source + Panel
             html += `<div class="s-section-div">`;
             html += `<div class="s-section-label">Source & Panel</div>`;
@@ -61867,6 +62595,133 @@ class ChartFactory {
                     else selectedParams[inp.dataset.param] = inp.value;
                 });
             });
+            // V108: Marker editor wiring (TimeMarkerBrick only)
+            //   The editor maintains a live `markerList` array that's synced to
+            //   selectedParams.markers (JSON string) on every change.
+            if (indType === 'timemarker') {
+                let markerList = [];
+                try {
+                    const parsed = JSON.parse(selectedParams.markers || '[]');
+                    if (Array.isArray(parsed)) markerList = parsed.map(m => ({
+                        timestamp: m.timestamp || Date.now(),
+                        label: m.label || '',
+                        color: m.color || selectedParams.defaultColor || '#f85149',
+                    }));
+                } catch (e) { markerList = []; }
+
+                const syncMarkers = () => {
+                    selectedParams.markers = JSON.stringify(markerList);
+                };
+
+                // V108: re-render the marker list (called after add/delete)
+                const rerenderMarkerList = () => {
+                    const editorEl = configArea.querySelector('#marker-editor');
+                    if (!editorEl) return;
+                    let mh = '';
+                    markerList.forEach((m, i) => {
+                        const d = new Date(m.timestamp);
+                        const localStr = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+                            .toISOString().slice(0, 16);
+                        const label = m.label || '';
+                        const color = m.color || selectedParams.defaultColor || '#f85149';
+                        mh += `<div class="s-row" data-marker-idx="${i}" style="align-items:center;gap:6px;flex-wrap:wrap;">`;
+                        mh += `<input type="datetime-local" class="s-input" data-marker-ts="${i}" value="${localStr}" style="flex:1;min-width:160px;">`;
+                        mh += `<input type="text" class="s-input" data-marker-label="${i}" value="${esc(label)}" placeholder="label" style="width:90px;">`;
+                        mh += `<input type="color" class="s-input" data-marker-color="${i}" value="${color}" style="width:32px;padding:1px;height:28px;">`;
+                        mh += `<button class="ind-btn" data-marker-now="${i}" style="padding:4px 8px;font-size:10px;">now</button>`;
+                        mh += `<button class="ind-btn" data-marker-del="${i}" style="padding:4px 8px;font-size:10px;color:#f85149;">✕</button>`;
+                        mh += `</div>`;
+                    });
+                    // Keep the Add/Clear buttons row at the bottom
+                    const btnRow = editorEl.querySelector('[data-marker-add]')?.closest('.s-row');
+                    editorEl.innerHTML = mh;
+                    if (btnRow) editorEl.appendChild(btnRow);
+                    else {
+                        // Recreate buttons row if it was removed
+                        const btnHtml = `<div class="s-row" style="gap:8px;">` +
+                            `<button class="ind-btn ind-btn-add" data-marker-add style="flex:1;padding:6px;">+ Add Marker</button>` +
+                            `<button class="ind-btn" data-marker-clear style="padding:6px 12px;color:#f85149;">Clear All</button>` +
+                            `</div>`;
+                        editorEl.insertAdjacentHTML('beforeend', btnHtml);
+                    }
+                    wireMarkerEvents();
+                };
+
+                // V108: wire events for all marker inputs (called after each rerender)
+                const wireMarkerEvents = () => {
+                    // datetime-local input → update timestamp
+                    configArea.querySelectorAll('[data-marker-ts]').forEach(inp => {
+                        inp.addEventListener('input', () => {
+                            const i = parseInt(inp.dataset.markerTs);
+                            const dt = new Date(inp.value);
+                            if (!isNaN(dt.getTime())) {
+                                markerList[i].timestamp = dt.getTime();
+                                syncMarkers();
+                            }
+                        });
+                    });
+                    // label input → update label
+                    configArea.querySelectorAll('[data-marker-label]').forEach(inp => {
+                        inp.addEventListener('input', () => {
+                            const i = parseInt(inp.dataset.markerLabel);
+                            markerList[i].label = inp.value;
+                            syncMarkers();
+                        });
+                    });
+                    // color input → update color
+                    configArea.querySelectorAll('[data-marker-color]').forEach(inp => {
+                        inp.addEventListener('input', () => {
+                            const i = parseInt(inp.dataset.markerColor);
+                            markerList[i].color = inp.value;
+                            syncMarkers();
+                        });
+                    });
+                    // "now" button → set timestamp to current time
+                    configArea.querySelectorAll('[data-marker-now]').forEach(btn => {
+                        btn.onclick = () => {
+                            const i = parseInt(btn.dataset.markerNow);
+                            markerList[i].timestamp = Date.now();
+                            syncMarkers();
+                            rerenderMarkerList();
+                        };
+                    });
+                    // delete button → remove marker
+                    configArea.querySelectorAll('[data-marker-del]').forEach(btn => {
+                        btn.onclick = () => {
+                            const i = parseInt(btn.dataset.markerDel);
+                            markerList.splice(i, 1);
+                            syncMarkers();
+                            rerenderMarkerList();
+                        };
+                    });
+                    // Add marker button
+                    const addBtn = configArea.querySelector('[data-marker-add]');
+                    if (addBtn) {
+                        addBtn.onclick = () => {
+                            // V108: default new marker to current time, with a
+                            //   cycling color so multiple markers are visually distinct
+                            const palette = ['#f85149', '#58a6ff', '#3fb950', '#d29922', '#bc8cff', '#ff79c6'];
+                            const color = palette[markerList.length % palette.length];
+                            markerList.push({ timestamp: Date.now(), label: '', color });
+                            syncMarkers();
+                            rerenderMarkerList();
+                        };
+                    }
+                    // Clear all button
+                    const clearBtn = configArea.querySelector('[data-marker-clear]');
+                    if (clearBtn) {
+                        clearBtn.onclick = () => {
+                            if (markerList.length === 0 || confirm('Remove all markers?')) {
+                                markerList = [];
+                                syncMarkers();
+                                rerenderMarkerList();
+                            }
+                        };
+                    }
+                };
+
+                wireMarkerEvents();
+            }
             configArea.querySelectorAll('[data-levelshow]').forEach(inp => {
                 inp.addEventListener('change', () => { selectedParams[`${inp.dataset.levelshow}_show`] = inp.checked; });
             });
@@ -64351,7 +65206,7 @@ class CoinPicker {
 
         // Persisted state
         this._filters = _cpLoadState('cp.filters', { kind: 'all', onlyFavs: false, excludeStables: false, excludeDead: true, quotes: [], favTypes: [], listingAge: 'any', favRecency: 'any', tags: [] });
-        this._options = _cpLoadState('cp.options', { showChart: true, chartInterval: '240', chartLimit: 96, extraColumn: 'funding', chartBehind: false, showQuoteFab: false, miniChart: false });
+        this._options = _cpLoadState('cp.options', { showChart: true, chartInterval: '240', chartLimit: 96, extraColumn: 'funding', chartBehind: false, showQuoteFab: false, miniChart: false, sortByRef: false });
         this._sort = _cpLoadState('cp.sort', { key: 'vol', dir: 'desc' });
         // Favorites use the existing CoinFavorites class
     }
@@ -65165,6 +66020,20 @@ class CoinPicker {
             return true;
         });
 
+        // V108c: when sortByRef is enabled, it OVERRIDES the main sort key.
+        //   1. Filter to only coins that have cached ref-diff data.
+        //   2. Force the sort key to 'refdiff'.
+        //   This prevents conflict with the user's regular sort (vol/change/etc).
+        let effectiveSortKey = this._sort.key;
+        if (this._options.sortByRef && this._refDiffCache) {
+            list = list.filter(c => {
+                const ck = c.base + ':' + c.quote;
+                const v = this._refDiffCache.get(ck);
+                return v != null && isFinite(v);
+            });
+            effectiveSortKey = 'refdiff';
+        }
+
         // Sort — volume uses total volume (sum across all markets) so the
         // ordering reflects true total liquidity regardless of which market
         // is currently displayed. Other metrics use the displayed market's
@@ -65197,10 +66066,10 @@ class CoinPicker {
         };
         list = list.slice().sort((a, b) => {
             // 'name' is the only string sort — handle separately.
-            if (this._sort.key === 'name') return mul * a.base.localeCompare(b.base);
+            if (effectiveSortKey === 'name') return mul * a.base.localeCompare(b.base);
             const ma = pickMarket(a), mb = pickMarket(b);
             let va, vb;
-            switch (this._sort.key) {
+            switch (effectiveSortKey) {
                 // Volume: total across all markets. Use safe() to coerce
                 // undefined/NaN to 0 so the comparator always returns a finite
                 // number (otherwise sort order becomes unstable).
@@ -65225,6 +66094,17 @@ class CoinPicker {
                 case 'oi':
                     va = safe(ma?.openInterest ?? a.openInterest);
                     vb = safe(mb?.openInterest ?? b.openInterest);
+                    break;
+                case 'refdiff':
+                    // V108b: sort by cached ref-diff% (from _computeRefDiffs).
+                    //   Coins without cached data get -Infinity so they sink
+                    //   to the bottom in desc order.
+                    {
+                        const keyA = a.base + ':' + a.quote;
+                        const keyB = b.base + ':' + b.quote;
+                        va = safe(this._refDiffCache?.get(keyA), -Infinity);
+                        vb = safe(this._refDiffCache?.get(keyB), -Infinity);
+                    }
                     break;
                 default:
                     va = totalVol(a);
@@ -65491,6 +66371,15 @@ class CoinPicker {
             if (tv > 0) {
                 extraHtml = `<div class="cp-extra"><div class="cp-extra-label">Vol</div><div class="cp-extra-val">${_formatCompact(tv)}</div></div>`;
             }
+        } else if (this._options.extraColumn === 'refdiff') {
+            // V108b: show cached ref-diff% from _computeRefDiffs
+            const coinKey = coin.base + ':' + coin.quote;
+            const diff = this._refDiffCache?.get(coinKey);
+            if (diff != null && isFinite(diff)) {
+                extraHtml = `<div class="cp-extra"><div class="cp-extra-label">Ref%</div><div class="cp-extra-val" style="${diff >= 0 ? 'color:#3fb950' : 'color:#f85149'}">${diff >= 0 ? '+' : ''}${diff.toFixed(2)}%</div></div>`;
+            } else {
+                extraHtml = `<div class="cp-extra"><div class="cp-extra-label">Ref%</div><div class="cp-extra-val" style="color:#8b949e">—</div></div>`;
+            }
         }
 
         // Sparkline — use isPerp-aware cache key so the sparkline matches the
@@ -65551,6 +66440,22 @@ class CoinPicker {
         const papName = this._paprikaIndex?.get(parsed.base.toUpperCase())?.name;
         const displayName = papName || coin.name || parsed.base.toLowerCase();
 
+        // V108e: ref-diff badge — shows on EVERY row when compute data exists,
+        //   regardless of the extra column setting. Small colored pill so it
+        //   doesn't break the existing layout. Only hidden when extra column
+        //   is already 'refdiff' (would be redundant).
+        let refBadgeHtml = '';
+        if (this._refDiffCache && this._options.extraColumn !== 'refdiff') {
+            const coinKey = coin.base + ':' + coin.quote;
+            const diff = this._refDiffCache.get(coinKey);
+            if (diff != null && isFinite(diff)) {
+                const color = diff >= 0 ? '#3fb950' : '#f85149';
+                const bg = diff >= 0 ? 'rgba(63,185,80,0.12)' : 'rgba(248,81,73,0.12)';
+                const sign = diff >= 0 ? '+' : '';
+                refBadgeHtml = `<div style="font-size:9px;font-weight:600;color:${color};background:${bg};padding:1px 4px;border-radius:3px;white-space:nowrap;font-variant-numeric:tabular-nums;flex-shrink:0;">${sign}${diff.toFixed(2)}%</div>`;
+            }
+        }
+
         return `<div class="cp-row ${isActive ? 'active' : ''}" data-key="${esc(key)}" data-idx="${idx}" style="position:relative;">
             ${chartBehindHtml}
             <div style="position:relative;z-index:1; display:flex; align-items:center; gap:8px; flex:1; min-width:0; height:100%;">
@@ -65559,6 +66464,7 @@ class CoinPicker {
                     <div class="cp-ticker">${multiplierPrefix}${esc(parsed.base)}${displayMkt.isPerp ? '<span class="perp">PERP</span>' : ''}</div>
                     <div class="cp-name">${esc(displayName)}</div>
                 </div>
+                ${refBadgeHtml}
                 ${extraHtml}
                 ${sparkHtml}
                 <div class="cp-price">
@@ -65894,12 +66800,14 @@ class CoinPicker {
     }
 
     _updateSortBtn() {
-        const labels = { vol: 'Vol', change: 'Change', name: 'Name', listing: 'Listing', funding: 'Funding', oi: 'OI' };
+        const labels = { vol: 'Vol', change: 'Change', name: 'Name', listing: 'Listing', funding: 'Funding', oi: 'OI', refdiff: 'Ref %' };
         const btn = this._el?.querySelector('.cp-sort-btn');
         if (btn) {
             const labelEl = btn.querySelector('.cp-sort-label');
             const dirEl = btn.querySelector('.cp-sort-dir');
-            if (labelEl) labelEl.textContent = labels[this._sort.key] || 'Vol';
+            // V108c: when sortByRef is enabled, show 'Ref %' as the active sort
+            const effectiveKey = this._options.sortByRef ? 'refdiff' : this._sort.key;
+            if (labelEl) labelEl.textContent = labels[effectiveKey] || 'Vol';
             if (dirEl) dirEl.textContent = this._sort.dir === 'desc' ? '↓' : '↑';
         }
     }
@@ -65912,6 +66820,7 @@ class CoinPicker {
             { key: 'listing', label: 'Listing' },
             { key: 'funding', label: 'Funding' },
             { key: 'oi', label: 'Open Interest' },
+            { key: 'refdiff', label: 'Ref Diff %' },
         ];
         const menu = document.createElement('div');
         menu.className = 'cp-tooltip';
@@ -65937,6 +66846,12 @@ class CoinPicker {
             el.addEventListener('click', (e) => {
                 e.stopPropagation();
                 const key = el.dataset.key;
+                // V108c: selecting a regular sort key disables sortByRef
+                //   so the user's explicit sort choice takes effect.
+                if (this._options.sortByRef && key !== 'refdiff') {
+                    this._options.sortByRef = false;
+                    _cpSaveState('cp.options', this._options);
+                }
                 this._sort.key = key;
                 if (key === 'name') this._sort.dir = 'asc';
                 else this._sort.dir = 'desc';
@@ -66121,13 +67036,20 @@ class CoinPicker {
             <div class="cp-filter-row">
                 <span class="cp-filter-label">Extra</span>
                 <div class="cp-filter-chips">
-                    ${seg([{id:'funding',label:'Funding'},{id:'oi',label:'Open Int.'},{id:'turnover',label:'Turnover'},{id:'none',label:'None'}], o.extraColumn, 'extraColumn')}
+                    ${seg([{id:'funding',label:'Funding'},{id:'oi',label:'Open Int.'},{id:'turnover',label:'Turnover'},{id:'refdiff',label:'Ref Diff %'},{id:'none',label:'None'}], o.extraColumn, 'extraColumn')}
                 </div>
             </div>
             <div class="cp-filter-row">
                 <span class="cp-filter-label">Chart FAB</span>
                 <div class="cp-filter-chips">
                     <span class="chip ${o.showQuoteFab ? 'active' : ''}" data-opt="showQuoteFab">Quote button on chart</span>
+                </div>
+            </div>
+            <div class="cp-filter-row">
+                <span class="cp-filter-label">Ref Sort</span>
+                <div class="cp-filter-chips">
+                    <span class="chip ${o.sortByRef ? 'active' : ''}" data-opt="sortByRef" id="cp-ref-sort-chip">Sort by ref diff%</span>
+                    <button class="chip" data-opt="computeRef" id="cp-compute-ref-btn" style="cursor:pointer;border:1px solid rgba(88,166,255,0.4);background:rgba(88,166,255,0.12);color:#58a6ff;">⚡ Compute</button>
                 </div>
             </div>
         `;
@@ -66161,6 +67083,25 @@ class CoinPicker {
                             this._options.showQuoteFab ? '1' : '0');
                     } catch (e2) {}
                     if (typeof window._cpUpdateFab === 'function') window._cpUpdateFab();
+                } else if (opt === 'sortByRef') {
+                    // V108b: toggle ref-diff sorting
+                    this._options.sortByRef = !this._options.sortByRef;
+                    // If enabling and no cached ref data, trigger compute
+                    if (this._options.sortByRef && !this._refDiffCache) {
+                        this._computeRefDiffs();
+                    } else {
+                        this._applyFilters();
+                    }
+                    this._updateSortBtn();  // V108c: update sort button label
+                } else if (opt === 'computeRef') {
+                    // V108b: manually trigger compute (button, not chip toggle)
+                    // V108d: this handler is the ONLY one for the compute button.
+                    //   Previously a second dedicated handler on #cp-compute-ref-btn
+                    //   caused _computeRefDiffs() to be called TWICE per click:
+                    //   first call started compute, second call saw running=true and
+                    //   toggled pause ON → "Resume" appeared immediately.
+                    this._computeRefDiffs();
+                    return;  // don't re-render options (would close the button)
                 }
                 _cpSaveState('cp.options', this._options);
                 this._renderOptions();
@@ -66168,6 +67109,187 @@ class CoinPicker {
                 this._prefetchSparklines();
             });
         });
+        // V108d: REMOVED duplicate #cp-compute-ref-btn handler.
+        //   The chip handler above (data-opt="computeRef") already handles
+        //   the click. The duplicate was causing double-invocation → instant pause.
+    }
+
+    // V108b: Compute ref-diff% for ALL filtered coins by fetching klines
+    //   at the two reference timestamps from the chart's TimeMarkerBrick.
+    //   Results are cached in _refDiffCache (Map: coinKey → diffPct).
+    //   Re-running compute clears the cache (user wants fresh data).
+    //   Rate-limited: 1 request per 120ms (Binance-friendly).
+    //   V108c: pause/resume — clicking the button while computing pauses;
+    //     clicking again resumes. Progress updates every coin.
+    async _computeRefDiffs() {
+        // V108c: if already computing, toggle pause/resume instead of starting over
+        if (this._refComputeRunning) {
+            this._refComputePaused = !this._refComputePaused;
+            const btn = this._optionsBar?.querySelector('#cp-compute-ref-btn');
+            if (btn) {
+                if (this._refComputePaused) {
+                    btn.textContent = `▶ Resume (${this._refComputeDone}/${this._refComputeTotal})`;
+                } else {
+                    btn.textContent = `⏸ ${this._refComputeDone}/${this._refComputeTotal}`;
+                }
+            }
+            return;
+        }
+
+        // Find the TimeMarkerBrick on the chart
+        const chart = window._chart;
+        if (!chart?.api) {
+            showToast('Chart not available', { error: true });
+            return;
+        }
+        const inds = chart.api.getIndicator() || [];
+        const tmBrick = inds.find(i => i.constructor?.META?.type === 'timemarker');
+        if (!tmBrick) {
+            showToast('Add a Time Markers indicator with 2+ markers first', { error: true });
+            return;
+        }
+        const refPoints = tmBrick.getReferencePoints?.();
+        if (!refPoints) {
+            showToast('Need 2 reference markers (or exactly 2 markers total)', { error: true });
+            return;
+        }
+        const [ts1, ts2] = refPoints;
+        // Determine the timeframe to use for kline fetch.
+        //   Use the picker's chartInterval option (5m, 15m, 1h, 4h, 1d).
+        //   The TF must be coarse enough that candles exist at both timestamps.
+        const tfMap = { '5': '5m', '15': '15m', '60': '1h', '240': '4h', 'D': '1d' };
+        const tf = tfMap[this._options.chartInterval] || '4h';
+
+        // V108c: set up compute state
+        const coins = this._filtered || this._coins || [];
+        const total = coins.length;
+        this._refComputeRunning = true;
+        this._refComputePaused = false;
+        this._refComputeDone = 0;
+        this._refComputeTotal = total;
+        this._refComputeAbort = false;
+
+        // V108c: reuse existing cache if we have one (resume from where we left off)
+        if (!this._refDiffCache) this._refDiffCache = new Map();
+        const cache = this._refDiffCache;
+
+        // V108e: use updateBtn() helper instead of capturing btn as const —
+        //   the helper re-queries the DOM on each call so it survives re-renders.
+        {
+            const b = this._optionsBar?.querySelector('#cp-compute-ref-btn');
+            if (b) { b.textContent = `⏸ 0/${total}`; b.style.opacity = '1'; }
+        }
+        const startTime = Date.now();
+
+        // V108b: fetch klines for a single coin at both timestamps.
+        const fetchCandleAt = async (symbol, ts, isPerp) => {
+            const base = isPerp ? 'https://fapi.binance.com' : 'https://api.binance.com';
+            const path = isPerp ? '/fapi/v1/klines' : '/api/v3/klines';
+            const url = `${base}${path}?symbol=${encodeURIComponent(symbol)}&interval=${tf}&startTime=${ts}&limit=1`;
+            try {
+                const resp = await fetch(url);
+                if (!resp.ok) return null;
+                const data = await resp.json();
+                if (!Array.isArray(data) || data.length === 0) return null;
+                const k = data[0];
+                return { high: parseFloat(k[2]), low: parseFloat(k[3]) };
+            } catch (e) { return null; }
+        };
+
+        // V108c: process coins sequentially with rate limiting (120ms = ~8 req/s)
+        // V108e: re-query btn inside loop (not a const closure) so it survives
+        //   options-bar re-renders. Previously btn was captured once at the top;
+        //   if _renderOptions ran during compute (e.g. user toggled another chip),
+        //   the old btn became a detached DOM node → progress updates were
+        //   invisible after resume.
+        const updateBtn = (text) => {
+            const b = this._optionsBar?.querySelector('#cp-compute-ref-btn');
+            if (b) b.textContent = text;
+        };
+
+        for (let idx = 0; idx < coins.length; idx++) {
+            // V108c: check for abort (e.g. user closed picker or started a new compute)
+            if (this._refComputeAbort) break;
+
+            // V108c: pause loop — wait while paused
+            while (this._refComputePaused && this._refComputeRunning && !this._refComputeAbort) {
+                await new Promise(r => setTimeout(r, 200));
+            }
+            if (this._refComputeAbort) break;
+
+            const coin = coins[idx];
+            const coinKey = coin.base + ':' + coin.quote;
+            // V108c: skip coins already cached (resume support)
+            if (cache.has(coinKey)) {
+                this._refComputeDone++;
+                if (!this._refComputePaused) updateBtn(`⏸ ${this._refComputeDone}/${total}`);
+                continue;
+            }
+            // Pick the market to use (spot first, then perp)
+            const market = coin.markets?.find(m => !m.isPerp) || coin.markets?.[0];
+            if (!market?.symbol) { cache.set(coinKey, null); this._refComputeDone++; continue; }
+            try {
+                const [c1, c2] = await Promise.all([
+                    fetchCandleAt(market.symbol, ts1, market.isPerp),
+                    fetchCandleAt(market.symbol, ts2, market.isPerp),
+                ]);
+                if (c1 && c2 && c1.high > 0 && c1.low > 0 && c2.high > 0 && c2.low > 0) {
+                    const med1 = (c1.high + c1.low) / 2;
+                    const med2 = (c2.high + c2.low) / 2;
+                    if (med1 > 0) {
+                        cache.set(coinKey, (med2 - med1) / med1 * 100);
+                    } else {
+                        cache.set(coinKey, null);
+                    }
+                } else {
+                    cache.set(coinKey, null);
+                }
+            } catch (e) {
+                cache.set(coinKey, null);
+            }
+            this._refComputeDone++;
+
+            // V108e: update progress EVERY coin — re-query btn so it's always live
+            if (!this._refComputePaused) {
+                updateBtn(`⏸ ${this._refComputeDone}/${total}`);
+            }
+
+            // Rate limit: 120ms between coins (2 requests per coin = 240ms per coin)
+            if (idx < coins.length - 1) await new Promise(r => setTimeout(r, 120));
+        }
+
+        // V108c: clean up compute state
+        const wasAborted = this._refComputeAbort;
+        this._refComputeRunning = false;
+        this._refComputePaused = false;
+        this._refComputeAbort = false;
+        this._refDiffCacheTs = Date.now();
+        this._refDiffRefPoints = refPoints;
+
+        if (wasAborted) {
+            updateBtn(`⚡ Resume (${this._refComputeDone}/${total})`);
+        } else {
+            updateBtn(`⚡ Done (${total})`);
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            showToast(`Computed ref diff% for ${total} coins in ${elapsed}s`);
+        }
+
+        // If sortByRef is enabled, re-apply filters to sort
+        if (this._options.sortByRef) {
+            this._applyFilters();
+        } else {
+            // V108e: even without sorting, re-render visible rows so the
+            //   ref-diff badges appear immediately after compute finishes.
+            this._renderVisible();
+        }
+    }
+
+    // V108c: abort any running compute (called when picker closes)
+    _abortRefCompute() {
+        if (this._refComputeRunning) {
+            this._refComputeAbort = true;
+            this._refComputePaused = false;
+        }
     }
 
     _showFavMenu(coin, anchor) {
