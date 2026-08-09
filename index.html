@@ -15375,7 +15375,12 @@ class Layout {
      */
     getZone(x, y) {
         if (x >= this.axisYX - this.HIT_ZONE_RADIUS)              return 'axis-y';
-        if (y >= this.axisXY - this.HIT_ZONE_RADIUS * 2)          return 'axis-x';
+        // V111: reduced X-axis hit zone from HIT_ZONE_RADIUS*2 to HIT_ZONE_RADIUS
+        //   to create a safe zone above the axis label area. Previously the zone
+        //   extended 20px above axisXY, which overlapped the bottom of the last
+        //   indicator panel — causing accidental X-axis zoom when swiping indicators.
+        //   Now it extends only HIT_ZONE_RADIUS (10px) above, leaving a 10px buffer.
+        if (y >= this.axisXY - this.HIT_ZONE_RADIUS)             return 'axis-x';
         const seps = this.separatorYs || (this.separatorY != null ? [this.separatorY] : []);
         for (const sy of seps) {
             if (Math.abs(y - sy) < this.HIT_ZONE_RADIUS) return 'separator';
