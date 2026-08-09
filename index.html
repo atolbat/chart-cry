@@ -11852,8 +11852,6 @@ class PanelLabelRenderer {
                 }
             }
             // 3b. Indicators whose .panelId === pId.
-            // Multi-indicator panels (e.g. RSI + EMA-on-RSI) get a
-            // comma-joined label so the user can tell what's on the panel.
             const im = api?._ctx?.indicatorManager;
             if (im) {
                 const names = [];
@@ -11862,22 +11860,26 @@ class PanelLabelRenderer {
                     if ((ind.panelId || 'main') !== pId) continue;
                     const meta = ind.constructor?.META;
                     if (!meta) continue;
-                    const lbl = meta.label || meta.type || ind.id;
-                    // Append the active params in shorthand form, e.g. "RSI(14)"
-                    // or "AO(5,34)" — helps distinguish multiple instances.
+                    // V110: use shortLabel if available, otherwise fall back to label
+                    const lbl = meta.shortLabel || meta.label || meta.type || ind.id;
+                    // Append the first numeric param in shorthand form, e.g. "RSI(14)"
+                    // or "MACD(12,26,9)" — helps distinguish multiple instances.
                     const params = meta.params || [];
-                    if (params.length > 0) {
-                        const vals = params.map(p => ind.params?.[p.name]);
+                    const numericParams = params.filter(p => p.type !== 'bool' && p.type !== 'select' && p.name !== 'mode');
+                    if (numericParams.length > 0) {
+                        const vals = numericParams.map(p => ind.params?.[p.name]);
                         if (vals.every(v => v !== undefined && v !== null)) {
-                            names.push(`${lbl}(${vals.join(',')})`);
+                            // V110: append "log" suffix if logScale is enabled
+                            const logSuffix = ind.params?.logScale === true ? ' log' : '';
+                            names.push(`${lbl}(${vals.join(',')})${logSuffix}`);
                             continue;
                         }
                     }
-                    names.push(lbl);
+                    // V110: append "log" suffix even without params
+                    const logSuffix = ind.params?.logScale === true ? ' log' : '';
+                    names.push(lbl + logSuffix);
                 }
                 if (names.length > 0) {
-                    // Replace any series-derived title — indicators are
-                    // more informative on dedicated indicator panels.
                     title = names.join(' · ');
                     subtitle = '';
                 }
@@ -21876,6 +21878,7 @@ class MACDBrick extends IndicatorBrick {
     static META = {
         type: 'macd',
         label: 'MACD',
+        shortLabel: 'MACD',
         description: 'Moving Average Convergence Divergence — trend + momentum',
         category: 'momentum',
         panelMode: 'separate',
@@ -22044,6 +22047,7 @@ class StochasticBrick extends IndicatorBrick {
     static META = {
         type: 'stochastic',
         label: 'Stochastic',
+        shortLabel: 'Stoch',
         description: 'Stochastic Oscillator — %K and %D momentum',
         category: 'momentum',
         panelMode: 'separate',
@@ -22464,6 +22468,7 @@ class AOBrick extends IndicatorBrick {
     static META = {
         type: 'ao',
         label: 'Awesome Oscillator',
+        shortLabel: 'AO',
         description: 'AO = SMA(median,5) - SMA(median,34) — momentum via median price',
         category: 'momentum',
         tags: ['momentum', 'oscillator', 'bill williams', 'histogram'],
@@ -22902,6 +22907,7 @@ class ZigZagBrick extends IndicatorBrick {
     static META = {
         type: 'zigzag',
         label: 'ZigZag',
+        shortLabel: 'ZZ',
         description: 'Connects swing highs/lows with adaptive deviation. Includes fib retracement levels and hit detection.',
         category: 'trend',
         tags: ['trend', 'swings', 'support', 'resistance', 'reversal', 'adaptive'],
@@ -23567,6 +23573,7 @@ class SupportResistanceBrick extends IndicatorBrick {
     static META = {
         type: 'sr',
         label: 'Support/Resistance',
+        shortLabel: 'S/R',
         description: 'Dynamic support/resistance levels via price clustering',
         category: 'trend',
         tags: ['support', 'resistance', 'levels', 'dynamic', 'price action'],
@@ -24021,6 +24028,7 @@ class OrderBlockBrick extends IndicatorBrick {
     static META = {
         type: 'ob',
         label: 'Order Blocks',
+        shortLabel: 'OB',
         description: 'Smart Money Concepts: Order Blocks + Fair Value Gaps',
         category: 'trend',
         tags: ['smc', 'order block', 'fair value gap', 'imbalance', 'institutional'],
@@ -24375,6 +24383,7 @@ class GapDetectorBrick extends IndicatorBrick {
     static META = {
         type: 'gap',
         label: 'Gap Detector',
+        shortLabel: 'Gap',
         description: 'Detects price gaps (CME-style) and flash gaps',
         category: 'trend',
         tags: ['gap', 'cme', 'imbalance', 'flash crash', 'liquidity'],
@@ -24971,6 +24980,7 @@ class ZScoreBrick extends IndicatorBrick {
     static META = {
         type: 'zscore',
         label: 'Z-Score Anomaly',
+        shortLabel: 'ZScore',
         description: 'Detects anomalous price movements. 10 modes: classic, robust (MAD/IQR), EWMA, volume-weighted, returns-based, multi-scale, asymmetric, GARCH(1,1), HP-detrended, EVT (GPD tail). |Z| > threshold = anomaly.',
         category: 'composite',
         tags: ['anomaly', 'zscore', 'outlier', 'statistics', 'volatility', 'robust', 'garch', 'evt'],
@@ -25656,6 +25666,7 @@ class ZScoreEnsembleBrick extends ZScoreBrick {
     static META = {
         type: 'zscore_ensemble',
         label: 'Z-Score Ensemble',
+        shortLabel: 'ZEns',
         description: 'Combines up to 6 Z-score methods on one chart. Each slot has its own mode/period/threshold. Shows all anomaly dots at price level — see where methods agree (clusters) and differ (isolated). Consensus band highlights bars where ≥N methods agree.',
         category: 'composite',
         tags: ['anomaly', 'zscore', 'ensemble', 'consensus', 'overlay', 'multi-method'],
@@ -26070,6 +26081,7 @@ class OUBandsBrick extends IndicatorBrick {
     static META = {
         type: 'ou_bands',
         label: 'OU Mean Reversion Bands',
+        shortLabel: 'OUBands',
         description: 'Ornstein-Uhlenbeck inspired mean-reversion overlay. Fits an AR(1) model on a rolling window, converts to OU equilibrium mean (mu) and equilibrium sigma, then plots inner/outer probability-style bands. No arrows, no z-value labels — just the mean line and optional bands.',
         category: 'composite',
         tags: ['meanreversion', 'ornstein-uhlenbeck', 'statistics', 'bands', 'overlay', 'ar1', 'equilibrium'],
@@ -26973,6 +26985,7 @@ class HPResidualBrick extends IndicatorBrick {
     static META = {
         type: 'hpresidual',
         label: 'HP Residual',
+        shortLabel: 'HPRes',
         description: 'Hodrick-Prescott filter residual (cycle component). Large |residual| = price detached from long-term trend. Lambda controls smoothness (higher = smoother trend). V105 filter modes: two-sided (lookahead), one-sided, Kalman, Rolling-Window HP, EWMA Trend, Savitzky-Golay (causal), Christiano-Fitzgerald BP (causal), Henderson (causal), Local Linear Trend Kalman. Plus: robust HP (IRLS), adaptive lambda (ATR), endpoint correction, forecast augmentation, z-score, decay weighting.',
         category: 'composite',
         tags: ['anomaly', 'hp', 'hodrick-prescott', 'trend', 'cycle', 'detrend'],
@@ -27776,6 +27789,7 @@ class KNNAnomalyBrick extends IndicatorBrick {
     static META = {
         type: 'knnanomaly',
         label: 'KNN Anomaly',
+        shortLabel: 'KNN',
         description: 'k-Nearest-Neighbors distance anomaly. For each bar, computes avg distance to k nearest neighbors in (return, volume-ratio) feature space. Z-scores the result. High score = unusual bar.',
         category: 'composite',
         tags: ['anomaly', 'knn', 'outlier', 'machine-learning', 'distance'],
@@ -28012,6 +28026,7 @@ class OUZScoreBrick extends IndicatorBrick {
     static META = {
         type: 'ou_zscore',
         label: 'OU Z-Score + Half-Life',
+        shortLabel: 'OUZ',
         description: 'Ornstein-Uhlenbeck Z-score + half-life. Z = (price − μ_OU) / σ_eq, HL = ln(2)/θ. Both normalized to 0..1. Mathematically continuous — no plateaus, OU always applies (b→1 gives Z→0, HL→max).',
         category: 'composite',
         tags: ['meanreversion', 'ornstein-uhlenbeck', 'zscore', 'halflife', 'statistics', 'oscillator'],
@@ -28172,6 +28187,7 @@ class VPINBrick extends IndicatorBrick {
     static META = {
         type: 'vpin',
         label: 'VPIN (Toxicity)',
+        shortLabel: 'VPIN',
         description: 'Volume-Synchronized Probability of Informed Trading. Measures order flow toxicity from buy/sell volume imbalance. High VPIN = toxic flow = informed traders active = expect sharp moves. VPIN > 0.3 = toxic, > 0.7 = toxic shock. V106: BVC mode (linear or normal CDF), σ_tick rolling estimate, optional VPIN rate-of-change output.',
         category: 'composite',
         tags: ['vpin', 'toxicity', 'orderflow', 'informed', 'trading', 'microstructure', 'statistics'],
@@ -28481,6 +28497,7 @@ class TimeMarkerBrick extends IndicatorBrick {
     static META = {
         type: 'timemarker',
         label: 'Time Markers',
+        shortLabel: 'Time',
         description: 'Vertical line(s) at specific timestamps. Multi-marker support with price-diff % between consecutive markers. Custom date/time picker UI. Persists across assets and presets.',
         category: 'overlay',
         tags: ['vertical', 'line', 'time', 'marker', 'event', 'multi', 'diff'],
@@ -28763,6 +28780,7 @@ class OBVBrick extends IndicatorBrick {
     static META = {
         type: 'obv',
         label: 'OBV (On-Balance Volume)',
+        shortLabel: 'OBV',
         description: 'On-Balance Volume — cumulative volume adding on up-bars, subtracting on down-bars. Divergence with price = trend weakness.',
         category: 'momentum',
         tags: ['volume', 'momentum', 'cumulative', 'divergence'],
@@ -28871,6 +28889,7 @@ class CMFBrick extends IndicatorBrick {
     static META = {
         type: 'cmf',
         label: 'CMF (Chaikin Money Flow)',
+        shortLabel: 'CMF',
         description: 'Chaikin Money Flow — volume-weighted accumulation/distribution. Range -1..+1. Positive = buying pressure, negative = selling pressure.',
         category: 'momentum',
         tags: ['volume', 'momentum', 'accumulation', 'distribution', 'chaikin'],
@@ -28945,6 +28964,7 @@ class WilliamsRBrick extends IndicatorBrick {
     static META = {
         type: 'williamsr',
         label: 'Williams %R',
+        shortLabel: 'W%R',
         description: 'Williams %R — momentum oscillator. Range -100..0. Above -20 = overbought, below -80 = oversold.',
         category: 'momentum',
         tags: ['momentum', 'oscillator', 'overbought', 'oversold', 'williams'],
@@ -29014,6 +29034,7 @@ class CCIBrick extends IndicatorBrick {
     static META = {
         type: 'cci',
         label: 'CCI (Commodity Channel Index)',
+        shortLabel: 'CCI',
         description: 'Commodity Channel Index — deviation of typical price from its SMA, normalized by mean deviation. >+100 overbought, <-100 oversold.',
         category: 'momentum',
         tags: ['momentum', 'oscillator', 'overbought', 'oversold', 'commodity'],
@@ -29081,6 +29102,7 @@ class TRIXBrick extends IndicatorBrick {
     static META = {
         type: 'trix',
         label: 'TRIX',
+        shortLabel: 'TRIX',
         description: 'Triple EMA Rate of Change — momentum with triple smoothing. Filters noise. TRIX crosses signal = trend change.',
         category: 'momentum',
         tags: ['momentum', 'oscillator', 'ema', 'rate-of-change', 'triple'],
@@ -29169,6 +29191,7 @@ class EldersRayBrick extends IndicatorBrick {
     static META = {
         type: 'eldersray',
         label: "Elder's Ray (Bull/Bear)",
+        shortLabel: 'Elder',
         description: "Elder's Ray Index — Bull Power (High - EMA) and Bear Power (Low - EMA). Both shrink before trend reversal.",
         category: 'momentum',
         tags: ['momentum', 'oscillator', 'bull', 'bear', 'elder', 'power'],
@@ -29255,6 +29278,7 @@ class AccumDistBrick extends IndicatorBrick {
     static META = {
         type: 'accumdist',
         label: 'Accumulation/Distribution',
+        shortLabel: 'A/D',
         description: 'Accumulation/Distribution Line — cumulative CLV×Volume. Rising = accumulation, falling = distribution. Divergence with price = trend weakness.',
         category: 'momentum',
         tags: ['volume', 'momentum', 'cumulative', 'accumulation', 'distribution', 'money-flow'],
@@ -29354,6 +29378,7 @@ class PVTBrick extends IndicatorBrick {
     static META = {
         type: 'pvt',
         label: 'Price Volume Trend (PVT)',
+        shortLabel: 'PVT',
         description: 'Price Volume Trend — cumulative volume × % price change. Like OBV but weighted by magnitude of price move. Divergence with price = trend weakness.',
         category: 'momentum',
         tags: ['volume', 'momentum', 'cumulative', 'price-volume', 'trend'],
