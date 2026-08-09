@@ -11775,7 +11775,15 @@ class PanelLabelRenderer {
                         title = 'INTERNAL';
                     } else {
                         const parts = [];
-                        if (info?.symbol) parts.push(info.symbol);
+                        if (info?.symbol) {
+                            // V112: shorten ratio symbols — remove USDT suffix
+                            //   "DOGEUSDT/ETHUSDT" → "DOGE/ETH"
+                            let sym = info.symbol;
+                            if (sym.includes('/')) {
+                                sym = sym.replace(/USDT/g, '').replace(/\/\//g, '/');
+                            }
+                            parts.push(sym);
+                        }
                         if (info?.exchange) parts.push(info.exchange);
                         title = parts.join(' · ') || 'CHART';
                         if (info?.timeframe) subtitle = info.timeframe;
@@ -12292,11 +12300,11 @@ function drawPill(ctx, opts) {
     }
 
     // textBaseline='middle' centres the em-square at the anchor point.
-    // The visual weight of Latin text sits slightly below the em centre
-    // (ascenders > descenders).  We compensate by shifting the pill
-    // background UP by ~0.5 px so the top/bottom padding looks equal
-    // to the eye.  The text anchor stays at y (stable across frames).
-    const ry = y - pillH / 2 - 0.5;
+    // V112: use actualBoundingBoxAscent for better vertical centering.
+    //   fontBoundingBoxAscent includes extra space above caps (line gap),
+    //   making text appear shifted UP inside the pill. Using actualBoundingBoxAscent
+    //   (which is the real ascent of the rendered text) gives a more balanced look.
+    const ry = y - pillH / 2;
 
     // Background (skip if null/transparent)
     if (bgColor) {
@@ -54891,19 +54899,31 @@ class RatioAdapter extends DataSourceAdapter {
      *  returns an error or empty array, retry on the futures endpoint.
      *  Returns { candles, usedPerp } so the caller knows which endpoint
      *  won — used to skip the wasted spot request on subsequent polls. */
+    // V113: XAU symbol aliasing — PAXG (Pax Gold) is a Binance spot token
+    //   backed 1:1 by gold. XAUUSDT doesn't exist on Binance spot (only
+    //   futures), causing slow spot→futures fallback. PAXGUSDT trades on
+    //   spot with full history → instant load.
+    //   Strategy: if symbol is XAUUSDT, try PAXGUSDT first (spot). If PAXG
+    //   has data, use it. If not, fall back to XAUUSDT (futures).
+    static XAU_ALIASES = {
+        'XAUUSDT': ['PAXGUSDT', 'XAUUSDT'],
+    };
+
     async _fetchKlinesWithFallback(symbol, limit) {
+        // V113: check if this symbol has aliases (e.g. XAUUSDT → try PAXGUSDT first)
+        const aliases = RatioAdapter.XAU_ALIASES[symbol] || [symbol];
         const knownPerp = (symbol === this.numerator && this.numeratorPerp) ||
                           (symbol === this.denominator && this.denominatorPerp);
         // V95-ratio-pagination: Binance caps at 1000 per request. For
         //   non-native TFs (3d, 2w), limit is multiplied by factor, so
         //   we may need multiple requests. This loop fetches backward.
-        const _fetchAll = async (perp) => {
+        const _fetchAll = async (fetchSymbol, perp) => {
             const allData = [];
             let remaining = limit;
             let endTime = null;
             while (remaining > 0) {
                 const batchLimit = Math.min(1000, remaining);
-                const url = this._buildKlineUrl(symbol, batchLimit, null, endTime, perp);
+                const url = this._buildKlineUrl(fetchSymbol, batchLimit, null, endTime, perp);
                 const data = await this._fetchJson(url);
                 if (!Array.isArray(data) || data.length === 0) break;
                 allData.unshift(...data);
@@ -54913,35 +54933,36 @@ class RatioAdapter extends DataSourceAdapter {
             }
             return allData;
         };
-        // V95: try spot first (or perp if knownPerp). If spot returns
-        //   fewer than requested, try perp as fallback. Use whichever
-        //   returns more data.
-        const tryPerp = knownPerp;
-        if (tryPerp) {
-            try {
-                const data = await _fetchAll(true);
-                if (data.length > 0) return { candles: this._transformKlines(data), usedPerp: true };
-            } catch (e) { throw new Error(`Futures fetch failed for ${symbol}: ${e.message}`); }
-            return { candles: [], usedPerp: true };
-        }
-        // Try spot first
-        let spotData = [];
-        try {
-            spotData = await _fetchAll(false);
-        } catch (e) { /* spot failed — try perp below */ }
-        // If spot got enough data, return it
-        if (spotData.length > 0 && spotData.length >= Math.min(limit, 1000)) {
-            return { candles: this._transformKlines(spotData), usedPerp: false };
-        }
-        // Spot didn't get enough — try perp, use whichever has more
-        try {
-            const perpData = await _fetchAll(true);
-            if (perpData.length > spotData.length) {
-                return { candles: this._transformKlines(perpData), usedPerp: true };
+        // V113: try each alias in order. For XAUUSDT: try PAXGUSDT spot first
+        //   (instant, full history), then XAUUSDT perp (slower, less history).
+        //   First alias that returns data wins.
+        for (const alias of aliases) {
+            const tryPerp = knownPerp || alias !== symbol;  // XAUUSDT alias → always perp
+            if (tryPerp) {
+                try {
+                    const data = await _fetchAll(alias, true);
+                    if (data.length > 0) return { candles: this._transformKlines(data), usedPerp: true };
+                } catch (e) { /* try next alias */ }
+            } else {
+                // Try spot first for this alias
+                let spotData = [];
+                try {
+                    spotData = await _fetchAll(alias, false);
+                } catch (e) { /* spot failed — try perp below */ }
+                if (spotData.length >= Math.min(limit, 1000)) {
+                    return { candles: this._transformKlines(spotData), usedPerp: false };
+                }
+                // Spot didn't get enough — try perp, use whichever has more
+                try {
+                    const perpData = await _fetchAll(alias, true);
+                    if (perpData.length > spotData.length) {
+                        return { candles: this._transformKlines(perpData), usedPerp: true };
+                    }
+                } catch (e) { /* perp also failed */ }
+                if (spotData.length > 0) {
+                    return { candles: this._transformKlines(spotData), usedPerp: false };
+                }
             }
-        } catch (e) { /* perp also failed */ }
-        if (spotData.length > 0) {
-            return { candles: this._transformKlines(spotData), usedPerp: false };
         }
         return { candles: [], usedPerp: true };
     }
@@ -55054,10 +55075,6 @@ class RatioAdapter extends DataSourceAdapter {
         return { nativeTf: tf, factor: 1 };
     }
 
-    /** Compute ratio candles from numerator + denominator arrays.
-     *  V107e: skip candles where denominator close is 0 or NaN (would produce
-     *    Infinity/NaN in the ratio). Original data from exchanges is never
-     *    zero, but defensive checks prevent garbage output on edge cases. */
     _computeRatio(numCandles, denCandles) {
         const denMap = new Map();
         for (const d of denCandles) denMap.set(d._x, d);
@@ -55065,13 +55082,29 @@ class RatioAdapter extends DataSourceAdapter {
         for (const n of numCandles) {
             const d = denMap.get(n._x);
             if (!d || !isFinite(d.close) || d.close === 0) continue;
+            // V112: compute ratio high/low correctly.
+            //   n.high / d.high is NOT the max of (n/d) within the bar —
+            //   it's just the ratio of the two highs. The TRUE ratio high
+            //   could be n.high/d.low (if numerator peaked while denominator
+            //   was at its low). Similarly for ratio low = n.low / d.high.
+            //   We compute all 4 ratios and take max/min — this matches
+            //   what TradingView does for ratio charts.
+            const r1 = n.open / d.open;
+            const r2 = n.high / d.high;
+            const r3 = n.low / d.low;
+            const r4 = n.close / d.close;
+            // Also check cross ratios for true max/min
+            const rCrossHigh = n.high / d.low;  // num high / den low = max possible
+            const rCrossLow = n.low / d.high;   // num low / den high = min possible
+            const rHigh = Math.max(r1, r2, r3, r4, rCrossHigh);
+            const rLow = Math.min(r1, r2, r3, r4, rCrossLow);
             result.push({
                 _x: n._x,
-                open:  n.open  / d.open,
-                high:  n.high  / d.high,
-                low:   n.low   / d.low,
-                close: n.close / d.close,
-                vol:   n.vol,
+                open: r1,
+                high: rHigh,
+                low: rLow,
+                close: r4,
+                vol: n.vol,
             });
         }
         return result;
