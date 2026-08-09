@@ -29246,6 +29246,204 @@ class EldersRayBrick extends IndicatorBrick {
 }
 brickRegistry.register('eldersray', EldersRayBrick);
 
+// ─── V109c: Accumulation/Distribution Line (A/D) ──────────────────────────
+// CLV (Close Location Value) = ((Close - Low) - (High - Close)) / (High - Low)
+//   Range: -1..+1. +1 = close at high, -1 = close at low.
+// AD[i] = AD[i-1] + CLV * Volume
+// Cumulative money flow. Rising AD = accumulation, falling = distribution.
+class AccumDistBrick extends IndicatorBrick {
+    static META = {
+        type: 'accumdist',
+        label: 'Accumulation/Distribution',
+        description: 'Accumulation/Distribution Line — cumulative CLV×Volume. Rising = accumulation, falling = distribution. Divergence with price = trend weakness.',
+        category: 'momentum',
+        tags: ['volume', 'momentum', 'cumulative', 'accumulation', 'distribution', 'money-flow'],
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'signalPeriod', label: 'Signal SMA Period', default: 20, min: 1, max: 200, step: 1, group: 'Display',
+                tooltip: 'SMA period for the AD signal line. Set to 1 to hide.' }),
+            new BrickParam({ name: 'logScale', label: 'Log Scale', type: 'bool', default: false, group: 'Display',
+                tooltip: 'Compress large cumulative values using asinh transform.' }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'line', label: 'A/D', type: 'line', color: '#58a6ff' }),
+            new BrickOutput({ name: 'signal', label: 'Signal', type: 'line', color: '#f85149', lineWidth: 1.5, alpha: 0.8, optional: true, defaultVisible: true }),
+        ],
+        levels: [
+            new BrickLevel({ value: 0, label: '0', color: 'rgba(255,255,255,0.2)',
+                             lineWidth: 1, dash: [2, 4],
+                             optional: true, name: 'zero', defaultVisible: true }),
+        ],
+    };
+
+    constructor(cfg) { super(cfg); this.needsOHLC = true; }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        if (!ohlc?.vol || count === 0) {
+            return { line: new Float64Array(0), signal: new Float64Array(0), count, visibleRange };
+        }
+        const H = ohlc.high, L = ohlc.low, V = ohlc.vol;
+        const line = new Float64Array(count);
+        let ad = 0;
+        line[0] = 0;
+        for (let i = 0; i < count; i++) {
+            const h = H[i], l = L[i], c = sourceData[i], v = V[i] || 0;
+            if (!isFinite(h) || !isFinite(l) || !isFinite(c) || !isFinite(v)) { line[i] = ad; continue; }
+            const range = h - l;
+            // CLV = ((c-l) - (h-c)) / (h-l) — range -1..+1
+            // If range is 0 (high==low), CLV = 0 (no directional info)
+            const clv = range > 1e-12 ? ((c - l) - (h - c)) / range : 0;
+            ad += clv * v;
+            line[i] = ad;
+        }
+        // V109b: asinh transform (continuous at 0) — same approach as OBV
+        if (this.params.logScale === true) {
+            for (let i = 0; i < count; i++) {
+                if (isFinite(line[i])) line[i] = Math.asinh(line[i]);
+            }
+        }
+        const sigN = Math.max(1, Math.floor(this.params.signalPeriod || 20));
+        const signal = _maSMA(line, count, sigN);
+        this._computed = { line, signal, count, visibleRange };
+        return this._computed;
+    }
+
+    render(ctx, xScale, yScale, xData, computed, visibleRange, layout) {
+        if (!computed?.line) return;
+        const [iMin, iMax] = visibleRange;
+        this._drawLevels(ctx, yScale, layout);
+        const lineColor = this.outputStyles.line?.color || '#58a6ff';
+        const lineWidth = this.outputStyles.line?.lineWidth || 1.5;
+        this._drawLine(ctx, computed.line, lineColor, lineWidth, 0.85,
+            xScale, yScale, xData, iMin, iMax, 'line');
+        if (this.params.signalPeriod > 1 && computed.signal) {
+            const sigColor = this.outputStyles.signal?.color || '#f85149';
+            const sigWidth = this.outputStyles.signal?.lineWidth || 1.5;
+            this._drawLine(ctx, computed.signal, sigColor, sigWidth, 0.8,
+                xScale, yScale, xData, iMin, iMax, 'signal');
+        }
+    }
+
+    getAutoFitRange(computed, count, visibleRange) {
+        if (!computed?.line) return null;
+        const [iMin, iMax] = visibleRange || computed.visibleRange || [0, computed.count - 1];
+        let yMin = Infinity, yMax = -Infinity;
+        for (let i = iMin; i <= iMax; i++) {
+            if (isFinite(computed.line[i])) {
+                yMin = Math.min(yMin, computed.line[i]);
+                yMax = Math.max(yMax, computed.line[i]);
+            }
+            if (computed.signal && isFinite(computed.signal[i])) {
+                yMin = Math.min(yMin, computed.signal[i]);
+                yMax = Math.max(yMax, computed.signal[i]);
+            }
+        }
+        if (!isFinite(yMin)) return null;
+        const pad = (yMax - yMin) * 0.1 || 1;
+        return { yMin: yMin - pad, yMax: yMax + pad };
+    }
+}
+brickRegistry.register('accumdist', AccumDistBrick);
+
+// ─── V109c: Price Volume Trend (PVT) ──────────────────────────────────────
+// PVT[i] = PVT[i-1] + Volume[i] * (Close[i] - Close[i-1]) / Close[i-1]
+// Like OBV but weighted by % price change (not just direction).
+// More nuanced than OBV: small moves add small volume, big moves add big volume.
+class PVTBrick extends IndicatorBrick {
+    static META = {
+        type: 'pvt',
+        label: 'Price Volume Trend (PVT)',
+        description: 'Price Volume Trend — cumulative volume × % price change. Like OBV but weighted by magnitude of price move. Divergence with price = trend weakness.',
+        category: 'momentum',
+        tags: ['volume', 'momentum', 'cumulative', 'price-volume', 'trend'],
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'signalPeriod', label: 'Signal SMA Period', default: 20, min: 1, max: 200, step: 1, group: 'Display',
+                tooltip: 'SMA period for the PVT signal line. Set to 1 to hide.' }),
+            new BrickParam({ name: 'logScale', label: 'Log Scale', type: 'bool', default: false, group: 'Display',
+                tooltip: 'Compress large cumulative values using asinh transform.' }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'line', label: 'PVT', type: 'line', color: '#d29922' }),
+            new BrickOutput({ name: 'signal', label: 'Signal', type: 'line', color: '#f85149', lineWidth: 1.5, alpha: 0.8, optional: true, defaultVisible: true }),
+        ],
+        levels: [
+            new BrickLevel({ value: 0, label: '0', color: 'rgba(255,255,255,0.2)',
+                             lineWidth: 1, dash: [2, 4],
+                             optional: true, name: 'zero', defaultVisible: true }),
+        ],
+    };
+
+    constructor(cfg) { super(cfg); this.needsOHLC = true; }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        if (!ohlc?.vol || count === 0) {
+            return { line: new Float64Array(0), signal: new Float64Array(0), count, visibleRange };
+        }
+        const V = ohlc.vol;
+        const line = new Float64Array(count);
+        let pvt = 0;
+        line[0] = 0;
+        for (let i = 1; i < count; i++) {
+            const c0 = sourceData[i - 1], c1 = sourceData[i];
+            const v = V[i] || 0;
+            if (!isFinite(c0) || !isFinite(c1) || c0 === 0) { line[i] = pvt; continue; }
+            // PVT increments by volume × % price change
+            const pctChange = (c1 - c0) / c0;
+            pvt += v * pctChange;
+            line[i] = pvt;
+        }
+        // V109b: asinh transform (continuous at 0)
+        if (this.params.logScale === true) {
+            for (let i = 0; i < count; i++) {
+                if (isFinite(line[i])) line[i] = Math.asinh(line[i]);
+            }
+        }
+        const sigN = Math.max(1, Math.floor(this.params.signalPeriod || 20));
+        const signal = _maSMA(line, count, sigN);
+        this._computed = { line, signal, count, visibleRange };
+        return this._computed;
+    }
+
+    render(ctx, xScale, yScale, xData, computed, visibleRange, layout) {
+        if (!computed?.line) return;
+        const [iMin, iMax] = visibleRange;
+        this._drawLevels(ctx, yScale, layout);
+        const lineColor = this.outputStyles.line?.color || '#d29922';
+        const lineWidth = this.outputStyles.line?.lineWidth || 1.5;
+        this._drawLine(ctx, computed.line, lineColor, lineWidth, 0.85,
+            xScale, yScale, xData, iMin, iMax, 'line');
+        if (this.params.signalPeriod > 1 && computed.signal) {
+            const sigColor = this.outputStyles.signal?.color || '#f85149';
+            const sigWidth = this.outputStyles.signal?.lineWidth || 1.5;
+            this._drawLine(ctx, computed.signal, sigColor, sigWidth, 0.8,
+                xScale, yScale, xData, iMin, iMax, 'signal');
+        }
+    }
+
+    getAutoFitRange(computed, count, visibleRange) {
+        if (!computed?.line) return null;
+        const [iMin, iMax] = visibleRange || computed.visibleRange || [0, computed.count - 1];
+        let yMin = Infinity, yMax = -Infinity;
+        for (let i = iMin; i <= iMax; i++) {
+            if (isFinite(computed.line[i])) {
+                yMin = Math.min(yMin, computed.line[i]);
+                yMax = Math.max(yMax, computed.line[i]);
+            }
+            if (computed.signal && isFinite(computed.signal[i])) {
+                yMin = Math.min(yMin, computed.signal[i]);
+                yMax = Math.max(yMax, computed.signal[i]);
+            }
+        }
+        if (!isFinite(yMin)) return null;
+        const pad = (yMax - yMin) * 0.1 || 1;
+        return { yMin: yMin - pad, yMax: yMax + pad };
+    }
+}
+brickRegistry.register('pvt', PVTBrick);
+
 // ─── BTC Realized Price (on-chain overlay) ────────────────────────────────
 // Fetches realized price data from bitcoin-data.com API and overlays it on
 // the chart. Only works for BTCUSDT — for other symbols, returns empty.
@@ -33159,10 +33357,10 @@ class VolumeProfileRenderer {
 
 
 // ── V39: явный экспорт в window (обратная совместимость) ──
-Object.assign(window, { MA_SPECS, createMABrick, OSCILLATOR_SPECS, createOscillatorBrick, AUX_DATA_SPECS, createAuxBrick, IndicatorBase, EMACloudIndicator, AOIndicator, EMABufferPool, INDICATOR_TYPES, IndicatorManager, BrickParam, BrickOutput, ColorScheme, _darkenHex, BrickInput, BrickLevel, BrickBand, IndicatorBrick, BrickRegistry, brickRegistry, _maSMA, _maEMA, _maWMA, _maLSMA, _maHMA, _maJMA, _maTEMA, _maDEMA, _maTMA, _maVAMA, _maMF, _maEDSMA, _maKijun, _resolveSrc, MACDBrick, StochasticBrick, BandsBrick, AOBrick, ZigZagBrick, SupportResistanceBrick, OrderBlockBrick, GapDetectorBrick, VolRevFractalsBrick, ZScoreBrick, ZScoreEnsembleBrick, OUBandsBrick, HistoricalPocBrick, HPResidualBrick, KNNAnomalyBrick, VolNormCandlesBrick, AuxDataManager, AuxSeriesBrick, FundingRateBrick, OpenInterestBrick, RelPerfBrick, GammaExposureBrick, EconEventsBrick, DivergenceDetector, VolumeProfileRenderer, OBVBrick, CMFBrick, WilliamsRBrick, CCIBrick, TRIXBrick, EldersRayBrick });
+Object.assign(window, { MA_SPECS, createMABrick, OSCILLATOR_SPECS, createOscillatorBrick, AUX_DATA_SPECS, createAuxBrick, IndicatorBase, EMACloudIndicator, AOIndicator, EMABufferPool, INDICATOR_TYPES, IndicatorManager, BrickParam, BrickOutput, ColorScheme, _darkenHex, BrickInput, BrickLevel, BrickBand, IndicatorBrick, BrickRegistry, brickRegistry, _maSMA, _maEMA, _maWMA, _maLSMA, _maHMA, _maJMA, _maTEMA, _maDEMA, _maTMA, _maVAMA, _maMF, _maEDSMA, _maKijun, _resolveSrc, MACDBrick, StochasticBrick, BandsBrick, AOBrick, ZigZagBrick, SupportResistanceBrick, OrderBlockBrick, GapDetectorBrick, VolRevFractalsBrick, ZScoreBrick, ZScoreEnsembleBrick, OUBandsBrick, HistoricalPocBrick, HPResidualBrick, KNNAnomalyBrick, VolNormCandlesBrick, AuxDataManager, AuxSeriesBrick, FundingRateBrick, OpenInterestBrick, RelPerfBrick, GammaExposureBrick, EconEventsBrick, DivergenceDetector, VolumeProfileRenderer, OBVBrick, CMFBrick, WilliamsRBrick, CCIBrick, TRIXBrick, EldersRayBrick, AccumDistBrick, PVTBrick });
 
 // ── V39: регистрация в реестре модулей ──
-CE.registerModule('ce-indicators', ['ce-data-layer', 'ce-math-utils', 'ce-renderers'], ['MA_SPECS', 'createMABrick', 'IndicatorBase', 'EMACloudIndicator', 'AOIndicator', 'EMABufferPool', 'INDICATOR_TYPES', 'IndicatorManager', 'BrickParam', 'BrickOutput', 'ColorScheme', '_darkenHex', 'BrickInput', 'BrickLevel', 'BrickBand', 'IndicatorBrick', 'BrickRegistry', 'brickRegistry', '_maSMA', '_maEMA', '_maWMA', '_maLSMA', '_maHMA', '_maJMA', '_maTEMA', '_maDEMA', '_maTMA', '_maVAMA', '_maMF', '_maEDSMA', '_maKijun', 'SMABrick', 'EMABrick', '_resolveSrc', 'WMABrick', 'DEMABrick', 'TEMABrick', 'TMABrick', 'LSMABrick', 'HMABrick', 'JMABrick', 'VAMABrick', 'MFBrick', 'EDSMABrick', 'KijunBrick', 'RSIBrick', 'BollingerBrick', 'MACDBrick', 'ATRBrick', 'StochasticBrick', 'BandsBrick', 'AOBrick', 'ALMABrick', 'KalmanBrick', 'ZigZagBrick', 'SupportResistanceBrick', 'OrderBlockBrick', 'GapDetectorBrick', 'MFIBrick', 'DPOBrick', 'VolRevFractalsBrick', 'ZScoreBrick', 'ZScoreEnsembleBrick', 'OUBandsBrick', 'HistoricalPocBrick', 'HPResidualBrick', 'KNNAnomalyBrick', 'VolNormCandlesBrick', 'AuxDataManager', 'AuxSeriesBrick', 'AUX_DATA_SPECS', 'createAuxBrick', 'FundingRateBrick', 'OpenInterestBrick', 'RelPerfBrick', 'GammaExposureBrick', 'EconEventsBrick', 'DivergenceDetector', 'VolumeProfileRenderer', 'OBVBrick', 'CMFBrick', 'WilliamsRBrick', 'CCIBrick', 'TRIXBrick', 'EldersRayBrick'], 'WORKER-SAFE');
+CE.registerModule('ce-indicators', ['ce-data-layer', 'ce-math-utils', 'ce-renderers'], ['MA_SPECS', 'createMABrick', 'IndicatorBase', 'EMACloudIndicator', 'AOIndicator', 'EMABufferPool', 'INDICATOR_TYPES', 'IndicatorManager', 'BrickParam', 'BrickOutput', 'ColorScheme', '_darkenHex', 'BrickInput', 'BrickLevel', 'BrickBand', 'IndicatorBrick', 'BrickRegistry', 'brickRegistry', '_maSMA', '_maEMA', '_maWMA', '_maLSMA', '_maHMA', '_maJMA', '_maTEMA', '_maDEMA', '_maTMA', '_maVAMA', '_maMF', '_maEDSMA', '_maKijun', 'SMABrick', 'EMABrick', '_resolveSrc', 'WMABrick', 'DEMABrick', 'TEMABrick', 'TMABrick', 'LSMABrick', 'HMABrick', 'JMABrick', 'VAMABrick', 'MFBrick', 'EDSMABrick', 'KijunBrick', 'RSIBrick', 'BollingerBrick', 'MACDBrick', 'ATRBrick', 'StochasticBrick', 'BandsBrick', 'AOBrick', 'ALMABrick', 'KalmanBrick', 'ZigZagBrick', 'SupportResistanceBrick', 'OrderBlockBrick', 'GapDetectorBrick', 'MFIBrick', 'DPOBrick', 'VolRevFractalsBrick', 'ZScoreBrick', 'ZScoreEnsembleBrick', 'OUBandsBrick', 'HistoricalPocBrick', 'HPResidualBrick', 'KNNAnomalyBrick', 'VolNormCandlesBrick', 'AuxDataManager', 'AuxSeriesBrick', 'AUX_DATA_SPECS', 'createAuxBrick', 'FundingRateBrick', 'OpenInterestBrick', 'RelPerfBrick', 'GammaExposureBrick', 'EconEventsBrick', 'DivergenceDetector', 'VolumeProfileRenderer', 'OBVBrick', 'CMFBrick', 'WilliamsRBrick', 'CCIBrick', 'TRIXBrick', 'EldersRayBrick', 'AccumDistBrick', 'PVTBrick'], 'WORKER-SAFE');
 })(window.CE, window);
 
 (function CE$module$ce$main$overlay$renderer(CE, window) {
@@ -40354,10 +40552,16 @@ class IndicatorAPI {
         im.add(indicator);
         // V37: if indicator has panelMode='separate', create a new panel
         // dynamically (like the vol panel below main).
+        // V109d: if cfg.panelId is set AND a panel with that ID already exists
+        //   (e.g. during carousel cycle), use the existing panel instead of
+        //   creating a new one. This preserves panel height/position.
         if (indicator.panelMode === 'separate') {
-            const newPanelId = indicator.id + '_panel';
-            indicator.panelId = newPanelId;
+            const existingPanelId = cfg.panelId;
             const config = this._ctx.config;
+            const panelExists = existingPanelId && config?.panels?.find(p => p.id === existingPanelId);
+            const newPanelId = panelExists ? existingPanelId : (indicator.id + '_panel');
+            indicator.panelId = newPanelId;
+            if (!panelExists) {
             // Check if panel already exists
             if (!config.panels.find(p => p.id === newPanelId)) {
                 config.panels.push({
@@ -40419,12 +40623,13 @@ class IndicatorAPI {
                     // next autofit pass re-runs against the latest data
                     // (otherwise the cached result might be empty if the
                     // indicator was added before any data was loaded).
-                    const im = this._ctx.indicatorManager;
-                    if (im && typeof im.invalidateCache === 'function') {
-                        im.invalidateCache();
+                    const im2 = this._ctx.indicatorManager;
+                    if (im2 && typeof im2.invalidateCache === 'function') {
+                        im2.invalidateCache();
                     }
                 }
             }
+            } // end if (!panelExists)
         }
         this._ctx.markAllDirtyAndRender();
         // V50: if a visible indicator was just added to a panel that was
@@ -40448,6 +40653,11 @@ class IndicatorAPI {
         //   viewport.panels, leaving a blank empty panel in the chart.
         const ind = im.get(id);
         const panelId = ind?.panelId;
+        // V109e: unregister from swipe group BEFORE removing the indicator
+        const carousel = this._ctx.panelCarouselManager;
+        if (carousel && panelId && id) {
+            carousel.unregister(panelId, id);
+        }
         const shouldRemovePanel = ind?.panelMode === 'separate'
             && panelId
             && panelId !== 'main'
@@ -40499,17 +40709,21 @@ class IndicatorAPI {
         if (!im) return;
         const ind = im.get(id);
         if (!ind) return;
-        ind.visible = visible !== undefined ? visible : !ind.visible;
+        const newVisible = visible !== undefined ? visible : !ind.visible;
+
+        // V109e: check if this indicator is in a swipe group.
+        const carousel = this._ctx.panelCarouselManager;
+        try { devLog('[carousel] setIndicatorVisible called', { id, newVisible, hasCarousel: !!carousel, ctxKeys: Object.keys(this._ctx).filter(k => k.includes('arousel') || k.includes('preset')) }); } catch(_) {}
+        if (carousel && carousel.handleEyeToggle(id, newVisible)) {
+            this._syncPanelVisibilityForIndicator(ind.panelId);
+            this._ctx.markAllDirtyAndRender();
+            return;
+        }
+
+        ind.visible = newVisible;
 
         // V50: auto-hide panel when its last visible indicator is hidden.
-        //   Auto-show when an indicator on a hidden panel becomes visible
-        //   again. Main and vol panels are never auto-hidden (they hold
-        //   the price/volume series and need to stay even when empty of
-        //   overlay indicators).
-        //   The previous ratio is stashed in _hiddenPanelRatios[panelId]
-        //   so toggling visibility back on restores the original size.
         this._syncPanelVisibilityForIndicator(ind.panelId);
-
         this._ctx.markAllDirtyAndRender();
     }
 
@@ -41753,6 +41967,7 @@ class ChartAPI {
     getPanelModeManager()          { return this._ctx.panelModeManager; }
 
     getPresetManager()             { return this._ctx.presetManager; }
+    getPanelCarouselManager()      { return this._ctx.panelCarouselManager; }
 
     getPanelMaximizer()            { return this._ctx.panelMaximizer; }
 
@@ -45100,7 +45315,13 @@ function isPanelSwipeActive(ctx, api) {
     const presetList = presetMgr?.list?.() || [];
     const hasPresets = presetSwipeOn && presetList.length > 0 && panelId !== 'main';
 
-    return !!(navBlocked || hasModes || hasPresets);
+    // V109e: per-panel swipe group — swipe is active when the panel has 2+ indicators in its group
+    const carouselMgr = api.getPanelCarouselManager?.();
+    const hasSwipeGroup = carouselMgr?.hasSwipeGroup?.(panelId) === true;
+
+    const result = !!(navBlocked || hasModes || hasPresets || hasSwipeGroup);
+    try { devLog('[swipe] isPanelSwipeActive', { panelId, navBlocked, hasModes, hasPresets, hasSwipeGroup, result }); } catch(_) {}
+    return result;
 }
 
 /**
@@ -45842,7 +46063,13 @@ function resolvePanStartCursor(startZone) {
  */
 function resolveMouseSwipePanelId(pId, navBlocked, hasModes) {
     if (!pId) return null;
+    // V109d: also track when carousel mode is enabled (checked via api in caller)
     return (navBlocked || hasModes) ? pId : null;
+}
+// V109d: extended version that also checks carousel mode
+function resolveMouseSwipePanelIdEx(pId, navBlocked, hasModes, carouselOn) {
+    if (!pId) return null;
+    return (navBlocked || hasModes || carouselOn) ? pId : null;
 }
 
 
@@ -46216,7 +46443,9 @@ class PointerController {
         const guard = this.api.getGuard();
         const navBlocked = !!(pId && guard && !guard.isAllowed(pId, 'panX'));
         const hasModes = !!(pId && this.api.getPanelModeManager?.()?.hasSwipeModes(pId));
-        this._mouseSwipePanelId = resolveMouseSwipePanelId(pId, navBlocked, hasModes);
+        // V109e: also check per-panel swipe group
+        const hasSwipeGroup = !!(pId && pId !== 'main' && this.api.getPanelCarouselManager?.()?.hasSwipeGroup?.(pId));
+        this._mouseSwipePanelId = resolveMouseSwipePanelIdEx(pId, navBlocked, hasModes, hasSwipeGroup);
         this._mouseSwipeStartTime = Date.now();
         this.api.activeController = 'mouse';
         this.api.cancelElasticSnapBack();
@@ -46392,6 +46621,11 @@ class PointerController {
                 this.api.dirty.set(DirtyFlags.OVERLAY);
                 this.api.requestRender();
             }
+        } else if (this._mouseSwipePanelId) {
+            // V109f: potential swipe in progress — DON'T pan. Just track
+            //   position. The swipe is detected on mouseup. If it doesn't
+            //   meet the swipe threshold, mouseup falls through to tap/dragend.
+            this.lastX = x; this.lastY = y;
         } else {
             const dx = x - this.lastX, dy = y - this.lastY;
             this.lastX = x; this.lastY = y;
@@ -50039,6 +50273,10 @@ class Engine {
         // ── V37: PresetManager (after API) — named indicator configurations ──
         this.presetManager = new PresetManager(this.api);
         this._apiCtx.presetManager = this.presetManager;
+
+        // V109d: PanelCarouselManager — per-panel indicator carousel
+        this.panelCarouselManager = new PanelCarouselManager(this.api);
+        this._apiCtx.panelCarouselManager = this.panelCarouselManager;
 
         // ── PanelMaximizer (after API) ──
         this.panelMaximizer = new PanelMaximizer(this.api);
@@ -59616,6 +59854,355 @@ class PanelModeManager {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// V109e: PanelCarouselManager — per-panel swipe groups
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// When the user adds an indicator to an EXISTING panel with the "swipe target"
+// checkbox, the indicator is registered in that panel's swipe group but kept
+// hidden. Only ONE indicator from the group is visible at a time. Swiping
+// left/right on the panel cycles through the group.
+//
+// Eye-toggle behavior:
+//   • Hiding the ACTIVE indicator → auto-swipe to previous in group.
+//     If only one indicator left → hide the panel (normal behavior).
+//   • Hiding a NON-active indicator → just hide it (stays in group).
+//   • Showing a hidden indicator in a group → make it the active one.
+//
+// Persistence: swipe groups persist in localStorage (by indicator ID, which
+// is itself persisted by StatePersistence).
+// ═══════════════════════════════════════════════════════════════════════════════
+class PanelCarouselManager {
+    constructor(api, opts = {}) {
+        this._api = api;
+        // _groups: Map<panelId, { indicators: [id, ...], activeIdx: number }>
+        this._groups = new Map();
+        this._storageKey = `chartEngine_swipeGroups_${api?._ctx?.config?.instanceId || 'default'}`;
+        this._load();
+    }
+
+    _load() {
+        try {
+            const raw = _safeStorage.getItem(this._storageKey);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed === 'object') {
+                    for (const [panelId, group] of Object.entries(parsed)) {
+                        if (group && Array.isArray(group.indicators)) {
+                            this._groups.set(panelId, {
+                                indicators: group.indicators,
+                                activeIdx: Math.max(0, Math.min(group.activeIdx || 0, group.indicators.length - 1)),
+                            });
+                        }
+                    }
+                }
+            }
+        } catch (e) {}
+    }
+
+    _save() {
+        try {
+            const obj = {};
+            for (const [panelId, group] of this._groups) {
+                obj[panelId] = group;
+            }
+            _safeStorage.setItem(this._storageKey, JSON.stringify(obj));
+        } catch (e) {}
+    }
+
+    /** Check if a panel has a swipe group with 2+ indicators (swipe-able). */
+    hasSwipeGroup(panelId) {
+        const g = this._groups.get(panelId);
+        return !!(g && g.indicators.length >= 2);
+    }
+
+    /** Always enabled — it's per-indicator, not a global toggle. */
+    isEnabled() { return true; }
+    setEnabled() { /* no-op — always enabled */ }
+
+    /** Register an indicator as part of a panel's swipe group.
+     *  If it's the first indicator, make it visible. Otherwise, hide it
+     *  (the currently-active indicator stays visible).
+     *  V109f: also auto-register any EXISTING indicators on the same panel
+     *  that aren't yet in the group — otherwise the group would have only
+     *  1 member and hasSwipeGroup (requires 2+) would return false. */
+    register(panelId, indicatorId) {
+        if (!panelId || !indicatorId) return;
+        if (!this._groups.has(panelId)) {
+            this._groups.set(panelId, { indicators: [], activeIdx: 0 });
+        }
+        const group = this._groups.get(panelId);
+
+        // V109f: auto-register existing indicators on this panel that aren't
+        //   in the group yet. The first visible one found becomes the active.
+        const inds = this._api.getIndicator() || [];
+        for (const ind of inds) {
+            if (ind.panelId === panelId && !group.indicators.includes(ind.id)) {
+                group.indicators.push(ind.id);
+            }
+        }
+        // Make sure the new indicatorId is in the group
+        if (!group.indicators.includes(indicatorId)) {
+            group.indicators.push(indicatorId);
+        }
+
+        // The active indicator = first VISIBLE one in the group.
+        // If none visible, make the first one visible.
+        let activeFound = false;
+        for (let i = 0; i < group.indicators.length; i++) {
+            const ind = inds.find(x => x.id === group.indicators[i]);
+            if (ind && ind.visible !== false) {
+                group.activeIdx = i;
+                activeFound = true;
+                break;
+            }
+        }
+        if (!activeFound && group.indicators.length > 0) {
+            group.activeIdx = 0;
+            const firstInd = inds.find(x => x.id === group.indicators[0]);
+            if (firstInd) firstInd.visible = true;
+        }
+
+        // Hide all non-active indicators in the group
+        for (let i = 0; i < group.indicators.length; i++) {
+            if (i !== group.activeIdx) {
+                const ind = inds.find(x => x.id === group.indicators[i]);
+                if (ind) ind.visible = false;
+            }
+        }
+
+        this._save();
+    }
+
+    /** Unregister an indicator from a panel's swipe group (on removal). */
+    unregister(panelId, indicatorId) {
+        const group = this._groups.get(panelId);
+        if (!group) return;
+        const idx = group.indicators.indexOf(indicatorId);
+        if (idx < 0) return;
+        group.indicators.splice(idx, 1);
+        if (group.indicators.length === 0) {
+            this._groups.delete(panelId);
+        } else {
+            if (idx < group.activeIdx) group.activeIdx--;
+            else if (idx === group.activeIdx) group.activeIdx = Math.min(group.activeIdx, group.indicators.length - 1);
+            this._makeActiveVisible(panelId);
+        }
+        this._save();
+    }
+
+    /** Cycle to next/prev indicator in the swipe group.
+     *  V109g: Y-range handling on switch:
+     *    • Save the CURRENT Y-range before hiding (so it can be restored
+     *      when swiping back to this indicator).
+     *    • After showing the new indicator: if the panel is in autoFit mode,
+     *      trigger a re-fit (invalidate cache + mark viewport dirty so
+     *      _autoFitY runs). If NOT autoFit, restore the previously-saved
+     *      Y-range for the new indicator (or trigger autoFit as fallback
+     *      if no saved range exists). */
+    cycle(panelId, direction) {
+        const group = this._groups.get(panelId);
+        try { devLog('[carousel] cycle called', { panelId, direction, hasGroup: !!group, groupSize: group?.indicators?.length }); } catch(_) {}
+        if (!group || group.indicators.length < 2) return false;
+
+        const ctx = this._api?._ctx;
+        const vp = ctx?.viewport;
+        const im = ctx?.indicatorManager;
+
+        // V109g: save CURRENT Y-range for the outgoing indicator
+        const curId = group.indicators[group.activeIdx];
+        if (vp && curId) {
+            const p = vp.panels[panelId];
+            if (p && isFinite(p.yMin) && isFinite(p.yMax)) {
+                if (!group.savedRanges) group.savedRanges = {};
+                group.savedRanges[curId] = { yMin: p.yMin, yMax: p.yMax };
+            }
+        }
+
+        // Hide current active
+        const curInd = this._api.getIndicator()?.find(i => i.id === curId);
+        if (curInd) curInd.visible = false;
+
+        // Move to next/prev
+        const len = group.indicators.length;
+        group.activeIdx = direction === 'left'
+            ? (group.activeIdx + 1) % len
+            : (group.activeIdx - 1 + len) % len;
+
+        // Show new active
+        this._makeActiveVisible(panelId);
+
+        // V109g: invalidate indicator cache so the newly-visible indicator
+        //   gets computed fresh (it was hidden, so its cache may be stale)
+        if (im && typeof im.invalidateCache === 'function') {
+            im.invalidateCache();
+        }
+        // V109g: CRITICAL — invalidate the DataStore's _autofitCache too.
+        //   This cache is keyed on (dataVersion, iMin, iMax) and returns
+        //   STALE indicator results when only visibility changed (data version
+        //   doesn't change on swipe). Without this, _autoFitY reads the OLD
+        //   indicator's range instead of the new one.
+        if (ctx && ctx._autofitCache) {
+            ctx._autofitCacheVersion = -1;  // force recompute on next _autofit
+        }
+        // Also invalidate the rendering-level Y-range cache
+        if (ctx && typeof ctx.invalidateYRangeCache === 'function') {
+            ctx.invalidateYRangeCache();
+        }
+
+        // V109n: use shared _fitYRange method (same logic as handleEyeToggle)
+        this._fitYRange(panelId, group);
+
+        // Re-render
+        if (ctx?.markAllDirtyAndRender) ctx.markAllDirtyAndRender();
+        this._save();
+        return true;
+    }
+
+    /** Make only the active indicator in a group visible; hide others. */
+    _makeActiveVisible(panelId) {
+        const group = this._groups.get(panelId);
+        if (!group) return;
+        const activeId = group.indicators[group.activeIdx];
+        const inds = this._api.getIndicator() || [];
+        for (const ind of inds) {
+            if (group.indicators.includes(ind.id)) {
+                ind.visible = (ind.id === activeId);
+            }
+        }
+    }
+
+    /** Handle eye-toggle on an indicator in a swipe group.
+     *  Returns true if the carousel handled it (caller should NOT toggle).
+     *  Returns false if the caller should proceed with normal toggle.
+     *  V109n: also handles Y-range (same logic as cycle()). */
+    handleEyeToggle(indicatorId, makeVisible) {
+        try { devLog('[carousel] handleEyeToggle', { indicatorId, makeVisible, groups: [...this._groups.keys()] }); } catch(_) {}
+        for (const [panelId, group] of this._groups) {
+            const idx = group.indicators.indexOf(indicatorId);
+            if (idx < 0) continue;
+
+            if (makeVisible) {
+                if (group.indicators.length <= 1) return false;
+                if (group.activeIdx !== idx) {
+                    const curId = group.indicators[group.activeIdx];
+                    const curInd = this._api.getIndicator()?.find(i => i.id === curId);
+                    if (curInd) curInd.visible = false;
+                }
+                group.activeIdx = idx;
+                this._save();
+                this._fitYRange(panelId, group);
+                return false;
+            } else {
+                if (group.indicators.length <= 1) return false;
+                if (idx === group.activeIdx) {
+                    const len = group.indicators.length;
+                    group.activeIdx = (idx - 1 + len) % len;
+                    this._makeActiveVisible(panelId);
+                    this._fitYRange(panelId, group);
+                    const ctx = this._api?._ctx;
+                    if (ctx?.markAllDirtyAndRender) ctx.markAllDirtyAndRender();
+                    this._save();
+                    return true;
+                } else {
+                    return false;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** V109n: Shared Y-range fitting logic — used by both cycle() and handleEyeToggle(). */
+    _fitYRange(panelId, group) {
+        const ctx = this._api?._ctx;
+        const vp = ctx?.viewport;
+        const im = ctx?.indicatorManager;
+        if (!vp || !ctx) { try { devLog('[carousel] _fitYRange ABORT: no vp/ctx'); } catch(_) {} return; }
+
+        const activeId = group.indicators[group.activeIdx];
+        const newInd = this._api.getIndicator()?.find(i => i.id === activeId);
+        if (!newInd) { try { devLog('[carousel] _fitYRange ABORT: newInd not found', { activeId }); } catch(_) {} return; }
+
+        // Invalidate caches
+        if (im && typeof im.invalidateCache === 'function') im.invalidateCache();
+        if (ctx._autofitCache) ctx._autofitCacheVersion = -1;
+        if (typeof ctx.invalidateYRangeCache === 'function') ctx.invalidateYRangeCache();
+
+        // Clear pending smoothing target
+        if (vp._yTargets && panelId in vp._yTargets) delete vp._yTargets[panelId];
+
+        const wasAutoFit = vp._panelAutoFitY[panelId] !== false;
+        const prevRange = vp.panels[panelId] ? [vp.panels[panelId].yMin, vp.panels[panelId].yMax] : null;
+        try { devLog('[carousel] _fitYRange start', { panelId, activeId, type: newInd.constructor?.META?.type, wasAutoFit, prevRange }); } catch(_) {}
+
+        if (wasAutoFit) {
+            vp._panelAutoFitY[panelId] = false;
+            const ds = ctx.dataStore;
+            if (ds && ds.size > 0) {
+                const [iMin, iMax] = ds.getVisibleLogicalIndices?.(vp.xMin, vp.xMax) || [0, ds.size - 1];
+                const ohlc = ds.getFullOHLCData?.();
+                const srcData = ohlc?.close || ds.getData?.('price');
+                if (srcData) {
+                    try {
+                        // V109o: build a fake manager that has _lastDataStore
+                        //   pointing to the real dataStore, so indicators
+                        //   that use manager._lastDataStore (MACD, etc.)
+                        //   work correctly in _fitYRange.
+                        const fakeManager = { _lastDataStore: ds };
+                        const computed = newInd._computeRaw(srcData, ds.size, ds._version || 0, [iMin, iMax], null, null, ohlc, fakeManager);
+                        const range = newInd.getAutoFitRange?.(computed, ds.size, [iMin, iMax]);
+                        try { devLog('[carousel] _fitYRange computed', { range, hasComputed: !!computed?.line }); } catch(_) {}
+                        if (range && isFinite(range.yMin) && isFinite(range.yMax) && range.yMax > range.yMin) {
+                            vp.panels[panelId] = vp.panels[panelId] || { yMin: 0, yMax: 1 };
+                            vp.panels[panelId].yMin = range.yMin;
+                            vp.panels[panelId].yMax = range.yMax;
+                            delete vp._yTargets[panelId];
+                            try { devLog('[carousel] _fitYRange Y-range SET', { panelId, yMin: range.yMin, yMax: range.yMax }); } catch(_) {}
+                        } else {
+                            try { devLog('[carousel] _fitYRange range INVALID — not set', { range }); } catch(_) {}
+                        }
+                    } catch (e) {
+                        try { devLog('[carousel] _fitYRange ERROR', { msg: e.message }); } catch(_) {}
+                        vp._panelAutoFitY[panelId] = true;
+                    }
+                } else {
+                    try { devLog('[carousel] _fitYRange ABORT: no srcData'); } catch(_) {}
+                }
+            } else {
+                try { devLog('[carousel] _fitYRange ABORT: no ds'); } catch(_) {}
+            }
+            vp._panelAutoFitY[panelId] = true;
+            const origSmoothing = vp._ySmoothing;
+            vp._ySmoothing = 0;
+            try { devLog('[carousel] _fitYRange smoothing=0', { origSmoothing }); } catch(_) {}
+            setTimeout(() => { vp._ySmoothing = origSmoothing; }, 50);
+        } else {
+            const saved = group.savedRanges?.[activeId];
+            try { devLog('[carousel] _fitYRange autoFit OFF', { saved }); } catch(_) {}
+            if (saved && isFinite(saved.yMin) && isFinite(saved.yMax)) {
+                vp.panels[panelId] = vp.panels[panelId] || { yMin: 0, yMax: 1 };
+                vp.panels[panelId].yMin = saved.yMin;
+                vp.panels[panelId].yMax = saved.yMax;
+                delete vp._yTargets[panelId];
+                try { devLog('[carousel] _fitYRange Y-range RESTORED', { yMin: saved.yMin, yMax: saved.yMax }); } catch(_) {}
+            } else {
+                vp.setPanelAutoFitY(panelId, true);
+                const origSmoothing = vp._ySmoothing;
+                vp._ySmoothing = 0;
+                setTimeout(() => { vp._ySmoothing = origSmoothing; }, 50);
+            }
+        }
+        // Log final state
+        const finalRange = vp.panels[panelId] ? [vp.panels[panelId].yMin, vp.panels[panelId].yMax] : null;
+        try { devLog('[carousel] _fitYRange DONE', { panelId, finalRange, autoFit: vp._panelAutoFitY[panelId], smoothing: vp._ySmoothing }); } catch(_) {}
+    }
+
+    destroy() {
+        this._api = null;
+        this._groups.clear();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // V37: PresetManager — named indicator configurations, switchable via swipe
 // ═══════════════════════════════════════════════════════════════════════════════
 //
@@ -61598,18 +62185,25 @@ class ChartFactory {
         //      delegate to PresetManager (preset cycling).
         const panelSwipeRec = engine.pointerController.recognizers.find(r => r instanceof PanelSwipeRecognizer);
         const presetMgr = engine.presetManager;
+        const carouselMgr = engine.panelCarouselManager;  // V109e
         const dispatchSwipe = (panelId, direction) => {
+            try { devLog('[swipe] dispatchSwipe', { panelId, direction }); } catch(_) {}
             if (modeMgr.hasSwipeModes(panelId)) {
+                try { devLog('[swipe] → modeMgr.handleSwipe'); } catch(_) {}
                 modeMgr.handleSwipe(panelId, direction);
                 return;
             }
-            // V37: preset cycling only fires when the user has explicitly
-            // enabled swipe. Otherwise the swipe recognizer won't even
-            // activate (see PanelSwipeRecognizer.isActive), but defensive
-            // check here too in case of programmatic dispatch.
+            // V109e: per-panel swipe group takes priority over preset cycling
+            const hasGroup = carouselMgr?.hasSwipeGroup?.(panelId);
+            try { devLog('[swipe] hasSwipeGroup:', hasGroup, 'carouselMgr:', !!carouselMgr); } catch(_) {}
+            if (hasGroup) {
+                try { devLog('[swipe] → carouselMgr.cycle'); } catch(_) {}
+                carouselMgr.cycle(panelId, direction);
+                return;
+            }
             if (panelId !== 'main' && presetMgr && presetMgr.isSwipeEnabled() && presetMgr.list().length > 0) {
+                try { devLog('[swipe] → presetMgr.cycle'); } catch(_) {}
                 presetMgr.cycle(direction);
-                // V37: no toast for state changes — use debugLog instead.
                 const active = presetMgr.getActive();
                 if (active) {
                     debugLog(`Preset: ${active.name}`);
@@ -61895,7 +62489,7 @@ class ChartFactory {
                         '<div class="ind-presets-swipe-row">' +
                             '<label>' +
                                 '<input type="checkbox" class="ind-preset-swipe-toggle" ' + (swipeEnabled ? 'checked' : '') + ' />' +
-                                '<span>Enable swipe cycling on indicator panels</span>' +
+                                '<span>Enable swipe cycling on indicator panels (presets)</span>' +
                             '</label>' +
                         '</div>' +
                     '</div>';
@@ -62290,6 +62884,15 @@ class ChartFactory {
                 }
             }
             html += `</select></div>`;
+            // V109e: "swipe target" checkbox — shown when adding to an existing panel.
+            //   When checked, the indicator is added to the panel's swipe group
+            //   (hidden, accessible via swipe) instead of being shown alongside.
+            if (!isExisting) {
+                html += `<div class="s-check-row" id="swipe-target-row" style="display:none;">`;
+                html += `<input type="checkbox" class="s-check" data-swipe-target>`;
+                html += `<span class="s-check-label">Add as swipe target (hidden, access via swipe)</span>`;
+                html += `</div>`;
+            }
             html += `</div>`;
             // ── V38: Timeframe anchoring ──
             // Lets the user pin this indicator to a higher timeframe (HTF).
@@ -62595,6 +63198,16 @@ class ChartFactory {
                     else selectedParams[inp.dataset.param] = inp.value;
                 });
             });
+            // V109e: show/hide "swipe target" checkbox based on panel selection
+            const pmSelEl = configArea.querySelector('[data-panelmode]');
+            const swipeRow = configArea.querySelector('#swipe-target-row');
+            if (pmSelEl && swipeRow) {
+                const updateSwipeRow = () => {
+                    swipeRow.style.display = pmSelEl.value.startsWith('existing:') ? '' : 'none';
+                };
+                pmSelEl.addEventListener('change', updateSwipeRow);
+                updateSwipeRow();  // initial state
+            }
             // V108: Marker editor wiring (TimeMarkerBrick only)
             //   The editor maintains a live `markerList` array that's synced to
             //   selectedParams.markers (JSON string) on every change.
@@ -63189,10 +63802,21 @@ class ChartFactory {
                             const targetPanelId = pmVal.substring('existing:'.length);
                             // Don't let addIndicator create a panel — set to overlay
                             cfg.panelMode = 'overlay';
+                            // V109e: check if "swipe target" is checked
+                            const swipeTargetCb = configArea.querySelector('[data-swipe-target]');
+                            const isSwipeTarget = swipeTargetCb?.checked === true;
+                            if (isSwipeTarget) {
+                                cfg.visible = false;  // hidden until swiped to
+                            }
                             createdInd = api.addIndicator(cfg);
                             if (createdInd) {
                                 createdInd.panelMode = 'inherit';
                                 createdInd.panelId = targetPanelId;
+                                // V109e: register in swipe group
+                                if (isSwipeTarget) {
+                                    const cm = api.getPanelCarouselManager?.();
+                                    if (cm) cm.register(targetPanelId, createdInd.id);
+                                }
                                 api.markAllDirtyAndRender();
                             }
                         } else if (pmVal === 'separate') {
@@ -67500,7 +68124,7 @@ class CoinPicker {
 }
 
 // ── V39: явный экспорт в window (обратная совместимость) ──
-Object.assign(window, { bindCycleButton, ToolbarController, DataSourceOrchestrator, SourceUIController, PanelModeManager, PresetManager, FooterSwipeHandler, TOOLBAR_ARIA_LABELS, _ariaLabelForButton, ChartFactory, CP_ROW_HEIGHT, CP_OVERSCAN, _cpCachedCoins, _cpCoinsPromise, _cpCachedExchange, _cpLoadedLogos, _cpPreloadCoins, _cpForceRefresh, _cpLoadState, _cpSaveState, CoinPicker });
+Object.assign(window, { bindCycleButton, ToolbarController, DataSourceOrchestrator, SourceUIController, PanelModeManager, PresetManager, PanelCarouselManager, FooterSwipeHandler, TOOLBAR_ARIA_LABELS, _ariaLabelForButton, ChartFactory, CP_ROW_HEIGHT, CP_OVERSCAN, _cpCachedCoins, _cpCoinsPromise, _cpCachedExchange, _cpLoadedLogos, _cpPreloadCoins, _cpForceRefresh, _cpLoadState, _cpSaveState, CoinPicker });
 // ── V39.1: экспорт выполнен ДО bootstrap, чтобы код ниже мог
 // ссылаться на классы этого же модуля через window (Engine
 // в _initSubsystems использует window.PanelModeManager и т.п.).
@@ -68673,7 +69297,7 @@ if (window._chart && window.ChartStatePersistence) {
 
 
 // ── V39: регистрация в реестре модулей ──
-CE.registerModule('chart-engine-app', ['ce-engine', 'chart-engine-adapters', 'ce-data-cache'], ['bindCycleButton', 'ToolbarController', 'DataSourceOrchestrator', 'SourceUIController', 'PanelModeManager', 'PresetManager', 'FooterSwipeHandler', 'TOOLBAR_ARIA_LABELS', '_ariaLabelForButton', 'ChartFactory', 'CP_ROW_HEIGHT', 'CP_OVERSCAN', '_cpCachedCoins', '_cpCoinsPromise', '_cpCachedExchange', '_cpLoadedLogos', '_cpPreloadCoins', '_cpForceRefresh', '_cpLoadState', '_cpSaveState', 'CoinPicker'], 'MAIN-THREAD ONLY');
+CE.registerModule('chart-engine-app', ['ce-engine', 'chart-engine-adapters', 'ce-data-cache'], ['bindCycleButton', 'ToolbarController', 'DataSourceOrchestrator', 'SourceUIController', 'PanelModeManager', 'PresetManager', 'PanelCarouselManager', 'FooterSwipeHandler', 'TOOLBAR_ARIA_LABELS', '_ariaLabelForButton', 'ChartFactory', 'CP_ROW_HEIGHT', 'CP_OVERSCAN', '_cpCachedCoins', '_cpCoinsPromise', '_cpCachedExchange', '_cpLoadedLogos', '_cpPreloadCoins', '_cpForceRefresh', '_cpLoadState', '_cpSaveState', 'CoinPicker'], 'MAIN-THREAD ONLY');
 })(window.CE, window);
 </script>
 
