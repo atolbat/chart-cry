@@ -47475,6 +47475,16 @@ function resolveDrawAction(ctx, api, classes) {
     const toolName = api.getToolName();
     const overlay = api.overlay;
 
+    // V111: overlay hit-testing only on the MAIN panel — prevents accidental
+    //   selection of trend lines when the user is swiping/interacting with
+    //   secondary (indicator) panels. Overlay objects are drawn on the main
+    //   chart and their visual extent can overlap secondary panels, but
+    //   interaction should be confined to the main panel's pixel area.
+    const activePanelId = api.getActivePanel(ctx.startY);
+    if (activePanelId && activePanelId !== 'main' && toolName === 'panZoom') {
+        return { action: 'none' };
+    }
+
     // 1. Action panel hit-test (highest priority)
     if (overlay && overlay.actionPanel && overlay.actionPanel.visible) {
         const btn = overlay.hitTestActionPanel(ctx.startX, ctx.startY);
@@ -47633,6 +47643,10 @@ class DrawRecognizer extends GestureRecognizer {
         }
         // Also active in panZoom mode for overlay selection/dragging
         if (toolName === 'panZoom') {
+            // V111: only active on the MAIN panel — prevents accidental trend
+            //   line selection when interacting with secondary panels
+            const startPanelId = this.api.getActivePanel(ctx.startY);
+            if (startPanelId && startPanelId !== 'main') return false;
             const overlay = this.api.overlay;
             if (!overlay) return false;
             if (overlay.visibleCount === 0) return false;
