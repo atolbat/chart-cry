@@ -8975,6 +8975,10 @@ function createYFormatter(tickVals, compact) {
         : Math.max(1, maxDecimals);
 
     const fmt = v => {
+        // V113: zero should always display as '0' regardless of decimal precision.
+        //   Previously: 0.toFixed(8) = "0.00000000" which looks wrong next to
+        //   compact labels like "1.2" or "−0.5".
+        if (v === 0) return '0';
         // Try suffix formatting first (K/M) with uniform decimals
         const suffixed = formatWithSuffix(v, dec);
         if (suffixed !== null) return suffixed;
@@ -59417,8 +59421,14 @@ class SourceUIController {
         const cachedExchange = window._cpCachedExchange;
 
         if (!cachedCoins || cachedExchange !== lookupExchange) {
-            _cpPreloadCoins(lookupExchange).catch(() => {});
-            return;  // silent — user will retry
+            // V113: in ratio mode, force preload Binance coins if not cached.
+            //   Previously returned silently on cache miss — swipe didn't work
+            //   until the picker was opened once.
+            _cpPreloadCoins(lookupExchange).then(() => {
+                // Retry the cycle after coins are loaded
+                this._cycleSymbol(dir);
+            }).catch(() => {});
+            return;  // this attempt is dropped, retry fires after preload
         }
         if (!cachedCoins.length) return;
 
@@ -61885,8 +61895,13 @@ class ChartFactory {
             const api = window._chart?.api;
             if (!api) return;
             const srcInfo = api.getSourceInfo?.() || {};
-            const symbol = srcInfo.symbol || 'BTCUSDT';
+            let symbol = srcInfo.symbol || 'BTCUSDT';
             const exchange = (srcInfo.exchange || 'binance').toLowerCase();
+            // V113: in ratio mode, symbol is "BTCUSDT/ETHUSDT" — extract numerator
+            //   for coin info lookup (show info about BTC, not the ratio)
+            if (symbol.includes('/')) {
+                symbol = symbol.split('/')[0];
+            }
 
             const popup = document.createElement('div');
             popup.className = 'coin-info-popup';
