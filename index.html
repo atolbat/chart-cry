@@ -28923,6 +28923,21 @@ class TimeMarkerBrick extends IndicatorBrick {
     }
 
     render(ctx, xScale, yScale, xData, computed, visibleRange, layout) {
+        // V121-debug: log render entry to diagnose "nothing displays"
+        try { console.log('[V121-timemarker-debug] render entry', {
+            hasComputed: !!computed,
+            hasMarkerData: !!computed?.markerData,
+            markerDataLen: computed?.markerData?.length || 0,
+            markerData: computed?.markerData?.map(m => ({ ts: m.timestamp, label: m.label, color: m.color, hasCandle: !!m.candle })),
+            lineWidth: this.params.lineWidth,
+            lineStyle: this.params.lineStyle,
+            paramsMarkers: this.params.markers,
+            visible: this.visible,
+            plotLeft: layout?.plotLeft,
+            plotTop: layout?.plotTop,
+            plotBottom: layout?.plotBottom,
+            plotRight: layout?.plotRight,
+        }); } catch(_) {}
         if (!computed?.markerData || computed.markerData.length === 0) return;
 
         const lw = this.params.lineWidth || 1.5;
@@ -55751,6 +55766,40 @@ class RatioAdapter extends DataSourceAdapter {
         }
     }
 
+    /**
+     * V121-anchor: Fetch ratio candles for a DIFFERENT timeframe (anchor-TF).
+     *   Used by MultiTfDataManager.prefetchAll to fill anchor stores for
+     *   indicators that use a higher TF (e.g. WMA-1d on a 4h chart).
+     *   Without this, anchor-TF indicators show NaN in ratio mode because
+     *   prefetchAll returns early (no fetchHistoryTf on the adapter).
+     *   Implementation: temporarily override this.timeframe to the requested
+     *   tf so _buildKlineUrl and _transformKlines use the correct interval
+     *   and aggregation factor. Restore afterwards.
+     */
+    async fetchHistoryTf(tf, limit, startTime) {
+        if (!this.numerator || !this.denominator) return [];
+        const savedTf = this.timeframe;
+        try {
+            this.timeframe = tf;
+            const { factor } = this._nativeTfFor(tf);
+            const effLimit = limit * factor;
+            const numUrl = this._buildKlineUrl(this.numerator, effLimit, startTime, null, !!this._numPerp);
+            const denUrl = this._buildKlineUrl(this.denominator, effLimit, startTime, null, !!this._denPerp);
+            const [numData, denData] = await Promise.all([
+                this._fetchJson(numUrl),
+                this._fetchJson(denUrl),
+            ]);
+            const numCandles = this._transformKlines(numData);
+            const denCandles = this._transformKlines(denData);
+            if (numCandles.length === 0 || denCandles.length === 0) return [];
+            return this._computeRatio(numCandles, denCandles);
+        } catch (e) {
+            return [];
+        } finally {
+            this.timeframe = savedTf;
+        }
+    }
+
     _startPolling() {
         this._stopPolling();
         const pollGen = this._switchGen;
@@ -58628,6 +58677,19 @@ class DataSourceOrchestrator {
                     _orchIsPerp, numIsPerp, denIsPerp,
                 });
             } catch(_) {}
+            // V121-anchor-fix: clear anchor data BEFORE creating the new
+            //   adapter. This ensures stale anchor-TF indicator data from
+            //   the previous ratio pair is purged. Without this, the
+            //   indicator compute cache is invalidated but the anchor stores
+            //   still hold old candles → _anchorTfGet returns stale data
+            //   → anchor lines show old values.
+            try {
+                const engine = this.api?._ctx?.engine || window._chart?.engine;
+                const im = engine?.indicatorManager;
+                if (im && typeof im.clearAnchorData === 'function') {
+                    im.clearAnchorData();
+                }
+            } catch (_) {}
             const adapter = new AdapterClass({
                 numerator: ratioCfg.numerator,
                 denominator: ratioCfg.denominator,
@@ -58697,35 +58759,17 @@ class DataSourceOrchestrator {
             if (this.srcMode === 'ratio' && value?.numerator) {
                 this._preRatioSymbol = value.numerator;
             }
-            // V116: when in ratio mode and ratioConfig changes (e.g. switching
-            //   denominator from ETH to BNB), forward to adapter.switchAsset
-            //   so it reloads data. Also clear + prefetch anchor data.
-            if (this.srcMode === 'ratio') {
-                const adapter = this._getActiveAdapter();
-                if (adapter) {
-                    // Clear anchor data before reload
-                    try {
-                        const engine = this.api?._ctx?.engine || window._chart?.engine;
-                        const im = engine?.indicatorManager;
-                        if (im && typeof im.clearAnchorData === 'function') {
-                            im.clearAnchorData();
-                        }
-                    } catch (_) {}
-                    // Switch asset (reloads ratio data with new config)
-                    await adapter.switchAsset({ ratioConfig: value });
-                    // Prefetch anchor data after reload
-                    try {
-                        const engine = this.api?._ctx?.engine || window._chart?.engine;
-                        const im = engine?.indicatorManager;
-                        if (im && typeof im.prefetchAnchorTfs === 'function') {
-                            const ds = engine?.dataContext?.dataStore;
-                            if (ds && ds.size > 0) {
-                                im.prefetchAnchorTfs(adapter, ds).catch(() => {});
-                            }
-                        }
-                    } catch (_) {}
-                }
-            }
+            // V121-anchor-fix: when already in ratio mode, DON'T call
+            //   adapter.switchAsset here. The accompanying source:switch
+            //   event will create a fresh adapter with the new ratioConfig.
+            //   Calling switchAsset on the OLD adapter creates a race:
+            //   both adapters compete to loadHistory, and the old adapter's
+            //   switchAsset can trigger a render with stale chart data
+            //   before the new adapter loads. Anchor lines computed during
+            //   this race show old values and get cached.
+            //   Instead, just store the config and let _onSwitch handle it.
+            //   _onSwitch's ratio branch now clears anchor data before
+            //   creating the new adapter.
             return;
         }
 
@@ -63543,6 +63587,13 @@ class ChartFactory {
                 groupStarted = true;
             }
             for (const p of meta.params) {
+                // V121-fix: skip 'markers' param for timemarker — it has a
+                //   custom editor (datetime-local pickers) rendered below.
+                //   Without this, it renders as <input type="number"> which
+                //   corrupts the JSON string on Save (parseFloat → NaN).
+                //   Also skip 'defaultColor' — it's a hex color but renders
+                //   as number input. The marker editor handles color per-marker.
+                if (indType === 'timemarker' && (p.name === 'markers' || p.name === 'defaultColor')) continue;
                 const grp = p.group || '__none__';
                 if (grp !== currentGroup) {
                     closeGroup();
@@ -64320,9 +64371,19 @@ class ChartFactory {
                                 //   need OHLC (AO, MACD, VPIN, etc.). These set
                                 //   needsOHLC=true in their constructor, but the
                                 //   old code overwrote it to false when source='close'.
+                                // V121-fix: the hardcoded metaNeedsOhlc list was
+                                //   missing many indicators (zigzag, support_resistance,
+                                //   orderblock, gapdetector, volrevfractals, etc.).
+                                //   When source='close', needsOHLC was overwritten to
+                                //   false → ohlc=null in compute → indicator returned
+                                //   empty result → disappeared. Fix: preserve the
+                                //   constructor's needsOHLC=true — don't overwrite to
+                                //   false just because source is 'close'. The source
+                                //   change can only ADD needsOHLC (e.g. for 'high'
+                                //   source), never REMOVE it.
                                 const metaNeedsOhlc = existingInd.constructor?.META?.params?.some(p => p.name === 'logMode' || p.name === 'maType')
                                     || ['ao','macd','stochastic','vpin','cmf','williamsr','cci','eldersray','accumdist','pvt','hpresidual','knnanomaly','ou_zscore','zscore_ensemble','volnormcandles','timemarker','btc_realized','hpoc','zscore'].includes(existingInd.constructor?.META?.type);
-                                existingInd.needsOHLC = srcValEx !== 'close' || existingInd.constructor?._specNeedsOHLC || metaNeedsOhlc;
+                                existingInd.needsOHLC = srcValEx !== 'close' || existingInd.constructor?._specNeedsOHLC || metaNeedsOhlc || existingInd.needsOHLC === true;
                                 // V55-source-yaxis: render on volume axis when source=volume.
                                 existingInd._sourceYAxisId = srcValEx === 'volume' ? 'volume' : null;
                             }
@@ -68608,8 +68669,15 @@ class CoinPicker {
         const tfMap = { '5': '5m', '15': '15m', '60': '1h', '240': '4h', 'D': '1d' };
         const tf = tfMap[this._options.chartInterval] || '4h';
 
-        // V108c: set up compute state
-        const coins = this._filtered || this._coins || [];
+        // V121-fix: compute over the FULL coin list (this._coins), NOT
+        //   this._filtered. When sortByRef is enabled, _filtered is already
+        //   filtered to only coins with cached ref-diff data — which is 0
+        //   at the start of compute. This creates a chicken-and-egg problem:
+        //   compute iterates over 0 coins → 0 cached → list stays empty.
+        //   Fix: always compute over this._coins (the full unfiltered list).
+        //   When sortByRef re-applies filters after compute, the cached
+        //   coins will appear in the filtered list.
+        const coins = this._coins || [];
         const total = coins.length;
         this._refComputeRunning = true;
         this._refComputePaused = false;
@@ -68700,6 +68768,14 @@ class CoinPicker {
             // V108e: update progress EVERY coin — re-query btn so it's always live
             if (!this._refComputePaused) {
                 updateBtn(`⏸ ${this._refComputeDone}/${total}`);
+            }
+
+            // V121-fix: periodically re-apply filters so the list updates
+            //   live during compute. When sortByRef is enabled, newly cached
+            //   coins appear in the filtered list as they're computed.
+            //   Throttle to every 10 coins to avoid excessive re-renders.
+            if (this._options.sortByRef && this._refComputeDone % 10 === 0) {
+                this._applyFilters();
             }
 
             // Rate limit: 120ms between coins (2 requests per coin = 240ms per coin)
