@@ -8675,6 +8675,20 @@ function hasMillionsSuffix(abs) {
     return abs >= 1e6;
 }
 
+// V121-suffix: extended large-number suffixes for indicator values that
+//   can reach billions (open interest), trillions (market cap), or beyond.
+//   Each suffix applies when abs >= its threshold AND abs < next threshold.
+const LARGE_SUFFIXES = [
+    { threshold: 1e24, divisor: 1e24, symbol: 'Y' },  // yotta (sextillion)
+    { threshold: 1e21, divisor: 1e21, symbol: 'Z' },  // zetta (sextillion)
+    { threshold: 1e18, divisor: 1e18, symbol: 'E' },  // exa (quintillion)
+    { threshold: 1e15, divisor: 1e15, symbol: 'P' },  // peta (quadrillion)
+    { threshold: 1e12, divisor: 1e12, symbol: 'T' },  // trillion
+    { threshold: 1e9,  divisor: 1e9,  symbol: 'B' },  // billion
+    { threshold: 1e6,  divisor: 1e6,  symbol: 'M' },  // million
+    { threshold: 1e3,  divisor: 1e3,  symbol: 'K' },  // thousand
+];
+
 /**
  * Predicate: is abs(v) large enough to warrant a K suffix?
  * Threshold depends on mode: 1K in compact mode, 100K in price mode.
@@ -8841,10 +8855,28 @@ function formatTinyFallback({ sign, abs }) {
 // ── Public API: formatWithSuffix ──────────────────────────────────────────
 
 /**
- * Format a value with K (thousands) or M (millions) suffix.
+ * Choose decimal precision for a suffixed value.
+ * If decOrCompact is a number, use min(number, 2).
+ * Otherwise: 0 for ≥100 units, 1 for ≥10 units, 2 otherwise.
+ * (Same logic as the old chooseMilliDecimals / chooseKiloDecimals, generalized.)
+ */
+function chooseSuffixDecimals(valueInSuffixUnits, decOrCompact) {
+    if (typeof decOrCompact === 'number') return Math.min(decOrCompact, 2);
+    if (valueInSuffixUnits >= 100) return 0;
+    if (valueInSuffixUnits >= 10)  return 1;
+    return 2;
+}
+
+/**
+ * Format a value with the best large-number suffix (K, M, B, T, P, E, Z, Y).
  *
  * Returns null when no suffix applies — caller should fall back to
  * a plain numeric format in that case.
+ *
+ * V121-suffix: extended from just K/M to full SI-like scale:
+ *   K (1e3), M (1e6), B (1e9), T (1e12), P (1e15), E (1e18), Z (1e21), Y (1e24)
+ *   This prevents ultra-wide labels for indicators like open interest
+ *   (billions), market cap (trillions), or notional volume (quadrillions+).
  *
  * @param {number} v
  * @param {number|boolean} decOrCompact — number of decimals (formatter mode)
@@ -8854,29 +8886,41 @@ function formatTinyFallback({ sign, abs }) {
 function formatWithSuffix(v, decOrCompact) {
     if (!isFiniteNumber(v)) return '—';
     const d = decompose(v);
-    if (hasMillionsSuffix(d.abs)) return formatMillions(d, decOrCompact);
+
+    // V121-suffix: check large suffixes from biggest to smallest.
+    //   In compact mode, K starts at 1e3. In price mode, K starts at 1e5
+    //   (so prices like 68700 don't get "68.7K" — they stay as integers).
+    //   M and above always apply regardless of mode.
     const compact = isCompactMode(decOrCompact);
-    if (hasThousandsSuffix(d.abs, compact)) return formatThousands(d, decOrCompact);
+    for (const s of LARGE_SUFFIXES) {
+        if (d.abs >= s.threshold) {
+            // K threshold depends on mode (compact vs price)
+            if (s.symbol === 'K' && !compact && d.abs < 1e5) continue;
+            const scaled = d.abs / s.divisor;
+            const dec = chooseSuffixDecimals(scaled, decOrCompact);
+            return d.sign + stripTrailingZeros(scaled.toFixed(dec)) + s.symbol;
+        }
+    }
     return null;
 }
 
 // ── Public API: formatValue ───────────────────────────────────────────────
 
 /**
- * Universal value formatter with K/M suffixes and adaptive precision.
+ * Universal value formatter with K/M/B/T/P/E/Z/Y suffixes and adaptive precision.
  * Used for ALL labels: grid ticks, price tags, crosshair, min/max, tooltips.
  *
  * Pipeline (first match wins):
  *   1. Non-finite          → '—'
- *   2. M suffix (≥1M)      → "1.23M", "12.3M", "500M"
- *   3. K suffix            → "500K" / "1.23K" (threshold depends on compact mode)
- *   4. Large range (≥100)  → "68700" / "68700.5"
- *   5. Unit range (1..100) → "3.5", "42"
- *   6. Small decimal       → "0.025", "0.5"
- *   7. Scientific (≤1e-6)  → "1e-6", "1.23e-10"
- *   8. Milli (1e-3..1e-2)  → "1mi", "5mi"
- *   9. Tiny fallback       → adaptive decimals (unreachable in practice)
- *   10. Zero / fallback    → '0'
+ *   2. Large suffixes      → "1.23K", "5M", "3B", "7T", "2P", "9E", "1Z", "4Y"
+ *      (K=1e3, M=1e6, B=1e9, T=1e12, P=1e15, E=1e18, Z=1e21, Y=1e24)
+ *   3. Large range (≥100)  → "68700" / "68700.5"
+ *   4. Unit range (1..100) → "3.5", "42"
+ *   5. Small decimal       → "0.025", "0.5"
+ *   6. Scientific (≤1e-6)  → "1e-6", "1.23e-10"
+ *   7. Milli (1e-3..1e-2)  → "1mi", "5mi"
+ *   8. Tiny fallback       → adaptive decimals (unreachable in practice)
+ *   9. Zero / fallback     → '0'
  *
  * @param {number} v
  * @param {boolean|string} [compact] — false/undefined = price mode, true = compact
