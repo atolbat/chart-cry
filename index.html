@@ -150,7 +150,7 @@
         /* Buttons — base */
         .controls button {
             background: transparent; color: #e6edf3; border: none;
-            padding: 4px 8px; cursor: pointer; border-radius: 3px;
+            padding: 4px 5px; cursor: pointer; border-radius: 3px;
             font-weight: 500; font-size: 10px; letter-spacing: .2px;
             white-space: nowrap; flex-shrink: 0;
             transition: background .12s, color .12s, box-shadow .12s;
@@ -176,9 +176,9 @@
         }
         /* Icon-style compact buttons (Img, Dev, Cache) */
         .controls button.icon-btn {
-            min-width: 26px; padding: 4px 6px; text-align: center;
+            min-width: 22px; padding: 4px 5px; text-align: center;
         }
-        /* Symbol/TF — emphasis style */
+        /* Symbol/TF — emphasis style (kept wider for readability) */
         .controls button.symbol-btn {
             background: rgba(255,255,255,.06); color: #fff;
             font-weight: 600; font-size: 11px;
@@ -198,7 +198,7 @@
         .controls .dropdown-trigger {
             display: flex; align-items: center; gap: 3px;
             background: rgba(255,255,255,.05); color: #e6edf3;
-            border: none; padding: 4px 9px; border-radius: 3px;
+            border: none; padding: 4px 6px; border-radius: 3px;
             cursor: pointer; font-size: 10px; font-weight: 500;
             font-family: inherit; white-space: nowrap;
             transition: background .12s, color .12s;
@@ -331,6 +331,29 @@
         }
         .controls span[data-role] {
             flex-shrink: 0; white-space: nowrap;
+        }
+
+        /* V121-layout-mirror: RTL toolbar layout.
+         *   When the chart container has `.layout-rtl`, the toolbar items
+         *   are reversed — settings appears on the LEFT, asset/TF on the
+         *   RIGHT. We use `flex-direction: row-reverse` on the inner row
+         *   so the DOM order stays the same (LTR), only the visual order
+         *   flips. Separators stay vertical and look the same in both
+         *   directions. The `.controls-inner` gap is preserved.
+         *   Note: dropdown menus are positioned via `position: fixed` and
+         *   clamped to viewport, so they work in both LTR and RTL. */
+        .chart-instance.layout-rtl .controls-inner {
+            flex-direction: row-reverse;
+        }
+        /* In RTL, swap left/right padding on the toolbar so the visual
+         *   start (where asset sits) is on the right. */
+        .chart-instance.layout-rtl .controls {
+            padding: 5px 8px;  /* keep symmetric — no swap needed */
+        }
+        /* The coin-position-indicator uses absolute positioning; in RTL
+         *   we want it to anchor to the right edge instead of left. */
+        .chart-instance.layout-rtl .coin-position-indicator {
+            left: auto; right: 0;
         }
 
         /* ── Tools popup bar (horizontal scrollable, toggle) ── */
@@ -58024,6 +58047,20 @@ class ToolbarController {
                 _safeStorage.setItem('chartEngine_headerPos', isBottom ? 'bottom' : 'top');
             } catch (err) {}
         });
+        // V121-layout-mirror: mirror toolbar layout LTR ↔ RTL.
+        //   Toggles `layout-rtl` class on the chart container, which flips
+        //   the toolbar via `direction: rtl` + `flex-direction: row-reverse`.
+        //   Persisted in localStorage so it survives page reload.
+        this._on(this._el('btn-layout-mirror'), 'click', (e) => {
+            const cont = this.api?._ctx?.container || window._chart?.engine?.config?.container;
+            if (!cont) return;
+            const isRtl = cont.classList.toggle('layout-rtl');
+            e.target.textContent = isRtl ? 'Layout: RTL' : 'Layout: LTR';
+            e.target.classList.toggle('active', isRtl);
+            try {
+                _safeStorage.setItem('chartEngine_layoutMirror', isRtl ? 'rtl' : 'ltr');
+            } catch (err) {}
+        });
         // V103: Volume Profile width cycle
         this._on(this._el('btn-vp-width'), 'click', (e) => {
             const engine = window._chart?.engine;
@@ -58066,6 +58103,21 @@ class ToolbarController {
                 if (btn) btn.textContent = `VP Width: ${vpW}%`;
             }
         } catch (_) {}
+        // V121-layout-mirror: restore persisted RTL state
+        try {
+            const stored = _safeStorage.getItem('chartEngine_layoutMirror');
+            if (stored === 'rtl') {
+                const cont = this.api?._ctx?.container || window._chart?.engine?.config?.container;
+                if (cont) {
+                    cont.classList.add('layout-rtl');
+                    const btn = this._el('btn-layout-mirror');
+                    if (btn) {
+                        btn.textContent = 'Layout: RTL';
+                        btn.classList.add('active');
+                    }
+                }
+            }
+        } catch (err) {}
 
         // V49n-fix: persistent ResizeObserver on wrapper — calls engine.resize()
         //   whenever the wrapper's size changes. This catches window resize
@@ -61756,6 +61808,7 @@ const TOOLBAR_ARIA_LABELS = {
     'btn-ui-margins':   'Toggle UI margins (removed)',
     'btn-export':       'Export chart data as text',
     'btn-header-pos':   'Toggle header position (top/bottom)',
+    'btn-layout-mirror':'Mirror toolbar layout (LTR/RTL)',
     'btn-presets':      'Open preset manager',
     'btn-indicators':   'Open indicator manager (fx)',
 };
@@ -61937,12 +61990,26 @@ class ChartFactory {
         ]);
         srcGrp.appendChild(tfDropdown);
         toolbarInner.appendChild(srcGrp);
+
+        // V121-layout: [asset] [TF] [?] | [tools] [fx] [stats] | [settings]
+        //   ? button sits right after TF, then a vertical separator, then
+        //   tools/fx/stats, another separator, and finally settings.
+        // V49n-coin-info: "?" button — opens a popup with info about the
+        //   current coin (name, volume, listing date, tags, description).
+        const infoBtn = document.createElement('button');
+        infoBtn.className = 'icon-btn';
+        infoBtn.dataset.role = 'btn-coin-info';
+        infoBtn.type = 'button';
+        infoBtn.textContent = '?';
+        infoBtn.title = 'Coin info';
+        infoBtn.setAttribute('aria-label', 'Show current coin info');
+        infoBtn.style.cssText = 'min-width:22px;padding:4px 6px;font-weight:600;font-size:12px;flex-shrink:0;';
+        toolbarInner.appendChild(infoBtn);
         toolbarInner.appendChild(_mkSep());
 
         // ── Group 2: Tools button (opens horizontal popup) ──
         const toolsBtn = _mkBtn(['btn-tools', '\u2699\u2699', { variant: 'primary' }]);
         toolbarInner.appendChild(toolsBtn);
-        toolbarInner.appendChild(_mkSep());
 
         // ── Group 3: fx button (opens indicator panel directly) ──
         // V51-fx-direct: removed dropdown — both items led to the same modal
@@ -61953,7 +62020,6 @@ class ChartFactory {
         const presetHiddenBtn = _mkBtn(['btn-presets', 'Presets…', {}]);
         presetHiddenBtn.style.display = 'none';
         toolbarInner.appendChild(presetHiddenBtn);
-        toolbarInner.appendChild(_mkSep());
 
         // Hidden undo/redo + compare buttons — keep functional (keyboard
         // shortcuts etc.) but not visible on the bar.
@@ -61978,6 +62044,14 @@ class ChartFactory {
         sourceStatus.style.cssText = 'display:none;color:#8b949e;margin-right:8px;font-size:10px;font-family:monospace;';
         sourceStatus.textContent = '';
         toolbarInner.appendChild(sourceStatus);
+
+        // V55-stats: Statistics button — opens modal with comprehensive
+        //   statistical analysis of the visible range.
+        const statsBtn = _mkBtn(['btn-stats', '📊 Stats', {}]);
+        statsBtn.type = 'button';
+        statsBtn.title = 'Statistical analysis (visible range)';
+        toolbarInner.appendChild(statsBtn);
+        toolbarInner.appendChild(_mkSep());
 
         // ── Settings dropdown ── (includes ALL toggles)
         const settingsDropdown = document.createElement('div');
@@ -62018,6 +62092,7 @@ class ChartFactory {
         _addMenuBtn(['btn-info-box',   'Info',       { active: true }]);
         _addMenuBtn(['btn-vol-mode',   'Vol: coins', {}]);
         _addMenuBtn(['btn-header-pos', 'Header: Top', {}]);
+        _addMenuBtn(['btn-layout-mirror', 'Layout: LTR', {}]);
         _addMenuSep();
 
         // ─── Axis & Scale ───
@@ -62148,27 +62223,6 @@ class ChartFactory {
 
         settingsDropdown.appendChild(settingsMenu);
         toolbarInner.appendChild(settingsDropdown);
-
-        // V55-stats: Statistics button — opens modal with comprehensive
-        //   statistical analysis of the visible range.
-        const statsBtn = _mkBtn(['btn-stats', '📊 Stats', {}]);
-        statsBtn.type = 'button';
-        statsBtn.title = 'Statistical analysis (visible range)';
-        toolbarInner.appendChild(statsBtn);
-
-        // V49n-coin-info: "?" button — opens a popup with info about the
-        //   current coin (same content as the CoinPicker tooltip: name,
-        //   volume, listing date, tags, description from paprika).
-        //   Positioned rightmost on the toolbar.
-        const infoBtn = document.createElement('button');
-        infoBtn.className = 'icon-btn';
-        infoBtn.dataset.role = 'btn-coin-info';
-        infoBtn.type = 'button';
-        infoBtn.textContent = '?';
-        infoBtn.title = 'Coin info';
-        infoBtn.setAttribute('aria-label', 'Show current coin info');
-        infoBtn.style.cssText = 'min-width:26px;padding:4px 8px;font-weight:600;font-size:12px;margin-left:auto;flex-shrink:0;';
-        toolbarInner.appendChild(infoBtn);
 
         // V49n-coin-position: gray indicator line showing the current coin's
         //   position in the full coin list (e.g. 150/300 = 50% width).
