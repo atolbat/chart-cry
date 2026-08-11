@@ -2657,13 +2657,38 @@ class Histogram {
   _ensureRange(v) {
     if (!this._autoExt) return;
     if (v < this._lo) {
-      // extend down — double range
-      while (v < this._lo) { this._lo -= (this._hi - this._lo); this._binW = (this._hi - this._lo) / this._n; }
+      // extend down — double range. V121-fix: safety counter prevents
+      //   infinite loop when range collapses to 0 (degenerate ranges with
+      //   tiny values like 1e-13 ratio prices).
+      let safety = 0;
+      while (v < this._lo && safety++ < 1000) {
+        const r = this._hi - this._lo;
+        if (r === 0) {
+          // Degenerate range — nudge _lo by a tiny epsilon so the loop
+          // can make progress. Recompute _binW afterwards.
+          this._lo -= Math.max(Math.abs(v) * 1e-3, 1e-15);
+          this._binW = (this._hi - this._lo) / this._n;
+          continue;
+        }
+        this._lo -= r;
+        this._binW = (this._hi - this._lo) / this._n;
+      }
       this._counts = new Float64Array(this._n);
       this._masses = new Float64Array(this._n);
       this._total = 0; this._totalMass = 0;
     } else if (v > this._hi) {
-      while (v > this._hi) { this._hi += (this._hi - this._lo); this._binW = (this._hi - this._lo) / this._n; }
+      // extend up — double range. V121-fix: safety counter (see above).
+      let safety = 0;
+      while (v > this._hi && safety++ < 1000) {
+        const r = this._hi - this._lo;
+        if (r === 0) {
+          this._hi += Math.max(Math.abs(v) * 1e-3, 1e-15);
+          this._binW = (this._hi - this._lo) / this._n;
+          continue;
+        }
+        this._hi += r;
+        this._binW = (this._hi - this._lo) / this._n;
+      }
       this._counts = new Float64Array(this._n);
       this._masses = new Float64Array(this._n);
       this._total = 0; this._totalMass = 0;
@@ -10750,7 +10775,7 @@ function _isFirstOfDay(ts, prevTs) {
 // (see chart-engine-refactor/test/scale/).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const LOG_SCALE_EPSILON = 1e-10;
+const LOG_SCALE_EPSILON = 1e-300;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PURE TRANSFORMERS — no instance state, no `this`
@@ -15678,7 +15703,7 @@ const RENDER_CONSTANTS = {
     SNAP_DOT_STROKE_PX:   1.5,    // snap highlight dot stroke width
     TAG_ALPHA:            0.85,    // alpha for min/max tag pills on axis
     HIT_THRESHOLD_PX:     8,      // hit-test threshold for overlay objects
-    LOG_SCALE_EPSILON:    1e-10,  // epsilon for log-scale non-positive clamping
+    LOG_SCALE_EPSILON:    1e-300, // epsilon for log-scale non-positive clamping (V121: was 1e-10, too high for tiny ratio values like 1e-13)
     RANGE_EPSILON:        0.001,  // epsilon for float range comparisons
     INITIAL_CANDLE_COUNT: 300,    // number of candles in generateInitialData
 };
@@ -33172,6 +33197,15 @@ class VolumeProfileRenderer {
      */
     static computeModel(slice, yMin, yMax, nodeCount, isLog) {
         if (!isFinite(yMin) || !isFinite(yMax) || yMax - yMin <= 0) return null;
+        // V121-fix: skip Volume Profile for degenerate/tiny ranges where
+        //   float64 precision can't distinguish price levels. This happens
+        //   with very small ratio values (e.g. babydoge/eth ≈ 1e-13) where
+        //   yMax - yMin collapses to 0 after log/scale transforms. Computing
+        //   VP in this case either freezes (Histogram infinite loop) or
+        //   produces garbage bins. Skipping is safe — VP just doesn't render.
+        const yRange = yMax - yMin;
+        const relRange = yRange / Math.max(Math.abs(yMin), Math.abs(yMax), 1e-300);
+        if (relRange < 1e-12) return null;
 
         const seriesSlices = slice.seriesSlices || {};
         let priceSeries = null, volSeries = null;
@@ -52584,6 +52618,14 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
             this._onProxySuccess(0);
             return json;
         } catch (directErr) {
+            // V121-fix: if the exchange returned a valid HTTP response with an
+            //   API-level error (e.g. ByBit retCode 10001 "Symbol Is Invalid"),
+            //   retrying through CORS proxies is pointless — the error is not a
+            //   CORS issue, and each proxy adds 10s timeout. Skip proxies and
+            //   rethrow immediately so the caller's fallback logic runs.
+            if (directErr?._isApiError) {
+                throw directErr;
+            }
             // surface the original error immediately instead of leaking the
             // exchange URL to corsproxy.io / allorigins.win / thingproxy.
             if (this.disableCorsProxies) {
@@ -54242,7 +54284,17 @@ class ByBitAdapter extends WebSocketExchangeAdapter {
             throw new Error(`ByBit API: unexpected response type ${Array.isArray(json) ? 'array' : typeof json} (expected object)`);
         }
         if (json.retCode !== undefined && json.retCode !== 0) {
-            throw new Error(`ByBit API error: ${json.retMsg}`);
+            // V121-fix: mark API-level errors so _fetchJson can skip CORS proxy
+            //   retries. When ByBit returns retCode 10001 (invalid symbol) for
+            //   a coin that doesn't exist on this market (e.g. BABYDOGE on
+            //   linear), the error is NOT a CORS issue — retrying through
+            //   corsproxy.io / allorigins / thingproxy just wastes 30 seconds
+            //   before _primaryHistoryFallback finally runs. The custom
+            //   `_isApiError` flag tells _fetchJson to rethrow immediately.
+            const err = new Error(`ByBit API error: ${json.retMsg}`);
+            err._isApiError = true;
+            err._retCode = json.retCode;
+            throw err;
         }
     }
 
