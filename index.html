@@ -21655,6 +21655,15 @@ function createMABrick(spec) {
         default: spec.periodDefault, min: spec.periodMin, max: spec.periodMax, step: spec.periodStep,
     })];
     if (spec.extraParams) params.push(...spec.extraParams);
+    // V114: logMode — compute MA on log(price), then exp() back.
+    //   Equivalent to geometric mean. On log-scale charts, this keeps the MA
+    //   at a constant visual distance from price when price moves uniformly
+    //   in percentage terms. Without it, arithmetic MA drifts toward higher
+    //   prices on log charts.
+    params.push(new BrickParam({
+        name: 'logMode', label: 'Log Mode (geometric)', type: 'bool', default: false, group: 'Advanced',
+        tooltip: 'Compute MA on log(price) → geometric mean. On log-scale charts, the MA stays at a constant distance from price during uniform % moves. Standard MA (off) drifts toward higher prices.',
+    }));
 
     class GeneratedMABrick extends IndicatorBrick {
         static META = {
@@ -21708,8 +21717,11 @@ function createMABrick(spec) {
             //   the Derived path always uses closeSequence, so SMA(volume)
             //   would incorrectly compute SMA(close). Fall back to maFn which
             //   correctly uses _resolveSrc.
+            // V114: also skip Derived when logMode is on — Derived works on
+            //   raw close prices, but logMode needs log(price) input.
             const skipDerived = !!this.sourceRef
-                || (this.inputs.source && this.inputs.source !== 'close');
+                || (this.inputs.source && this.inputs.source !== 'close')
+                || this.params.logMode === true;
 
             if (spec.seriesJsMultiSpec && manager?._lastDataStore?.getHighSequence && !skipDerived) {
                 // Multi-source path: [high, low, close] or [high, low, close, volume]
@@ -21820,13 +21832,37 @@ function createMABrick(spec) {
             // or spec has no seriesJsSpec — JMA, VAMA, MF, EDSMA, Kijun, DEMA, TEMA, etc.)
             // V55-source-ref-fix: when sourceRef is set, sourceData is already
             //   the chained indicator's output — don't call _resolveSrc.
-            const src = this.sourceRef
+            let src = this.sourceRef
                 ? sourceData
                 : (spec.resolveSrc !== false
                     ? _resolveSrc(sourceData, ohlc, this.inputs.source)
                     : sourceData);
+
+            // V114: Log Mode — compute MA on log(price), then exp() back.
+            //   This is equivalent to geometric mean. On log-scale charts,
+            //   the MA maintains a constant visual distance from price
+            //   during uniform percentage moves.
+            if (this.params.logMode === true) {
+                const logSrc = new Float64Array(count);
+                for (let i = 0; i < count; i++) {
+                    const v = src[i];
+                    logSrc[i] = (isFinite(v) && v > 0) ? Math.log(v) : NaN;
+                }
+                src = logSrc;
+            }
+
             const ctx = { version, mutation, emaPool, ohlc, params: this.params };
-            const line = spec.maFn(src, count, n, ctx);
+            let line = spec.maFn(src, count, n, ctx);
+
+            // V114: exp() back to price domain
+            if (this.params.logMode === true) {
+                for (let i = 0; i < count; i++) {
+                    if (isFinite(line[i])) {
+                        line[i] = Math.exp(line[i]);
+                    }
+                }
+            }
+
             this._computed = { line, count, visibleRange };
             return this._computed;
         }
@@ -21904,6 +21940,12 @@ class MACDBrick extends IndicatorBrick {
             new BrickParam({ name: 'fast', label: 'Fast EMA', default: 12, min: 1, max: 200, step: 1 }),
             new BrickParam({ name: 'slow', label: 'Slow EMA', default: 26, min: 1, max: 500, step: 1 }),
             new BrickParam({ name: 'signal', label: 'Signal EMA', default: 9, min: 1, max: 200, step: 1 }),
+            // V114: logMode — compute EMA on log(price), then exp() back.
+            //   MACD = exp(EMA_fast(log_p)) - exp(EMA_slow(log_p)).
+            //   On log charts, the MACD line maintains constant visual distance
+            //   from price during uniform % moves.
+            new BrickParam({ name: 'logMode', label: 'Log Mode (geometric)', type: 'bool', default: false, group: 'Advanced',
+                tooltip: 'Compute EMA on log(price) → geometric. On log-scale charts, MACD stays proportional to price movement.' }),
         ],
         inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
         outputs: [
@@ -21921,10 +21963,11 @@ class MACDBrick extends IndicatorBrick {
     };
 
     _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
-        // ════════════════════════════════════════════════════════════════════
-        // V49l: SINGLE derive() with HETERO OUTPUT {macd, signal, histogram}
-        // ════════════════════════════════════════════════════════════════════
-        if (manager?._lastDataStore?.getCloseSequence) {
+        // V114: when logMode is on, skip the Derived path and use fallback
+        //   with log-transformed source data.
+        const useLogMode = this.params.logMode === true;
+
+        if (!useLogMode && manager?._lastDataStore?.getCloseSequence) {
             const ds = manager._lastDataStore;
             const closeSeq = ds.getCloseSequence();
             const dataVersion = ds._version || 0;
@@ -22015,12 +22058,31 @@ class MACDBrick extends IndicatorBrick {
         }
 
         // Fallback: original EMA pool computation
-        const src = sourceData;
-        const emaFast = emaPool.getEMA(this.inputs.source + ':fast', this.params.fast, src, count, version, mutation);
-        const emaSlow = emaPool.getEMA(this.inputs.source + ':slow', this.params.slow, src, count, version, mutation);
+        // V114: in logMode, compute EMAs on log(price), then exp() back
+        //   before subtracting. This makes MACD = geo_fast - geo_slow.
+        let src = sourceData;
+        if (useLogMode) {
+            const logSrc = new Float64Array(count);
+            for (let i = 0; i < count; i++) {
+                const v = src[i];
+                logSrc[i] = (isFinite(v) && v > 0) ? Math.log(v) : NaN;
+            }
+            src = logSrc;
+        }
+        const emaFast = _maEMA(src, count, this.params.fast, version, mutation, emaPool);
+        const emaSlow = _maEMA(src, count, this.params.slow, version, mutation, emaPool);
         const macd = new Float64Array(count).fill(NaN);
-        for (let i = 0; i < count; i++) macd[i] = (emaFast[i] ?? 0) - (emaSlow[i] ?? 0);
-        const signal_line = emaPool.getEMA('macd:' + this.inputs.source, this.params.signal, macd, count, version, mutation);
+        if (useLogMode) {
+            // exp() back to price domain, then subtract
+            for (let i = 0; i < count; i++) {
+                if (isFinite(emaFast[i]) && isFinite(emaSlow[i])) {
+                    macd[i] = Math.exp(emaFast[i]) - Math.exp(emaSlow[i]);
+                }
+            }
+        } else {
+            for (let i = 0; i < count; i++) macd[i] = (emaFast[i] ?? 0) - (emaSlow[i] ?? 0);
+        }
+        const signal_line = _maEMA(macd, count, this.params.signal, version, mutation, emaPool);
         const histogram = new Float64Array(count).fill(NaN);
         for (let i = 0; i < count; i++) histogram[i] = (macd[i] ?? 0) - (signal_line[i] ?? 0);
         this._computed = { macd, signal_line, histogram, count, visibleRange };
@@ -22493,7 +22555,19 @@ class AOBrick extends IndicatorBrick {
         params: [
             new BrickParam({ name: 'fast', label: 'Fast Period', default: 5, min: 1, max: 200, step: 1 }),
             new BrickParam({ name: 'slow', label: 'Slow Period', default: 34, min: 1, max: 500, step: 1 }),
+            // V115: choose MA type for the whole AO line (not just period)
+            new BrickParam({ name: 'maType', label: 'MA Type', type: 'select', default: 'sma', group: 'Model',
+                options: [
+                    { value: 'sma', label: 'SMA' },
+                    { value: 'ema', label: 'EMA' },
+                    { value: 'wma', label: 'WMA' },
+                    { value: 'tema', label: 'TEMA' },
+                ],
+                tooltip: 'Moving average type used for both fast and slow lines. SMA = classic AO, EMA = faster response, WMA = linear weight, TEMA = triple EMA.' }),
             new BrickParam({ name: 'logScale', label: 'Log Scale', type: 'bool', default: false, group: 'Display' }),
+            // V114: logMode — compute MA on log(median), then exp() back.
+            new BrickParam({ name: 'logMode', label: 'Log Mode (geometric)', type: 'bool', default: false, group: 'Advanced',
+                tooltip: 'Compute MA on log(median price) → geometric. On log-scale charts, AO stays proportional to price movement.' }),
         ],
         inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
         outputs: [ new BrickOutput({ name: 'line', label: 'AO', type: 'histogram', color: '#3fb950' }) ],
@@ -22509,35 +22583,59 @@ class AOBrick extends IndicatorBrick {
     constructor(cfg) { super(cfg); this.needsOHLC = true; }
 
     _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
-        // V49n-fix: removed the derive() path that called Indicators.awesome()
-        //   — that method doesn't exist in the Indicators object, causing a
-        //   "Indicators.awesome is not a function" render error. The fallback
-        //   path below (manual SMA computation) correctly calculates the
-        //   Awesome Oscillator = SMA(fast, median) - SMA(slow, median), where
-        //   median = (high + low) / 2. This is the standard AO formula.
+        try { devLog('[AO] _computeRaw entry', {
+            hasOhlc: !!ohlc, count, fast: this.params.fast, slow: this.params.slow,
+            maType: this.params.maType, logMode: this.params.logMode, logScale: this.params.logScale,
+        }); } catch(_) {}
 
-        if (!ohlc) return { line: new Float64Array(0), count, visibleRange };
+        if (!ohlc) { try { devLog('[AO] ABORT: no ohlc'); } catch(_) {} return { line: new Float64Array(0), count, visibleRange }; }
         const fast = Math.max(1, Math.floor(this.params.fast));
         const slow = Math.max(1, Math.floor(this.params.slow));
+        const useLogMode = this.params.logMode === true;
+        const maType = this.params.maType || 'sma';
         // Compute median price = (high + low) / 2
         const median = new Float64Array(count);
         for (let i = 0; i < count; i++) {
-            median[i] = ((ohlc.high[i] ?? 0) + (ohlc.low[i] ?? 0)) / 2;
+            const m = ((ohlc.high[i] ?? 0) + (ohlc.low[i] ?? 0)) / 2;
+            median[i] = useLogMode && m > 0 ? Math.log(m) : m;
         }
-        // SMA of median
-        const smaFast = new Float64Array(count).fill(NaN);
-        const smaSlow = new Float64Array(count).fill(NaN);
-        for (let i = fast - 1; i < count; i++) {
-            let s = 0; for (let j = 0; j < fast; j++) s += median[i - j] ?? 0;
-            smaFast[i] = s / fast;
+        // V115: compute MA using selected type (SMA, EMA, WMA, TEMA)
+        // V115b: pass null for emaPool — AO uses its own median array, not the
+        //   shared close-price EMA pool. Passing the pool causes cache key
+        //   collisions (pool keys by 'ma:' + n, but AO's median ≠ close),
+        //   returning wrong EMA values → empty panel.
+        const computeMA = (src, n) => {
+            switch (maType) {
+                case 'ema':  return _maEMA(src, count, n, version, mutation, null);
+                case 'wma':  return _maWMA(src, count, n);
+                case 'tema': return _maTEMA(src, count, n, version, mutation, null);
+                default:     return _maSMA(src, count, n);
+            }
+        };
+        const maFast = computeMA(median, fast);
+        const maSlow = computeMA(median, slow);
+
+        // V118: log MA results for debugging
+        let fastFinite = 0, slowFinite = 0;
+        for (let i = 0; i < count; i++) {
+            if (isFinite(maFast[i])) fastFinite++;
+            if (isFinite(maSlow[i])) slowFinite++;
         }
-        for (let i = slow - 1; i < count; i++) {
-            let s = 0; for (let j = 0; j < slow; j++) s += median[i - j] ?? 0;
-            smaSlow[i] = s / slow;
-        }
+        try { devLog('[AO] MA computed', {
+            maType, fastFinite, slowFinite, count,
+            fastFirst: maFast.find(v => isFinite(v)),
+            slowFirst: maSlow.find(v => isFinite(v)),
+        }); } catch(_) {}
+
         const line = new Float64Array(count).fill(NaN);
         for (let i = 0; i < count; i++) {
-            if (isFinite(smaFast[i]) && isFinite(smaSlow[i])) line[i] = smaFast[i] - smaSlow[i];
+            if (isFinite(maFast[i]) && isFinite(maSlow[i])) {
+                if (useLogMode) {
+                    line[i] = Math.exp(maFast[i]) - Math.exp(maSlow[i]);
+                } else {
+                    line[i] = maFast[i] - maSlow[i];
+                }
+            }
         }
         // V100-log: apply log scale if enabled
         if (this.params.logScale === true) {
@@ -22546,8 +22644,37 @@ class AOBrick extends IndicatorBrick {
                 else line[i] = NaN;
             }
         }
+        // V118: log final result
+        let _aoFinite = 0, _aoMax = -Infinity, _aoMin = Infinity;
+        for (let i = 0; i < count; i++) {
+            if (isFinite(line[i])) {
+                _aoFinite++;
+                if (line[i] > _aoMax) _aoMax = line[i];
+                if (line[i] < _aoMin) _aoMin = line[i];
+            }
+        }
+        try { devLog('[AO] result', {
+            lineFinite: _aoFinite, count, lineMin: isFinite(_aoMin) ? _aoMin : null,
+            lineMax: isFinite(_aoMax) ? _aoMax : null,
+        }); } catch(_) {}
+
         this._computed = { line, count, visibleRange };
         return this._computed;
+    }
+
+    getAutoFitRange(computed, count, visibleRange) {
+        if (!computed?.line) return null;
+        const [iMin, iMax] = visibleRange || computed.visibleRange || [0, computed.count - 1];
+        let yMin = Infinity, yMax = -Infinity;
+        for (let i = iMin; i <= iMax; i++) {
+            if (isFinite(computed.line[i])) {
+                yMin = Math.min(yMin, computed.line[i]);
+                yMax = Math.max(yMax, computed.line[i]);
+            }
+        }
+        if (!isFinite(yMin)) return null;
+        const pad = (yMax - yMin) * 0.1 || 1;
+        return { yMin: yMin - pad, yMax: yMax + pad };
     }
 
     // V45: restore custom render — bars were rendering at width=1 after
@@ -53941,7 +54068,7 @@ class ByBitAdapter extends WebSocketExchangeAdapter {
         // ByBit V5 uses different WS endpoints per market type
         this.wsBase      = config.wsBase || `wss://stream.bybit.com/v5/public/${this.category}`;
         // ByBit V5 /v5/market/kline allows up to 200 candles per request.
-        this.fetchLimit        = config.fetchLimit || 200;
+        this.fetchLimit        = config.fetchLimit || 1000;  // V119: was 200, ByBit v5 allows 1000
         this.minRequestInterval = config.minRequestInterval || 150;
         // ByBit-specific: heartbeat and subscription tracking
         this._pingInterval  = null;
@@ -54074,7 +54201,7 @@ class ByBitAdapter extends WebSocketExchangeAdapter {
 
     _buildGapFillUrl(afterX, beforeX) {
         // ByBit "start" is inclusive, "end" is inclusive — use afterX + 1 to avoid boundary duplication
-        return `${this.restBase}/v5/market/kline?category=${encodeURIComponent(this.category)}&symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(this._bybitInterval())}&start=${afterX + 1}&end=${beforeX}&limit=200`;
+        return `${this.restBase}/v5/market/kline?category=${encodeURIComponent(this.category)}&symbol=${encodeURIComponent(this.symbol)}&interval=${encodeURIComponent(this._bybitInterval())}&start=${afterX + 1}&end=${beforeX}&limit=1000`;
     }
 
     // ── ByBit-specific fetch hooks ──
@@ -54880,6 +55007,13 @@ class RatioAdapter extends DataSourceAdapter {
         this._lastRatio  = null;
         // V37: tick serialization lock (same pattern as WebSocketExchangeAdapter)
         this._tickLock = Promise.resolve();
+        // V117: denominator data cache — store fetched klines per (symbol, timeframe, isPerp)
+        //   so switching numerator doesn't re-fetch the denominator.
+        //   Key: `${symbol}:${tf}:${perp}` → { candles, fetchTime, tf }
+        //   Stale after 60s (poll refreshes it). On cache hit, ratio is computed
+        //   optimistically with cached denom + freshly fetched num.
+        this._denCache = new Map();
+        this._denCacheTtl = 60000; // 60s — stale data is fine for optimistic display
     }
 
     /** Build a Binance kline URL for a given symbol.
@@ -54902,13 +55036,16 @@ class RatioAdapter extends DataSourceAdapter {
     /** V52-perp-ratio: fetch a symbol's klines from spot first; if spot
      *  returns an error or empty array, retry on the futures endpoint.
      *  Returns { candles, usedPerp } so the caller knows which endpoint
-     *  won — used to skip the wasted spot request on subsequent polls. */
-    // V113: XAU symbol aliasing — PAXG (Pax Gold) is a Binance spot token
-    //   backed 1:1 by gold. XAUUSDT doesn't exist on Binance spot (only
-    //   futures), causing slow spot→futures fallback. PAXGUSDT trades on
-    //   spot with full history → instant load.
-    //   Strategy: if symbol is XAUUSDT, try PAXGUSDT first (spot). If PAXG
-    //   has data, use it. If not, fall back to XAUUSDT (futures).
+     *  won — used to skip the wasted spot request on subsequent polls.
+     *  V113: XAU symbol aliasing — PAXG (Pax Gold) is a Binance spot token
+     *   backed 1:1 by gold. XAUUSDT doesn't exist on Binance spot (only
+     *   futures), causing slow spot→futures fallback. PAXGUSDT trades on
+     *   spot with full history → instant load.
+     *   Strategy: if symbol is XAUUSDT, try PAXGUSDT first (spot). If PAXG
+     *   has data, use it. If not, fall back to XAUUSDT (futures).
+     *  V116: when knownPerp is true, go DIRECTLY to perp — skip the wasted
+     *   spot request. When knownPerp is false, go directly to spot — skip
+     *   the wasted perp request. Only fall back if the primary fails. */
     static XAU_ALIASES = {
         'XAUUSDT': ['PAXGUSDT', 'XAUUSDT'],
     };
@@ -54937,36 +55074,35 @@ class RatioAdapter extends DataSourceAdapter {
             }
             return allData;
         };
-        // V113: try each alias in order. For XAUUSDT: try PAXGUSDT spot first
-        //   (instant, full history), then XAUUSDT perp (slower, less history).
-        //   First alias that returns data wins.
+
+        // V116: optimized fetch order based on knownPerp flag.
+        // If knownPerp=true: try perp FIRST (skip wasted spot request).
+        // If knownPerp=false: try spot FIRST (skip wasted perp request).
+        // Only fall back to the other if the primary fails.
         for (const alias of aliases) {
-            const tryPerp = knownPerp || alias !== symbol;  // XAUUSDT alias → always perp
-            if (tryPerp) {
-                try {
-                    const data = await _fetchAll(alias, true);
-                    if (data.length > 0) return { candles: this._transformKlines(data), usedPerp: true };
-                } catch (e) { /* try next alias */ }
-            } else {
-                // Try spot first for this alias
-                let spotData = [];
-                try {
-                    spotData = await _fetchAll(alias, false);
-                } catch (e) { /* spot failed — try perp below */ }
-                if (spotData.length >= Math.min(limit, 1000)) {
-                    return { candles: this._transformKlines(spotData), usedPerp: false };
+            // V116: determine which endpoint to try FIRST.
+            //   knownPerp → perp first.
+            //   !knownPerp → spot first.
+            //   Alias ≠ original symbol (e.g. PAXGUSDT for XAUUSDT) → spot first
+            //     (PAXGUSDT is a spot token, always try spot).
+            const primaryPerp = knownPerp && alias === symbol;
+            const secondaryPerp = !primaryPerp;
+
+            // Try primary endpoint
+            try {
+                const data = await _fetchAll(alias, primaryPerp);
+                if (data.length > 0) {
+                    return { candles: this._transformKlines(data), usedPerp: primaryPerp };
                 }
-                // Spot didn't get enough — try perp, use whichever has more
-                try {
-                    const perpData = await _fetchAll(alias, true);
-                    if (perpData.length > spotData.length) {
-                        return { candles: this._transformKlines(perpData), usedPerp: true };
-                    }
-                } catch (e) { /* perp also failed */ }
-                if (spotData.length > 0) {
-                    return { candles: this._transformKlines(spotData), usedPerp: false };
+            } catch (e) { /* primary failed — try secondary */ }
+
+            // Try secondary endpoint
+            try {
+                const data = await _fetchAll(alias, secondaryPerp);
+                if (data.length > 0) {
+                    return { candles: this._transformKlines(data), usedPerp: secondaryPerp };
                 }
-            }
+            } catch (e) { /* both failed — try next alias */ }
         }
         return { candles: [], usedPerp: true };
     }
@@ -55186,54 +55322,104 @@ class RatioAdapter extends DataSourceAdapter {
     async _fetchAndStream(gen) {
         if (gen === this._switchGen) this._loading = true;
         this._updateStatus('Loading ratio...');
-        // V37: inline stale check (DataSourceAdapter doesn't have _isStale)
         const isStale = () => gen !== undefined && gen !== this._switchGen;
         try {
             const intervalMs = this._tfToMs(this.timeframe);
-            // V37: do NOT call setIntervalMs here — moved after loadHistory below
-            // to avoid rendering old candles with new interval's bar width during
-            // the transition window.
 
             this._markRequest();
-            // V89-ratio-3d: when using a non-native TF (3d, 2w), we fetch
-            //   the native sub-TF and aggregate. Need factor× more candles
-            //   to cover the same time range. Binance caps at 1000 per
-            //   request, but we request the full amount — Binance returns
-            //   min(requested, available, 1000). After aggregation we get
-            //   fewer 3d candles but they cover the full available history.
-            //   Previous min(1000, ...) capped the request at 1000, which
-            //   gave only 333 3d candles for factor=3 — not enough to cover
-            //   the full history of newly-listed coins.
             const { factor: _aggFactor } = this._nativeTfFor(this.timeframe);
-            const effFetchLimit = this.fetchLimit * _aggFactor;  // no min() — let Binance cap it
-            // V52-perp-ratio: fetch both symbols in parallel using the
-            //   spot→futures fallback. Previously this hit spot-only URLs,
-            //   which 404'd for perp-only numerators (1000PEPEUSDT etc.).
+            const effFetchLimit = this.fetchLimit * _aggFactor;
+
+            // V117: check denominator cache first
+            const denCacheKey = `${this.denominator}:${this.timeframe}:${this.denominatorPerp}`;
+            const cachedDen = this._denCache.get(denCacheKey);
+            const denCacheFresh = cachedDen && (Date.now() - cachedDen.fetchTime < this._denCacheTtl);
+
+            // V117: OPTIMISTIC PATH — if denominator is cached, fetch only
+            //   numerator, compute ratio immediately, load it. Then fetch
+            //   fresh denominator in background and update if different.
+            if (denCacheFresh) {
+                try { devLog('[V117-ratio] optimistic: using cached denominator', {
+                    denominator: this.denominator, cacheAge: Date.now() - cachedDen.fetchTime,
+                }); } catch(_) {}
+
+                // Fetch only numerator (fast — one request instead of two)
+                const numRes = await this._fetchKlinesWithFallback(this.numerator, effFetchLimit);
+                if (isStale()) return;
+
+                const numCandles = numRes.candles;
+                const denCandles = cachedDen.candles;
+                this._numPerp = numRes.usedPerp;
+                this._denPerp = cachedDen.usedPerp;
+
+                if (numCandles.length > 0 && denCandles.length > 0) {
+                    const ratioCandles = this._computeRatio(numCandles, denCandles);
+                    if (ratioCandles.length > 0) {
+                        this._lastRatio = ratioCandles[ratioCandles.length - 1].close;
+                        this._klineStartTime = ratioCandles[ratioCandles.length - 1]._x;
+
+                        this.chartApi?._ctx?.invalidateYRangeCache?.();
+                        const result = await this.chartApi.loadHistory(ratioCandles);
+                        if (isStale()) return;
+
+                        this.chartApi.setIntervalMs(intervalMs);
+                        if (this.rangeAnchor) {
+                            this.chartApi.applyViewportAnchor(this.rangeAnchor);
+                            this.rangeAnchor = null;
+                        } else {
+                            const showCount = Math.min(100, result.count);
+                            const visibleMs = showCount * intervalMs;
+                            this.chartApi.setXRange(this._klineStartTime - visibleMs, this._klineStartTime);
+                            this.chartApi.setAutoFitY(true);
+                        }
+
+                        this._updateStatus(`Ratio: ${this.symbol}`);
+                        this._startPolling();
+
+                        // V117: background refresh of denominator — update if
+                        //   fresh data differs from cached. Don't block UI.
+                        this._refreshDenominatorInBackground(gen, denCacheKey, effFetchLimit);
+                        return; // optimistic path complete
+                    }
+                }
+                // Optimistic path failed (no overlap etc.) — fall through to full fetch
+            }
+
+            // V117: FULL PATH — fetch both symbols in parallel (when no cache)
             const [numRes, denRes] = await Promise.all([
                 this._fetchKlinesWithFallback(this.numerator, effFetchLimit),
                 this._fetchKlinesWithFallback(this.denominator, effFetchLimit),
             ]);
-            // V90-debug: log ratio fetch details
             try { devLog('[V90-ratio] fetch result', {
                 timeframe: this.timeframe,
                 numerator: this.numerator, numLen: numRes.candles?.length,
                 numFirst: numRes.candles?.[0]?._x, numLast: numRes.candles?.[numRes.candles?.length - 1]?._x,
                 denominator: this.denominator, denLen: denRes.candles?.length,
                 denFirst: denRes.candles?.[0]?._x, denLast: denRes.candles?.[denRes.candles?.length - 1]?._x,
-                effFetchLimit, aggFactor: _aggFactor,
+                effFetchLimit, aggFactor: _aggFactor, fromCache: false,
             }); } catch(_) {}
             if (isStale()) return;
             const numCandles = numRes.candles;
             const denCandles = denRes.candles;
-            // Track which endpoint each symbol resolved to — the polling
-            //   path uses these flags to skip the wasted spot request on
-            //   every 5s tick for a perp-only numerator.
             this._numPerp = numRes.usedPerp;
             this._denPerp = denRes.usedPerp;
             if (numCandles.length === 0 || denCandles.length === 0) {
                 this._updateStatus('No data for one or both symbols');
                 return;
             }
+
+            // V117: save denominator to cache for future numerator switches
+            this._denCache.set(denCacheKey, {
+                candles: denCandles,
+                usedPerp: denRes.usedPerp,
+                fetchTime: Date.now(),
+                tf: this.timeframe,
+            });
+            // V117: clean old cache entries (different symbols/timeframes)
+            for (const [key, entry] of this._denCache) {
+                if (key !== denCacheKey) this._denCache.delete(key);
+            }
+
             const ratioCandles = this._computeRatio(numCandles, denCandles);
 
             if (ratioCandles.length === 0) {
@@ -55244,20 +55430,11 @@ class RatioAdapter extends DataSourceAdapter {
             this._lastRatio = ratioCandles[ratioCandles.length - 1].close;
             this._klineStartTime = ratioCandles[ratioCandles.length - 1]._x;
 
-            // FIX V49n-adapter: optional chaining on _ctx too (chartApi may be null)
             this.chartApi?._ctx?.invalidateYRangeCache?.();
             const result = await this.chartApi.loadHistory(ratioCandles);
             if (isStale()) return;
 
-            // V37: now that new ratio candles are loaded, apply the new interval.
-            // This must happen AFTER loadHistory (so candles match interval) and
-            // BEFORE endTransition (so the final render uses the new interval).
             this.chartApi.setIntervalMs(intervalMs);
-
-            // V37: preserve viewport range via rangeAnchor (same as
-            // BinanceAdapter._applyViewportAfterLoad). When switching from
-            // another source or symbol, the user's current view is restored
-            // instead of jumping to "last 100 candles".
             if (this.rangeAnchor) {
                 this.chartApi.applyViewportAnchor(this.rangeAnchor);
                 this.rangeAnchor = null;
@@ -55277,14 +55454,68 @@ class RatioAdapter extends DataSourceAdapter {
             //   retrying). The chart will retry on the next swipe/pick.
         } finally {
             if (gen === this._switchGen) this._loading = false;
-            // V49n-fix: ALWAYS end transition — connect() calls beginTransition(),
-            //   so we must balance it here regardless of stale state.
-            //   CRITICAL: this.chartApi may be null if disconnect() was called
-            //   (e.g. user swiped to next coin while fetch was in-flight).
-            //   Without the fallback, endTransition() is never called →
-            //   transition depth stays > 0 → chart stays dimmed forever.
             const api = this.chartApi || window._chart?.api;
             if (api) api.endTransition();
+        }
+    }
+
+    /** V117: Background refresh of denominator data.
+     *  Fetches fresh denominator klines, compares with cached version.
+     *  If different (new candles, price changes), recomputes ratio and
+     *  reloads chart silently. If same, just updates cache timestamp. */
+    async _refreshDenominatorInBackground(gen, cacheKey, limit) {
+        const isStale = () => gen !== undefined && gen !== this._switchGen;
+        try {
+            const freshDenRes = await this._fetchKlinesWithFallback(this.denominator, limit);
+            if (isStale()) return;
+
+            const freshCandles = freshDenRes.candles;
+            const cached = this._denCache.get(cacheKey);
+
+            if (!cached || freshCandles.length === 0) return;
+
+            // Check if data actually changed (compare last candle timestamp + close)
+            const freshLast = freshCandles[freshCandles.length - 1];
+            const cachedLast = cached.candles[cached.candles.length - 1];
+
+            if (freshLast._x === cachedLast._x && freshLast.close === cachedLast.close
+                && freshCandles.length === cached.candles.length) {
+                // Same data — just update timestamp
+                cached.fetchTime = Date.now();
+                try { devLog('[V117-ratio] denom unchanged, cache refreshed', {}); } catch(_) {}
+                return;
+            }
+
+            // Data changed — update cache + recompute ratio
+            this._denCache.set(cacheKey, {
+                candles: freshCandles,
+                usedPerp: freshDenRes.usedPerp,
+                fetchTime: Date.now(),
+                tf: this.timeframe,
+            });
+            this._denPerp = freshDenRes.usedPerp;
+
+            // Recompute ratio with fresh denominator + current numerator
+            // (numerator was already loaded — we need to re-fetch it too
+            //  because it may have new candles since the optimistic load)
+            const freshNumRes = await this._fetchKlinesWithFallback(this.numerator, limit);
+            if (isStale()) return;
+
+            const ratioCandles = this._computeRatio(freshNumRes.candles, freshCandles);
+            if (ratioCandles.length === 0) return;
+
+            this._lastRatio = ratioCandles[ratioCandles.length - 1].close;
+            this._klineStartTime = ratioCandles[ratioCandles.length - 1]._x;
+            this._numPerp = freshNumRes.usedPerp;
+
+            // V117: mergeRecentCandles instead of loadHistory — don't wipe
+            //   the chart, just update/add changed candles smoothly
+            await this.chartApi?.mergeRecentCandles(ratioCandles);
+            try { devLog('[V117-ratio] denom refreshed, ratio updated', {
+                denLast: freshLast._x, ratioLen: ratioCandles.length,
+            }); } catch(_) {}
+        } catch (e) {
+            // Silent — background refresh is best-effort
         }
     }
 
@@ -55419,6 +55650,159 @@ class RatioAdapter extends DataSourceAdapter {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// V120: BybitRatioAdapter — same as RatioAdapter but fetches from ByBit V5 API
+//   instead of Binance. Used when the user is on ByBit and enters ratio mode.
+//   ByBit V5 kline: /v5/market/kline?category=spot|linear&symbol=X&interval=Y&limit=Z
+//   ByBit returns newest-first, wrapped in { retCode, result: { list: [...] } }
+// ═══════════════════════════════════════════════════════════════════════════════
+class BybitRatioAdapter extends RatioAdapter {
+    constructor(config = {}) {
+        super(config);
+        this.restBase = 'https://api.bybit.com';
+        this.sourceId = 'ratio';
+    }
+
+    // Override: build ByBit V5 kline URL instead of Binance
+    _buildKlineUrl(symbol, limit, startTime, endTime, perp = false) {
+        const category = perp ? 'linear' : 'spot';
+        const { nativeTf } = this._nativeTfFor(this.timeframe);
+        const bybitInterval = ({ '1m':'1','3m':'3','5m':'5','15m':'15','30m':'30',
+            '1h':'60','2h':'120','4h':'240','6h':'360','12h':'720',
+            '1d':'D','1w':'W','1M':'M' })[nativeTf] || '240';
+        let url = `${this.restBase}/v5/market/kline?category=${category}&symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(bybitInterval)}&limit=${Math.min(1000, limit)}`;
+        if (startTime) url += `&start=${Math.round(startTime)}`;
+        if (endTime) url += `&end=${Math.round(endTime)}`;
+        return url;
+    }
+
+    // Override: transform ByBit response (newest-first, wrapped in retCode/result)
+    _transformKlines(data) {
+        // ByBit V5 wraps in { retCode, result: { list: [...] } }
+        let list;
+        if (Array.isArray(data)) {
+            list = data;
+        } else {
+            if (data?.retCode !== undefined && data.retCode !== 0) return [];
+            list = data?.result?.list;
+            if (!Array.isArray(list)) return [];
+        }
+        const raw = list
+            .slice()
+            .reverse()  // ByBit returns newest-first, we need oldest-first
+            .map(k => ({
+                _x:    Number(k[0]),
+                open:  parseFloat(k[1]),
+                high:  parseFloat(k[2]),
+                low:   parseFloat(k[3]),
+                close: parseFloat(k[4]),
+                vol:   parseFloat(k[5]),
+            }))
+            .filter(c =>
+                isFinite(c._x) && isFinite(c.open) && isFinite(c.high) &&
+                isFinite(c.low) && isFinite(c.close) && isFinite(c.vol)
+            );
+        // V85-ratio-3d: aggregate non-native TFs (3d, 2w) same as RatioAdapter
+        const { factor, nativeTf } = this._nativeTfFor(this.timeframe);
+        if (factor > 1) {
+            const nativeMs = tfToMs(nativeTf);
+            const groupMs = nativeMs * factor;
+            for (const c of raw) {
+                const groupStart = Math.floor(c._x / groupMs) * groupMs;
+                c._x = groupStart;
+            }
+            const groups = new Map();
+            for (const c of raw) {
+                if (!groups.has(c._x)) groups.set(c._x, []);
+                groups.get(c._x).push(c);
+            }
+            const out = [];
+            for (const [x, group] of groups) {
+                const first = group[0];
+                const last  = group[group.length - 1];
+                let high = -Infinity, low = Infinity, vol = 0;
+                for (const c of group) {
+                    if (isFinite(c.high) && c.high > high) high = c.high;
+                    if (isFinite(c.low)  && c.low  < low)  low  = c.low;
+                    if (isFinite(c.vol)) vol += c.vol;
+                }
+                out.push({
+                    _x: x,
+                    open: first.open,
+                    high: isFinite(high) ? high : last.close,
+                    low:  isFinite(low)  ? low  : last.close,
+                    close: last.close,
+                    vol: vol,
+                });
+            }
+            return out;
+        }
+        return raw;
+    }
+
+    // Override: ByBit V5 returns { retCode, result: { list: [...] } }
+    // _fetchKlinesWithFallback calls _fetchJson which returns parsed JSON.
+    // The _fetchAll inner function expects an array from _fetchJson.
+    // For ByBit, _fetchJson returns the full response object, so we need
+    // to extract .result.list in _fetchAll.
+    // Simplest: override _fetchKlinesWithFallback to handle ByBit response shape.
+    async _fetchKlinesWithFallback(symbol, limit) {
+        const aliases = RatioAdapter.XAU_ALIASES[symbol] || [symbol];
+        const knownPerp = (symbol === this.numerator && this.numeratorPerp) ||
+                          (symbol === this.denominator && this.denominatorPerp);
+
+        const _fetchAll = async (fetchSymbol, perp) => {
+            const allData = [];
+            let remaining = limit;
+            let endTime = null;
+            while (remaining > 0) {
+                const batchLimit = Math.min(1000, remaining);
+                const url = this._buildKlineUrl(fetchSymbol, batchLimit, null, endTime, perp);
+                const data = await this._fetchJson(url);
+                // ByBit V5: extract list from response
+                let list;
+                if (Array.isArray(data)) {
+                    list = data;
+                } else {
+                    if (data?.retCode !== undefined && data.retCode !== 0) break;
+                    list = data?.result?.list;
+                }
+                if (!Array.isArray(list) || list.length === 0) break;
+                allData.unshift(...list);  // newest-first from API, unshift to get oldest-first
+                if (list.length < batchLimit) break;
+                endTime = Number(list[list.length - 1][0]) - 1;  // oldest in this batch - 1
+                remaining -= list.length;
+            }
+            return allData;  // raw ByBit arrays, will be transformed by _transformKlines
+        };
+
+        for (const alias of aliases) {
+            const primaryPerp = knownPerp && alias === symbol;
+            const secondaryPerp = !primaryPerp;
+
+            // Try primary endpoint
+            try {
+                const rawData = await _fetchAll(alias, primaryPerp);
+                if (rawData.length > 0) {
+                    const candles = this._transformKlines(rawData);
+                    if (candles.length > 0) return { candles, usedPerp: primaryPerp };
+                }
+            } catch (e) { /* primary failed — try secondary */ }
+
+            // Try secondary endpoint
+            try {
+                const rawData = await _fetchAll(alias, secondaryPerp);
+                if (rawData.length > 0) {
+                    const candles = this._transformKlines(rawData);
+                    if (candles.length > 0) return { candles, usedPerp: secondaryPerp };
+                }
+            } catch (e) { /* both failed — try next alias */ }
+        }
+        return { candles: [], usedPerp: true };
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // DataSourceOrchestrator — manages adapter lifecycle + source switching
 //
 // Worker-style design: receives commands via EventBus, owns adapter state.
@@ -55509,6 +55893,7 @@ const STABLECOINS = new Set([
     // Modern / newer fiat-pegged stables (otherwise "No stables" lets them slip through)
     'USDE', 'USDS', 'USD1', 'PYUSD', 'GUSD', 'EURT', 'USDK', 'USDJ', 'HUSD', 'BIDR',
     'USDY', 'USC', 'XUSD', 'UST', 'MIM', 'DOLA', 'LUSD', 'SUSD', 'AUSD', 'CUSD', 'USDX',
+    'BFUSD',  // V116: Binance Fiat-Backed USD
 ]);
 
 function _isStable(base) {
@@ -56821,10 +57206,10 @@ function _wireCoinInfoTagClicks(container, coinPicker) {
 
 
 // ── V39: явный экспорт в window (обратная совместимость) ──
-Object.assign(window, { ADAPTER_DEFAULTS, DataSourceAdapter, WebSocketExchangeAdapter, BinanceAdapter, ByBitAdapter, CoinbaseAdapter, InternalDataSimulator, RatioAdapter, COIN_FAV_TYPES, _coinHashColor, _formatPct, _formatPrice, _formatCompact, _parseMultiplier, _timeAgo, STABLECOINS, _isStable, CoinListService, CP_CANONICAL_TAGS, CP_CANONICAL_TAG_SET, CP_TAG_ALIASES, _normalizeTag, _normalizeTags, PaprikaService, CoinFavorites, _coinListService, _paprikaService, _coinFavorites, _renderCoinInfoBaseHTML, _renderCoinInfoDetailHTML, _wireCoinInfoTagClicks });
+Object.assign(window, { ADAPTER_DEFAULTS, DataSourceAdapter, WebSocketExchangeAdapter, BinanceAdapter, ByBitAdapter, CoinbaseAdapter, InternalDataSimulator, RatioAdapter, BybitRatioAdapter, COIN_FAV_TYPES, _coinHashColor, _formatPct, _formatPrice, _formatCompact, _parseMultiplier, _timeAgo, STABLECOINS, _isStable, CoinListService, CP_CANONICAL_TAGS, CP_CANONICAL_TAG_SET, CP_TAG_ALIASES, _normalizeTag, _normalizeTags, PaprikaService, CoinFavorites, _coinListService, _paprikaService, _coinFavorites, _renderCoinInfoBaseHTML, _renderCoinInfoDetailHTML, _wireCoinInfoTagClicks });
 
 // ── V39: регистрация в реестре модулей ──
-CE.registerModule('chart-engine-adapters', ['ce-data-layer', 'ce-infra'], ['ADAPTER_DEFAULTS', 'DataSourceAdapter', 'WebSocketExchangeAdapter', 'BinanceAdapter', 'ByBitAdapter', 'CoinbaseAdapter', 'InternalDataSimulator', 'RatioAdapter', 'COIN_FAV_TYPES', '_coinHashColor', '_formatPct', '_formatPrice', '_formatCompact', '_parseMultiplier', '_timeAgo', 'STABLECOINS', '_isStable', 'CoinListService', 'CP_CANONICAL_TAGS', 'CP_CANONICAL_TAG_SET', 'CP_TAG_ALIASES', '_normalizeTag', '_normalizeTags', 'PaprikaService', 'CoinFavorites', '_coinListService', '_paprikaService', '_coinFavorites'], 'MAIN-THREAD ONLY');
+CE.registerModule('chart-engine-adapters', ['ce-data-layer', 'ce-infra'], ['ADAPTER_DEFAULTS', 'DataSourceAdapter', 'WebSocketExchangeAdapter', 'BinanceAdapter', 'ByBitAdapter', 'CoinbaseAdapter', 'InternalDataSimulator', 'RatioAdapter', 'BybitRatioAdapter', 'COIN_FAV_TYPES', '_coinHashColor', '_formatPct', '_formatPrice', '_formatCompact', '_parseMultiplier', '_timeAgo', 'STABLECOINS', '_isStable', 'CoinListService', 'CP_CANONICAL_TAGS', 'CP_CANONICAL_TAG_SET', 'CP_TAG_ALIASES', '_normalizeTag', '_normalizeTags', 'PaprikaService', 'CoinFavorites', '_coinListService', '_paprikaService', '_coinFavorites'], 'MAIN-THREAD ONLY');
 })(window.CE, window);
 
 (function CE$module$chart$engine$app(CE, window) {
@@ -57876,7 +58261,7 @@ class DataSourceOrchestrator {
         });
         this._adapters.bybit = new ByBitAdapter({
             symbol: this.symbol, timeframe: this.timeframe,
-            category: this.bybitCategory, fetchLimit: 200,
+            category: this.bybitCategory, fetchLimit: 1000,
             minRequestInterval: 150, sourceId: 'bybit'
         });
         // V51-coinbase: Coinbase Advanced Trade adapter. fetchLimit=300 (Coinbase max).
@@ -57968,15 +58353,16 @@ class DataSourceOrchestrator {
                 api.endTransition();
             }
         } else if (src === 'ratio') {
-            // V37: ratio adapter is created on-demand with the current
-            // numerator/denominator. Recreate it each time so symbol
-            // changes take effect.
-            // Save the current real symbol so we can restore it when
-            // switching back to binance/bybit (ratio sets this.symbol to
-            // a composite "NUM/DEN" string which would break Binance API).
             if (!this._preRatioSymbol) this._preRatioSymbol = this.symbol;
+            // V120: remember which exchange we came from so we pick the right ratio adapter
+            this._preRatioSource = this.srcMode;
             const ratioCfg = this._ratioConfig || { numerator: 'DOGEUSDT', denominator: 'ETHUSDT' };
-            const adapter = new RatioAdapter({
+            // V120: use BybitRatioAdapter if previous source was bybit,
+            //   otherwise use Binance RatioAdapter (default, faster API)
+            const prevSrc = this._preRatioSource || this.srcMode;
+            const useBybit = prevSrc === 'bybit' || this._adapters.bybit?._active === true;
+            const AdapterClass = useBybit ? BybitRatioAdapter : RatioAdapter;
+            const adapter = new AdapterClass({
                 numerator: ratioCfg.numerator,
                 denominator: ratioCfg.denominator,
                 numeratorIsPerp: ratioCfg.numeratorIsPerp,
@@ -58036,6 +58422,35 @@ class DataSourceOrchestrator {
             //   of ETH.
             if (this.srcMode === 'ratio' && value?.numerator) {
                 this._preRatioSymbol = value.numerator;
+            }
+            // V116: when in ratio mode and ratioConfig changes (e.g. switching
+            //   denominator from ETH to BNB), forward to adapter.switchAsset
+            //   so it reloads data. Also clear + prefetch anchor data.
+            if (this.srcMode === 'ratio') {
+                const adapter = this._getActiveAdapter();
+                if (adapter) {
+                    // Clear anchor data before reload
+                    try {
+                        const engine = this.api?._ctx?.engine || window._chart?.engine;
+                        const im = engine?.indicatorManager;
+                        if (im && typeof im.clearAnchorData === 'function') {
+                            im.clearAnchorData();
+                        }
+                    } catch (_) {}
+                    // Switch asset (reloads ratio data with new config)
+                    await adapter.switchAsset({ ratioConfig: value });
+                    // Prefetch anchor data after reload
+                    try {
+                        const engine = this.api?._ctx?.engine || window._chart?.engine;
+                        const im = engine?.indicatorManager;
+                        if (im && typeof im.prefetchAnchorTfs === 'function') {
+                            const ds = engine?.dataContext?.dataStore;
+                            if (ds && ds.size > 0) {
+                                im.prefetchAnchorTfs(adapter, ds).catch(() => {});
+                            }
+                        }
+                    } catch (_) {}
+                }
             }
             return;
         }
@@ -61714,6 +62129,8 @@ class ChartFactory {
                 <button data-quote="USDT" role="menuitem">USDT</button>
                 <button data-quote="BTC" role="menuitem">BTC</button>
                 <button data-quote="ETH" role="menuitem">ETH</button>
+                <button data-quote="SOL" role="menuitem">SOL</button>
+                <button data-quote="BNB" role="menuitem">BNB</button>
                 <button data-quote="XAU" role="menuitem">XAU</button>
                 <div class="cp-quote-sep"></div>
                 <button data-quote="__other__" role="menuitem">Other…</button>
@@ -63612,7 +64029,13 @@ class ChartFactory {
                                 existingInd.inputs.source = srcValEx;
                                 existingInd.sourceId = srcValEx === 'close' ? 'price' : srcValEx === 'volume' ? 'vol' : srcValEx;
                                 // V55-source-ohlc: update needsOHLC when source changes.
-                                existingInd.needsOHLC = srcValEx !== 'close' || existingInd.constructor?._specNeedsOHLC;
+                                // V118: preserve needsOHLC for indicators that always
+                                //   need OHLC (AO, MACD, VPIN, etc.). These set
+                                //   needsOHLC=true in their constructor, but the
+                                //   old code overwrote it to false when source='close'.
+                                const metaNeedsOhlc = existingInd.constructor?.META?.params?.some(p => p.name === 'logMode' || p.name === 'maType')
+                                    || ['ao','macd','stochastic','vpin','cmf','williamsr','cci','eldersray','accumdist','pvt','hpresidual','knnanomaly','ou_zscore','zscore_ensemble','volnormcandles','timemarker','btc_realized','hpoc','zscore'].includes(existingInd.constructor?.META?.type);
+                                existingInd.needsOHLC = srcValEx !== 'close' || existingInd.constructor?._specNeedsOHLC || metaNeedsOhlc;
                                 // V55-source-yaxis: render on volume axis when source=volume.
                                 existingInd._sourceYAxisId = srcValEx === 'volume' ? 'volume' : null;
                             }
@@ -63629,6 +64052,7 @@ class ChartFactory {
                         //   compute() returns the stale _computed result.
                         existingInd._computed = null;
                         existingInd._computeVersion = -1;
+                        existingInd._computeMutation = null;
                         existingInd._computeAnchorVer = null;
                         existingInd._hpocProbCacheKey = null;
                         existingInd._srProbCacheKey = null;
@@ -68651,28 +69075,22 @@ const ChartStatePersistence = (() => {
 
                 if (needsSwitch) {
                     // V107e-ratio-restore: set ratioConfig BEFORE source:switch
-                    //   so the RatioAdapter is created with the correct pair.
-                    //   Previously ratioConfig was emitted AFTER source:switch,
-                    //   so the adapter was created with default DOGE/ETH and
-                    //   then never re-switched (ratioConfig handler returns
-                    //   early without calling switchAsset).
                     if (isRatio && state.source.ratioConfig) {
                         orch._ratioConfig = state.source.ratioConfig;
-                        // V107e: also set _preRatioSymbol so switching back to
-                        //   binance restores the numerator (not the default).
                         if (state.source.ratioConfig.numerator) {
                             orch._preRatioSymbol = state.source.ratioConfig.numerator;
                         }
                     }
 
+                    // V119: for bybit, also set bybitCategory BEFORE source:switch
+                    //   so the adapter is created with the correct category.
+                    if (src === 'bybit' && state.source.bybitCategory) {
+                        orch.bybitCategory = state.source.bybitCategory;
+                    }
+
                     // Emit source:switch first (creates the right adapter type)
                     if (src !== curSrc) {
                         bus.emit('source:switch', { src }, 'StatePersistence');
-                        // Wait for adapter to be created + initial fetch to start.
-                        // V107e: increased from 200ms to 500ms for ratio mode
-                        //   because RatioAdapter._fetchAndStream fires TWO
-                        //   parallel kline requests (numerator + denominator)
-                        //   which take longer than a single request.
                         const waitMs = isRatio ? 500 : 200;
                         await new Promise(r => setTimeout(r, waitMs));
                     }
@@ -68683,21 +69101,10 @@ const ChartStatePersistence = (() => {
                     if (state.source.bybitCategory) {
                         bus.emit('source:param', { param: 'bybitCategory', value: state.source.bybitCategory }, 'StatePersistence');
                     }
-                    // V107e-ratio-restore: re-emit ratioConfig AFTER switch too,
-                    //   so the adapter picks up any fields not in _ratioConfig
-                    //   at switch time (numeratorIsPerp, denominatorIsPerp).
-                    //   The ratioConfig handler is idempotent — it just updates
-                    //   orch._ratioConfig and _preRatioSymbol.
                     if (isRatio && state.source.ratioConfig) {
                         bus.emit('source:param', { param: 'ratioConfig', value: state.source.ratioConfig }, 'StatePersistence');
-                        // V107e: for ratio mode, trigger an explicit switchAsset
-                        //   on the adapter so it fetches the correct pair. The
-                        //   ratioConfig handler above returns early without
-                        //   calling switchAsset, so without this the adapter
-                        //   would stay on whatever pair it was created with.
                         const adapter = orch._getActiveAdapter?.();
                         if (adapter && typeof adapter.switchAsset === 'function') {
-                            // Defer slightly so the ratioConfig event is processed first
                             setTimeout(() => {
                                 adapter.switchAsset({
                                     timeframe: tf,
@@ -68706,7 +69113,9 @@ const ChartStatePersistence = (() => {
                             }, 50);
                         }
                     } else {
-                        // Non-ratio: emit symbol + timeframe normally
+                        // V119: for non-ratio, emit symbol + timeframe.
+                        //   For bybit, also emit bybitCategory FIRST (before symbol)
+                        //   so the adapter is in the right category before loading.
                         bus.emit('source:param', { param: 'symbol', value: symbol }, 'StatePersistence');
                         bus.emit('source:param', { param: 'timeframe', value: tf }, 'StatePersistence');
                     }
