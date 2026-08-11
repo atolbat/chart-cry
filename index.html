@@ -55065,6 +55065,12 @@ class RatioAdapter extends DataSourceAdapter {
             while (remaining > 0) {
                 const batchLimit = Math.min(1000, remaining);
                 const url = this._buildKlineUrl(fetchSymbol, batchLimit, null, endTime, perp);
+                // V120-fix-debug: log the URL so we can see which exchange is used
+                try { console.log('[V120-fetch-debug]', {
+                    adapter: this.constructor.name,
+                    symbol: fetchSymbol, perp,
+                    url,
+                }); } catch(_) {}
                 const data = await this._fetchJson(url);
                 if (!Array.isArray(data) || data.length === 0) break;
                 allData.unshift(...data);
@@ -55544,17 +55550,59 @@ class RatioAdapter extends DataSourceAdapter {
         this._loading = true;
         this._markRequest();
         try {
-            // Fetch older candles for both symbols in parallel
-            const urlNum = this._buildKlineUrl(this.numerator, limit, null, firstX - 1);
-            const urlDen = this._buildKlineUrl(this.denominator, limit, null, firstX - 1);
+            // V120-fix: use cached perp flag from the initial fetch to build
+            //   the correct URL (spot vs perp). Previously, _buildKlineUrl was
+            //   called with perp=false (default), so perp-only symbols (e.g.
+            //   HYPE on ByBit linear) returned 0 candles from the spot
+            //   endpoint → _allHistoryLoaded = true → lazy-load stopped
+            //   prematurely, making it look like the symbol had no older
+            //   history even though it did on the perp endpoint.
+            const numPerp = !!this._numPerp;
+            const denPerp = !!this._denPerp;
+            const urlNum = this._buildKlineUrl(this.numerator, limit, null, firstX - 1, numPerp);
+            const urlDen = this._buildKlineUrl(this.denominator, limit, null, firstX - 1, denPerp);
             const [numData, denData] = await Promise.all([
                 this._fetchJson(urlNum),
                 this._fetchJson(urlDen),
             ]);
             if (isStale()) return 0;
 
-            const numCandles = this._transformKlines(numData);
-            const denCandles = this._transformKlines(denData);
+            let numCandles = this._transformKlines(numData);
+            let denCandles = this._transformKlines(denData);
+
+            // V120-fix: spot ↔ perp fallback. If the primary endpoint returned
+            //   0 candles, try the OTHER endpoint before giving up. This
+            //   matches the _fetchKlinesWithFallback logic used in the initial
+            //   fetch. Without this, a symbol that switched endpoints between
+            //   the initial fetch and lazy-load (rare but possible) would
+            //   prematurely mark allHistoryLoaded=true.
+            if (numCandles.length === 0) {
+                try {
+                    const fbUrl = this._buildKlineUrl(this.numerator, limit, null, firstX - 1, !numPerp);
+                    const fbData = await this._fetchJson(fbUrl);
+                    if (!isStale()) {
+                        const fb = this._transformKlines(fbData);
+                        if (fb.length > 0) {
+                            numCandles = fb;
+                            this._numPerp = !numPerp;
+                        }
+                    }
+                } catch (_) { /* fallback failed — leave numCandles empty */ }
+            }
+            if (denCandles.length === 0) {
+                try {
+                    const fbUrl = this._buildKlineUrl(this.denominator, limit, null, firstX - 1, !denPerp);
+                    const fbData = await this._fetchJson(fbUrl);
+                    if (!isStale()) {
+                        const fb = this._transformKlines(fbData);
+                        if (fb.length > 0) {
+                            denCandles = fb;
+                            this._denPerp = !denPerp;
+                        }
+                    }
+                } catch (_) { /* fallback failed — leave denCandles empty */ }
+            }
+
             if (numCandles.length === 0 || denCandles.length === 0) {
                 this._allHistoryLoaded = true;
                 return 0;
@@ -55757,6 +55805,12 @@ class BybitRatioAdapter extends RatioAdapter {
             while (remaining > 0) {
                 const batchLimit = Math.min(1000, remaining);
                 const url = this._buildKlineUrl(fetchSymbol, batchLimit, null, endTime, perp);
+                // V120-fix-debug: log the URL so we can see which exchange is used
+                try { console.log('[V120-fetch-debug]', {
+                    adapter: this.constructor.name,
+                    symbol: fetchSymbol, perp,
+                    url,
+                }); } catch(_) {}
                 const data = await this._fetchJson(url);
                 // ByBit V5: extract list from response
                 let list;
@@ -58286,6 +58340,15 @@ class DataSourceOrchestrator {
     async _onSwitch(evt) {
         const src = evt.payload.src;
         if (!src) return;
+        // V120-fix-debug: log every source:switch entry
+        try { console.log('[V120-switch-debug] entry', {
+            src, srcMode: this.srcMode,
+            _preRatioSource: this._preRatioSource,
+            _preRatioSymbol: this._preRatioSymbol,
+            symbol: this.symbol,
+            source: evt.source,
+        }); } catch(_) {}
+        if (!src) return;
         // V49n-quote-currency: in ratio mode, source:switch is emitted on
         //   every coin change (to recreate the adapter with a new numerator).
         //   The early-return below would skip the recreation because srcMode
@@ -58328,7 +58391,21 @@ class DataSourceOrchestrator {
         if (this.srcMode === 'ratio' && src !== 'ratio' && this._preRatioSymbol) {
             this.symbol = this._preRatioSymbol;
             this._preRatioSymbol = null;
+            // V120-fix: also clear the captured pre-ratio source so a later
+            // re-entry into ratio mode captures the THEN-current source afresh.
+            this._preRatioSource = null;
         }
+
+        // V120-fix: capture the pre-switch source BEFORE we overwrite srcMode.
+        //   This is used by the ratio branch to decide between BybitRatioAdapter
+        //   and (Binance) RatioAdapter. The previous implementation captured
+        //   `this.srcMode` AFTER it had already been set to 'ratio', so the
+        //   fallback always evaluated to 'ratio' and we always picked the
+        //   Binance-backed adapter. The `_active` flag fallback also does not
+        //   work because by the time we reach the ratio branch, line 58308
+        //   (api.disconnectAdapter()) has already disconnected the old adapter
+        //   and set its `_active = false`.
+        const prevSrcMode = this.srcMode;
 
         this.srcMode = src;
         // V38: re-emit stream:stop now that srcMode is updated. See comment
@@ -58354,19 +58431,60 @@ class DataSourceOrchestrator {
             }
         } else if (src === 'ratio') {
             if (!this._preRatioSymbol) this._preRatioSymbol = this.symbol;
-            // V120: remember which exchange we came from so we pick the right ratio adapter
-            this._preRatioSource = this.srcMode;
+            // V120-fix: remember which exchange we came from so we pick the
+            //   right ratio adapter. Only capture on the FIRST entry into
+            //   ratio mode — if the user is already in ratio mode and is just
+            //   changing the numerator coin, _preRatioSource is already set
+            //   (e.g. 'bybit') and we must keep it so subsequent ratio
+            //   rebuilds stay on Bybit.
+            if (!this._preRatioSource) this._preRatioSource = prevSrcMode;
             const ratioCfg = this._ratioConfig || { numerator: 'DOGEUSDT', denominator: 'ETHUSDT' };
-            // V120: use BybitRatioAdapter if previous source was bybit,
-            //   otherwise use Binance RatioAdapter (default, faster API)
-            const prevSrc = this._preRatioSource || this.srcMode;
-            const useBybit = prevSrc === 'bybit' || this._adapters.bybit?._active === true;
+            // V120: use BybitRatioAdapter if the source we came from was bybit,
+            //   otherwise use Binance RatioAdapter (default, faster API).
+            //   V120-fix: prevSrcMode is the local captured BEFORE srcMode was
+            //   overwritten to 'ratio', so it correctly reflects the exchange
+            //   the user was actually on.
+            const prevSrc = this._preRatioSource || prevSrcMode;
+            const useBybit = prevSrc === 'bybit';
             const AdapterClass = useBybit ? BybitRatioAdapter : RatioAdapter;
+            // V120-fix-2: ByBitAdapter uses `category` ('linear'/'spot')
+            //   instead of `isPerp`, so we check BOTH patterns. The active
+            //   adapter may already be disconnected (line 58308
+            //   api.disconnectAdapter()), so we also check the bybit adapter
+            //   in the registry as a fallback.
+            //   When ratioConfig does NOT explicitly set numeratorIsPerp
+            //   (e.g. when entering ratio via the Quote-Currency button, which
+            //   only sends {numerator, denominator}), fall back to the
+            //   orchestrator's current perp state. This preserves the spot/perp
+            //   mode the user was in BEFORE entering ratio — e.g. if the user
+            //   was on HYPEUSDT (linear/perp) on ByBit and then picked BTC as
+            //   the quote currency, the ratio adapter should fetch HYPE from
+            //   the perp endpoint (which has 615 days of history) instead of
+            //   the spot endpoint (which only has 397 days).
+            const _curAdapter = this.dataAdapter || this._adapters?.[prevSrcMode];
+            const _orchIsPerp = _curAdapter?.isPerp === true
+                             || (typeof _curAdapter?.category === 'string' && _curAdapter.category === 'linear')
+                             || this.isPerp === true;
+            const numIsPerp  = ratioCfg.numeratorIsPerp   !== undefined ? !!ratioCfg.numeratorIsPerp   : _orchIsPerp;
+            const denIsPerp  = ratioCfg.denominatorIsPerp !== undefined ? !!ratioCfg.denominatorIsPerp : false;
+            // V120-fix-debug: log adapter selection so we can diagnose if the
+            //   wrong adapter is picked.
+            try {
+                console.log('[V120-ratio-debug]', {
+                    prevSrcMode, _preRatioSource: this._preRatioSource,
+                    prevSrc, useBybit, adapterName: AdapterClass.name,
+                    ratioCfg, srcModeBefore: prevSrcMode,
+                    orchIsPerp: this.isPerp,
+                    curAdapterCategory: _curAdapter?.category,
+                    curAdapterIsPerp: _curAdapter?.isPerp,
+                    _orchIsPerp, numIsPerp, denIsPerp,
+                });
+            } catch(_) {}
             const adapter = new AdapterClass({
                 numerator: ratioCfg.numerator,
                 denominator: ratioCfg.denominator,
-                numeratorIsPerp: ratioCfg.numeratorIsPerp,
-                denominatorIsPerp: ratioCfg.denominatorIsPerp,
+                numeratorIsPerp: numIsPerp,
+                denominatorIsPerp: denIsPerp,
                 timeframe: this.timeframe,
                 fetchLimit: 1000,
                 minRequestInterval: 500,
@@ -58393,6 +58511,14 @@ class DataSourceOrchestrator {
     /** Handle source:param — change symbol/timeframe/category */
     async _onParam(evt) {
         const { param, value } = evt.payload;
+        // V120-fix-debug: log ratioConfig param events
+        if (param === 'ratioConfig') {
+            try { console.log('[V120-param-debug] ratioConfig', {
+                value, srcMode: this.srcMode,
+                _preRatioSource: this._preRatioSource,
+                source: evt.source,
+            }); } catch(_) {}
+        }
         // Allow falsy values for boolean params (isPerp: false). Other param
         // types (symbol, timeframe, bybitCategory, ratioConfig) require a
         // truthy value — empty string / 0 / null would be rejected below by
@@ -59063,7 +59189,18 @@ class SourceUIController {
                     return;
                 }
                 // Store the ratio config on the orchestrator via a custom event
-                this.bus.emit('source:param', { param: 'ratioConfig', value: { numerator: parts[0], denominator: parts[1] } }, 'SourceUIController');
+                // V120-fix: pass numeratorIsPerp from the current orchestrator
+                //   state so the ratio adapter uses the same endpoint (spot vs
+                //   perp) the user was in. Without this, the ratio adapter
+                //   defaults to spot.
+                //   V120-fix-2: ByBitAdapter uses `category` ('linear'/'spot')
+                //   instead of `isPerp`, so we need to check BOTH patterns.
+                const orch = window._chart?.orchestrator;
+                const curAdapter = orch?._getActiveAdapter?.();
+                const curIsPerp = curAdapter?.isPerp === true
+                               || (typeof curAdapter?.category === 'string' && curAdapter.category === 'linear')
+                               || orch?.isPerp === true;
+                this.bus.emit('source:param', { param: 'ratioConfig', value: { numerator: parts[0], denominator: parts[1], numeratorIsPerp: curIsPerp } }, 'SourceUIController');
             }
             this.bus.emit('source:switch', { src: next }, 'SourceUIController');
         }, { signal: sig });
@@ -66601,8 +66738,16 @@ class CoinPicker {
                 const curSymbol = orch?.symbol || 'BTCUSDT';
                 const num = curSymbol.includes('/') ? curSymbol.split('/')[0] : curSymbol;
                 if (isUsdt) {
-                    // Reset to plain spot/futures mode
-                    const src = orch?.srcMode === 'bybit' ? 'bybit' : 'binance';
+                    // Reset to plain spot/futures mode.
+                    // V120-fix: srcMode is 'ratio' while in ratio mode, so the
+                    //   previous logic `orch?.srcMode === 'bybit'` was always
+                    //   false — the user always got dropped back to Binance.
+                    //   Use the captured _preRatioSource instead so ByBit users
+                    //   stay on ByBit when exiting ratio.
+                    const preSrc = orch?._preRatioSource;
+                    const src = preSrc === 'bybit' ? 'bybit'
+                              : preSrc === 'coinbase' ? 'coinbase'
+                              : (orch?.srcMode === 'bybit' ? 'bybit' : 'binance');
                     const sym = orch?._preRatioSymbol || num;
                     ch.bus.emit('source:switch', { src }, 'CoinPicker');
                     setTimeout(() => {
@@ -66610,7 +66755,20 @@ class CoinPicker {
                     }, 300);
                 } else {
                     const denom = quote + 'USDT';
-                    ch.bus.emit('source:param', { param: 'ratioConfig', value: { numerator: num, denominator: denom } }, 'CoinPicker');
+                    // V120-fix: pass numeratorIsPerp so the ratio adapter
+                    //   fetches from the same endpoint (spot vs perp) the
+                    //   user was just looking at. Without this, the ratio
+                    //   adapter defaults to spot, which for perp-only coins
+                    //   (e.g. HYPE on ByBit linear) returns a shorter history.
+                    //   V120-fix-2: ByBitAdapter uses `category` ('linear'/'spot')
+                    //   instead of `isPerp`, so we need to check BOTH patterns.
+                    //   `linear` = perp, `spot` = spot. Also check orch.isPerp
+                    //   as a fallback (set by source:param isPerp on Binance).
+                    const curAdapter = orch?._getActiveAdapter?.();
+                    const curIsPerp = curAdapter?.isPerp === true
+                                   || (typeof curAdapter?.category === 'string' && curAdapter.category === 'linear')
+                                   || orch?.isPerp === true;
+                    ch.bus.emit('source:param', { param: 'ratioConfig', value: { numerator: num, denominator: denom, numeratorIsPerp: curIsPerp } }, 'CoinPicker');
                     ch.bus.emit('source:switch', { src: 'ratio' }, 'CoinPicker');
                 }
             }
@@ -68722,6 +68880,14 @@ const ChartStatePersistence = (() => {
             // Ratio source — save numerator/denominator if applicable
             if (orch?.srcMode === 'ratio' && orch._ratioConfig) {
                 state.source.ratioConfig = { ...orch._ratioConfig };
+                // V120-fix: also save which exchange we came from so the
+                //   restore picks the correct ratio adapter (Bybit vs Binance).
+                //   Otherwise the orchestrator's default srcMode ('binance')
+                //   would be used and the Bybit ratio adapter would never be
+                //   selected on page reload.
+                if (orch._preRatioSource) {
+                    state.source.preRatioSource = orch._preRatioSource;
+                }
             }
             // Bybit category
             if (orch?.srcMode === 'bybit' && orch.bybitCategory) {
@@ -69079,6 +69245,15 @@ const ChartStatePersistence = (() => {
                         orch._ratioConfig = state.source.ratioConfig;
                         if (state.source.ratioConfig.numerator) {
                             orch._preRatioSymbol = state.source.ratioConfig.numerator;
+                        }
+                        // V120-fix: restore the captured pre-ratio source so
+                        //   the ratio-branch adapter selection picks the right
+                        //   adapter (BybitRatioAdapter vs Binance RatioAdapter).
+                        //   Must be set BEFORE source:switch because the ratio
+                        //   branch in _onSwitch reads `_preRatioSource` (and the
+                        //   local `prevSrcMode`) to decide which adapter to use.
+                        if (state.source.preRatioSource) {
+                            orch._preRatioSource = state.source.preRatioSource;
                         }
                     }
 
@@ -69784,7 +69959,16 @@ if (window._chart && window.ChartStatePersistence) {
                     if (orch && orch.srcMode !== 'ratio') {
                         const curSymbol = orch.symbol || 'BTCUSDT';
                         const denom = quote + 'USDT';
-                        ch.bus.emit('source:param', { param: 'ratioConfig', value: { numerator: curSymbol, denominator: denom } }, 'QuoteCurrency');
+                        // V120-fix: pass numeratorIsPerp from the current
+                        //   orchestrator state so the ratio adapter uses the
+                        //   same endpoint (spot vs perp) the user was in.
+                        //   V120-fix-2: ByBitAdapter uses `category` ('linear'/'spot')
+                        //   instead of `isPerp`, so check BOTH patterns.
+                        const curAdapter = orch?._getActiveAdapter?.();
+                        const curIsPerp = curAdapter?.isPerp === true
+                                       || (typeof curAdapter?.category === 'string' && curAdapter.category === 'linear')
+                                       || orch?.isPerp === true;
+                        ch.bus.emit('source:param', { param: 'ratioConfig', value: { numerator: curSymbol, denominator: denom, numeratorIsPerp: curIsPerp } }, 'QuoteCurrency');
                         ch.bus.emit('source:switch', { src: 'ratio' }, 'QuoteCurrency');
                     }
                 }
