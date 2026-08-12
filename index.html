@@ -56660,29 +56660,47 @@ class CoinListService {
 
     async _fetchBybit() {
         const results = [];
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 5000);
+        // V121-fix: each fetch gets its own AbortController with 10s timeout.
+        //   Previously all 3 requests shared one 5s controller — if
+        //   instruments-info took 2s and linear tickers took 2s, the spot
+        //   tickers request (or the tail of linear tickers) was aborted.
+        //   This caused coins like TUTUSDT (position 709/815 in the list)
+        //   to be missing from the picker — they were after the cutoff.
+        const mkCtrl = () => {
+            const c = new AbortController();
+            const t = setTimeout(() => c.abort(), 10000);
+            return { c, t };
+        };
         // V121-fix: fetch instruments-info for linear to get launchTime.
         //   The tickers endpoint does NOT return listingDate — it's only
         //   available in instruments-info. Without this, all ByBit coins
         //   have launchTime=null and the "Listed" filter returns empty.
+        //   Note: instruments-info returns max 500 items — coins beyond
+        //   that (like TUTUSDT at position 709) won't have launchTime.
+        //   Paprika first_data_at fills the gap as a fallback.
         const launchTimeMap = new Map();
-        try {
-            const infoResp = await fetch('https://api.bybit.com/v5/market/instruments-info?category=linear', { signal: ctrl.signal });
-            if (infoResp.ok) {
-                const infoData = await infoResp.json();
-                const infoList = infoData?.result?.list || [];
-                for (const item of infoList) {
-                    if (item.symbol && item.launchTime) {
-                        const ms = parseInt(item.launchTime, 10);
-                        if (isFinite(ms) && ms > 0) launchTimeMap.set(item.symbol, ms);
+        {
+            const { c, t } = mkCtrl();
+            try {
+                const infoResp = await fetch('https://api.bybit.com/v5/market/instruments-info?category=linear', { signal: c.signal });
+                if (infoResp.ok) {
+                    const infoData = await infoResp.json();
+                    const infoList = infoData?.result?.list || [];
+                    for (const item of infoList) {
+                        if (item.symbol && item.launchTime) {
+                            const ms = parseInt(item.launchTime, 10);
+                            if (isFinite(ms) && ms > 0) launchTimeMap.set(item.symbol, ms);
+                        }
                     }
                 }
-            }
-        } catch (e) { /* CORS or timeout — skip launchTime enrichment */ }
-        try {
+            } catch (e) { /* CORS or timeout — skip launchTime enrichment */ }
+            clearTimeout(t);
+        }
+        {
+            const { c, t } = mkCtrl();
+            try {
             // Linear (perp) tickers
-            const resp = await fetch('https://api.bybit.com/v5/market/tickers?category=linear', { signal: ctrl.signal });
+            const resp = await fetch('https://api.bybit.com/v5/market/tickers?category=linear', { signal: c.signal });
             if (resp.ok) {
                 const data = await resp.json();
                 const tickers = data?.result?.list || [];
@@ -56710,11 +56728,15 @@ class CoinListService {
                     });
                 }
             }
-        } catch (e) { /* skip */ }
+            } catch (e) { /* skip */ }
+            clearTimeout(t);
+        }
 
-        try {
+        {
+            const { c, t } = mkCtrl();
+            try {
             // Spot tickers
-            const resp = await fetch('https://api.bybit.com/v5/market/tickers?category=spot', { signal: ctrl.signal });
+            const resp = await fetch('https://api.bybit.com/v5/market/tickers?category=spot', { signal: c.signal });
             if (resp.ok) {
                 const data = await resp.json();
                 const tickers = data?.result?.list || [];
@@ -56738,9 +56760,10 @@ class CoinListService {
                     });
                 }
             }
-        } catch (e) { /* skip */ }
+            } catch (e) { /* skip */ }
+            clearTimeout(t);
+        }
 
-        clearTimeout(timer);
         return results;
     }
 
