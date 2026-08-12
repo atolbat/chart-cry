@@ -15261,6 +15261,13 @@ function computePanelHeights(activeIds, ratios, avail, gap, plotBottom, plotTop)
     const heights = {};
     if (activeIds.length === 0) return { heights, _activeCurTop: plotTop };
 
+    // V121-mobile-layout: safety clamp — if avail is 0 or negative (e.g.
+    //   wrapper height collapsed due to mobile URL bar show/hide timing),
+    //   give each panel at least 1px so the layout doesn't break.
+    //   Without this, panels get 0 or negative height → indicators don't
+    //   render → chart appears empty until next resize.
+    if (avail <= 0) avail = Math.max(1, plotBottom - plotTop);
+
     const total = activeIds.reduce((s, id) => s + ratios[id], 0) || 1;
     const totalGap = gap * (activeIds.length - 1);
 
@@ -49412,8 +49419,15 @@ class CanvasLifecycle {
         //   window.innerHeight and the clamp is a no-op.
         const vh = window.innerHeight || document.documentElement.clientHeight || r.height;
         const vw = window.innerWidth  || document.documentElement.clientWidth  || r.width;
+        // V121-mobile-layout: on mobile, visualViewport.height is the ACTUAL
+        //   visible height (excludes URL bar). window.innerHeight may include
+        //   the URL bar area on some browsers, giving a taller value than the
+        //   visible area. Use the SMALLER of the two to ensure the chart fits
+        //   within the visible viewport.
+        const vvh = window.visualViewport?.height;
+        const effectiveVh = (vvh && vvh > 0 && vvh < vh) ? vvh : vh;
         const w  = Math.min(r.width,  vw);
-        const h  = Math.min(r.height, vh);
+        const h  = Math.min(r.height, effectiveVh);
         if (r.height > vh + 1 || r.width > vw + 1) {
             console.warn('[canvas-height-clamp] wrapper rect exceeds viewport — clamping', {
                 rectW: r.width, rectH: r.height, viewportW: vw, viewportH: vh,
@@ -50252,6 +50266,24 @@ class Engine {
         //   rotation) — fires before 'resize' on most mobile browsers, so
         //   we get an earlier resize. Debounced via the same _onResize handler.
         window.addEventListener('orientationchange', this._onResize);
+        // V121-mobile-layout: listen to visualViewport.resize for mobile URL
+        //   bar show/hide. On mobile, window.innerHeight doesn't always update
+        //   synchronously when the URL bar appears/disappears, but visualViewport
+        //   fires immediately. Without this, the chart can end up with stale
+        //   height → header-bottom pushed off-screen → panels clipped.
+        if (window.visualViewport) {
+            this._onVpResize = () => {
+                if (this._resizeTimer) clearTimeout(this._resizeTimer);
+                this._resizeTimer = setTimeout(() => {
+                    this._resizeTimer = null;
+                    this.resize();
+                }, this._resizeDebounceMs);
+            };
+            window.visualViewport.addEventListener('resize', this._onVpResize);
+            // Also listen for scroll — on iOS, URL bar hide/show fires
+            // visualViewport.resize but not always scroll. This is a safety net.
+            window.visualViewport.addEventListener('scroll', this._onVpResize);
+        }
         this.resize();
         // V51-canvas-height-poll: ResizeObserver should catch all wrapper
         //   size changes, but some scenarios bypass it:
@@ -50260,11 +50292,11 @@ class Engine {
         //     • iOS Safari dynamic viewport changes
         //     • DOM mutations that change flex layout without triggering
         //       ResizeObserver (rare, but possible with detached elements)
-        //   Poll every 2s as a safety net. If the wrapper's measured height
+        //   Poll every 1s as a safety net. If the wrapper's measured height
         //   differs from the layout's stored height by > 1px, force a resize.
-        //   V55-visibility-resize: kept at 2s — the aggressive retry pattern
-        //   in _onVisibilityChange (0/100/300/700/1500ms) handles the unlock
-        //   case without needing a faster poll. 500ms poll was too heavy.
+        //   V121-mobile-layout: reduced from 2s to 1s — faster recovery when
+        //   visualViewport listener misses a URL bar transition (rare on
+        //   older Android browsers).
         this._heightPollTimer = setInterval(() => {
             if (this._destroyed) return;
             const wrap = this._rendering?.canvasLifecycle?.canvasWrapper
@@ -50272,10 +50304,14 @@ class Engine {
                       || this._container;
             if (!wrap) return;
             const r = wrap.getBoundingClientRect();
-            if (r.height > 0 && Math.abs(r.height - (this.layout?.height ?? 0)) > 1) {
+            // V121-mobile-layout: also check against visualViewport.height
+            //   for more accurate detection of URL bar show/hide.
+            const vvh = window.visualViewport?.height;
+            const targetH = (vvh && vvh > 0) ? Math.min(r.height, vvh) : r.height;
+            if (targetH > 0 && Math.abs(targetH - (this.layout?.height ?? 0)) > 1) {
                 this.resize();
             }
-        }, 2000);
+        }, 1000);
     }
 
     /** Phase 1: Clone config, extract DOM refs */
@@ -50975,6 +51011,11 @@ class Engine {
         }
         this._destroyed = true;
         window.removeEventListener('resize', this._onResize);
+        // V121-mobile-layout: clean up visualViewport listeners
+        if (this._onVpResize && window.visualViewport) {
+            window.visualViewport.removeEventListener('resize', this._onVpResize);
+            window.visualViewport.removeEventListener('scroll', this._onVpResize);
+        }
         this.hooks.clear();
     }
 }
@@ -52073,6 +52114,15 @@ class DataSourceAdapter {
     async _tryLoadFromCache(intervalMs, gen) {
         if (!this.isCacheEnabled || !this.sourceId) return false;
         const entry = await this.dataCache.get(this.sourceId, this.symbol, this.timeframe);
+        try { devLog('[V121-cache] _tryLoadFromCache', {
+            sourceId: this.sourceId, symbol: this.symbol, tf: this.timeframe,
+            entryFound: !!entry, entryCount: entry?.count, entryLastX: entry?.lastX,
+            gen, switchGen: this._switchGen, stale: this._isStale(gen),
+            firstCandleX: entry?.candles?.[0]?._x,
+            firstCandleClose: entry?.candles?.[0]?.close,
+            lastCandleX: entry?.candles?.[entry?.candles?.length - 1]?._x,
+            lastCandleClose: entry?.candles?.[entry?.candles?.length - 1]?.close,
+        }); } catch(_) {}
         if (!entry || entry.count === 0) return false;
 
         // If a newer switch happened while we were awaiting the cache,
@@ -52275,12 +52325,21 @@ class DataSourceAdapter {
      *  Serialized via _tickLock to prevent concurrent WS + REST ticks from
      *  causing duplicate candles or stale-state updates. */
     async _applyTick(tick, wsGen) {
+        // V121-fix: check generation BEFORE acquiring the lock. If this tick
+        //   is stale (from an old WS connection), reject it immediately —
+        //   don't wait in the _tickLock queue. Without this early check, a
+        //   stale WS tick can block _fetchAndStream's loadHistory call,
+        //   preventing the new symbol's data from loading.
+        if (wsGen !== undefined && wsGen !== this._switchGen) return false;
         // Serialize: chain onto the previous tick's promise so only one processes at a time
         const prev = this._tickLock;
         let resolve;
         this._tickLock = new Promise(r => resolve = r);
         try {
             await prev;  // wait for any in-flight tick to complete
+            // V121-fix: re-check generation AFTER acquiring the lock — a
+            //   switchAsset may have happened while we were waiting.
+            if (wsGen !== undefined && wsGen !== this._switchGen) return false;
             return await this._applyTickInner(tick, wsGen);
         } finally {
             resolve();
@@ -52739,6 +52798,17 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
     }
 
     async switchAsset(params) {
+        // V121-debug: log switchAsset entry
+        try { devLog('[V121-switch] switchAsset ENTRY', {
+            from: this.symbol,
+            to: params.symbol,
+            fromTf: this.timeframe,
+            toTf: params.timeframe,
+            switchGen_before: this._switchGen,
+            active: this._active,
+            wsConnected: this._wsConnected,
+            source: params.source || '(unknown)',
+        }); } catch(_) {}
         // switchAsset, regardless of which subclass overrides this method or
         // which connection mode (internal/WS) was previously active. Previously
         // only WebSocketExchangeAdapter.switchAsset called _closeWebSocket, so
@@ -52757,6 +52827,16 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
         // switchAsset call will detect its generation is stale and abort silently.
         this._switchGen++;
         const myGen = this._switchGen;
+
+        // V121-cache-fix: save the CURRENT symbol's chart data to cache
+        //   BEFORE switching to the new symbol.
+        //   V121-fix-3: REMOVED the cache-save from switchAsset entirely.
+        //   It was using this.symbol which is ALREADY the new symbol (set
+        //   by _onParam before calling switchAsset). This caused cache
+        //   poisoning: BTC data saved under ETH key.
+        //   The cache-save is now done ONLY in _onParam, BEFORE adapter.symbol
+        //   is overwritten. Direct switchAsset callers (StatePersistence) don't
+        //   need this because they go through _onParam too.
 
         // Capture viewport anchor before switching (preserves zoom & position).
         // The anchor stores absolute timestamps (xMin, xMax), so it naturally
@@ -52785,20 +52865,24 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
             //   Empty / null / whitespace-only symbols still rejected.
             if (!params.symbol || /[\s\u0000-\u001f?&#/]/.test(params.symbol)) {
                 console.error(`Invalid symbol format: "${params.symbol}"`);
+                try { devLog('[V121-switch] REJECTED: invalid symbol format', { symbol: params.symbol }); } catch(_) {}
                 // Reconnect with current symbol — don't leave adapter disconnected
                 this._scheduleReconnect();
                 return;
             }
+            try { devLog('[V121-switch] symbol changed', { from: this._symbolBeforeSwitch || this.symbol, to: params.symbol }); } catch(_) {}
             this.symbol = params.symbol;
         }
         if (params.timeframe) {
             // Validate timeframe format — only alphanumeric allowed
             if (!/^[A-Za-z0-9]+$/.test(params.timeframe)) {
                 console.error(`Invalid timeframe format: "${params.timeframe}"`);
+                try { devLog('[V121-switch] REJECTED: invalid tf format', { tf: params.timeframe }); } catch(_) {}
                 // Reconnect with current timeframe — don't leave adapter disconnected
                 this._scheduleReconnect();
                 return;
             }
+            try { devLog('[V121-switch] tf changed', { from: this.timeframe, to: params.timeframe }); } catch(_) {}
             this.timeframe = params.timeframe;
         }
         this._resetSwitchState(params);
@@ -52831,21 +52915,21 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
         //   from cache almost instantly and call endTransition, but the
         //   brief dimming flicker is still visible. By skipping beginTransition
         //   when cache has data, we avoid the flicker entirely.
-        let _skipTransition = false;
-        if (this._active && this.chartApi && this.dataCache && params.symbol) {
-            try {
-                const cached = await this.dataCache.get(this.sourceId, params.symbol, this.timeframe);
-                if (cached && cached.candles && cached.candles.length > 0) {
-                    _skipTransition = true;
-                }
-            } catch (_) { /* cache check failed — proceed with transition */ }
-        }
-        if (this._active && this.chartApi && !_skipTransition) {
+        // V121-fix: do NOT await dataCache.get here — it blocks switchAsset
+        //   and allows stale WS ticks to be applied to the old symbol's data
+        //   while we wait. The cache check is a minor visual optimization
+        //   (skip dimming), not worth blocking the switch for. Always
+        //   beginTransition — the flicker is minimal and the switch is fast.
+        if (this._active && this.chartApi) {
             this.chartApi.beginTransition();
         }
 
         if (this._active) {
+            try { devLog('[V121-switch] calling _fetchAndStream', { gen: myGen, symbol: this.symbol, tf: this.timeframe }); } catch(_) {}
             await this._fetchAndStream(myGen);
+            try { devLog('[V121-switch] _fetchAndStream DONE', { gen: myGen, symbol: this.symbol, dataCount: this.chartApi?.getDataRange?.()?.count || 0 }); } catch(_) {}
+        } else {
+            try { devLog('[V121-switch] SKIP _fetchAndStream: adapter not active', { gen: myGen }); } catch(_) {}
         }
     }
 
@@ -53263,7 +53347,11 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
             //    The exchange rate limiter (_canRequest) will throttle if
             //    we exceed the limit; we just won't fill all gaps in one
             //    pass, but the chart will still be usable.
-            const maxFills = Math.min(Math.max(expectedMissing * 2 + 5, 10), 100);
+            // V121-gap-fix: increased maxFills cap from 100 to 500 for large
+            //   gaps. Each request returns up to 1000 candles, so 500 requests
+            //   covers 500k candles (~347 days of 1m data). The rate limiter
+            //   (_canRequest) prevents flooding — requests are throttled.
+            const maxFills = Math.min(Math.max(expectedMissing * 2 + 5, 10), 500);
             await this._detectAndFillGaps(intervalMs, { scope: 'all', maxFills });
 
             // Stale guard after gap fills
@@ -53379,10 +53467,20 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
 
         const ownsTransition = (gen === this._switchGen);
 
-        this._openWebSocket();
+        // V121-fix: do NOT open WebSocket here — it was opening BEFORE
+        //   loadHistory, so stale WS ticks from the old symbol could be
+        //   applied to the new symbol's data (or to old data that hasn't
+        //   been replaced yet). WS is now opened AFTER data is loaded
+        //   (at the end of the try block, before finally).
 
         try {
             const intervalMs = this._tfToMs(this.timeframe);
+            // V121-debug: log _fetchAndStream entry
+            try { devLog('[V121-fetch] _fetchAndStream ENTRY', {
+                gen, switchGen: this._switchGen, stale: gen !== this._switchGen,
+                symbol: this.symbol, tf: this.timeframe,
+                chartApiNull: !this.chartApi,
+            }); } catch(_) {}
             // V37: do NOT call chartApi.setIntervalMs() here — it would update
             // config.settings.xAxis.intervalMs immediately, but the old candle
             // data is still in the DataStore (loadHistory hasn't run yet). The
@@ -53395,8 +53493,12 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
             // dimmed until both are ready, then endTransition() renders once.
 
             const cacheHit = await this._tryLoadFromCache(intervalMs, gen);
+            try { devLog('[V121-fetch] cacheHit result', { cacheHit, gen, switchGen: this._switchGen, stale: this._isStale(gen) }); } catch(_) {}
 
-            if (this._isStale(gen)) return;
+            if (this._isStale(gen)) {
+                try { devLog('[V121-fetch] STALE after cacheHit — aborting', { gen, switchGen: this._switchGen }); } catch(_) {}
+                return;
+            }
             // FIX V49n-adapter: re-check chartApi after every await — disconnect()
             // can null it between awaits.
             if (!this.chartApi) return;
@@ -53405,10 +53507,22 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
                 // V37: now that cached candles are loaded, apply the new interval
                 this.chartApi.setIntervalMs(intervalMs);
 
+                // V121-gap-fix: when loading from cache, compute how many
+                //   candles we might have missed since the cache was written.
+                //   The cache's lastX may be hours/days old — we need to
+                //   request all candles from lastX onward, not just 2.
+                //   Without this, switching back to a cached asset shows old
+                //   candles and only fetches 2 new ones, missing the gap.
+                const range = this.chartApi.getDataRange();
+                const now = Date.now();
+                const cacheAgeMs = now - (range.lastX || 0);
+                const expectedMissing = Math.floor(cacheAgeMs / intervalMs);
+                const lookbackBars = Math.max(2, expectedMissing + 2);
+
                 // Cache hit: chart is already showing cached data.
                 // Refresh recent candles from REST to update the forming candle
                 // and add any new candles that formed since the cache was written.
-                await this._refreshRecentCandles(intervalMs);
+                await this._refreshRecentCandles(intervalMs, { lookbackBars });
                 // Re-check after another await
                 if (this._isStale(gen)) return;
 
@@ -53478,7 +53592,9 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
                 //   _saveToCache to store B's candles under C's key (cache poisoning).
                 const saveSymbol = this.symbol;
                 const saveTf     = this.timeframe;
+                try { devLog('[V121-fetch] before loadHistory', { symbol: saveSymbol, tf: saveTf, candleCount: candles.length, gen, switchGen: this._switchGen }); } catch(_) {}
                 const result = await this.chartApi.loadHistory(candles);
+                try { devLog('[V121-fetch] after loadHistory', { resultCount: result?.count, gen, switchGen: this._switchGen, stale: this._isStale(gen) }); } catch(_) {}
 
                 // V50 FIX: stale check AFTER loadHistory, BEFORE save — critical.
                 //   Without this, a concurrent switchAsset could have bumped _switchGen
@@ -53531,6 +53647,17 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
 
                 this.chartApi.requestRender();
                 this._updateStatus('REST loaded, WS connecting...');
+            }
+
+            // V121-fix: open WebSocket AFTER data is loaded. Previously WS
+            //   was opened at the top of _fetchAndStream (before loadHistory),
+            //   which allowed stale ticks from the old symbol to be applied
+            //   to the new symbol's data. Now WS opens only after the new
+            //   data is in the DataStore, so ticks match the correct symbol.
+            //   The _switchGen guard in _applyTick ensures only ticks from
+            //   this WS connection (wsGen === _switchGen) are applied.
+            if (gen === this._switchGen) {
+                this._openWebSocket();
             }
 
         } catch (err) {
@@ -53603,7 +53730,18 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
             //   based on opts.lookbackBars (from _catchUpAfterHidden) or
             //   default to 2. The limit is set to cover the full gap.
             const lookback = opts.lookbackBars || 2;
-            const startTime = Math.max(0, range.lastX - intervalMs * lookback);
+            // V121-gap-fix: request from lastX + intervalMs (the NEXT candle
+            //   after our last one). The old code used startTime = lastX,
+            //   which returned the last candle we already have + new ones.
+            //   But if the gap is large, the exchange returns only 1000
+            //   candles from startTime — and the first one is the old candle
+            //   we already have, wasting a slot.
+            //   By requesting from lastX + intervalMs, we get ONLY new
+            //   candles. mergeRecentCandles will still refresh the last
+            //   candle via the poll tick or WS update.
+            //   For catch-up (opts.lookbackBars set), this ensures we get
+            //   the maximum number of NEW candles per request.
+            const startTime = Math.max(0, range.lastX + intervalMs);
             // V94: override _refreshCandleLimit to cover the full gap.
             //   Default is 50, but if we missed 200 candles, we need 200+.
             //   Binance caps at 1000 per request — if lookback > 1000,
@@ -53636,7 +53774,11 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
                 this.chartApi.requestRender();
             }
 
-            // Detect and fill gaps in existing data (e.g., exchange maintenance holes)
+            // V121-gap-fix: check if we still have a gap between the old lastX
+            //   and the new data. If the exchange returned fewer candles than
+            //   expected (gap > 1000 candles), we need paginated fetch.
+            //   _detectAndFillGaps handles this by scanning for internal gaps
+            //   and filling them one at a time.
             await this._detectAndFillGaps(intervalMs);
 
             // Stale guard after gap fills
@@ -53695,21 +53837,49 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
                 if (!this._canRequest()) break;
                 if (fillCount >= maxFills) break;
 
-                this._markRequest();
-                fillCount++;
-                // Request candles from just after gap.afterX to just before gap.beforeX
-                const url = this._buildGapFillUrl(gap.afterX, gap.beforeX);
-                const data = await this._fetchJson(url);
+                // V121-gap-fix: for large gaps, fetch in PAGES of 1000 candles.
+                //   A single request returns max 1000 candles. If the gap spans
+                //   more (e.g. 5000 candles on 1m after 3.5h absence), we need
+                //   multiple paginated requests to fill it completely.
+                let gapAfterX = gap.afterX;
+                const gapBeforeX = gap.beforeX;
+                let gapRemaining = Math.floor((gapBeforeX - gapAfterX) / intervalMs);
+                let pageRequestsForThisGap = 0;
+                const MAX_PAGES_PER_GAP = 50;  // safety limit: 50 × 1000 = 50k candles
 
-                // Stale guard — a newer switchAsset happened during gap fill
-                if (this._switchGen !== myGen) break;
+                while (gapRemaining > 0 && pageRequestsForThisGap < MAX_PAGES_PER_GAP && fillCount < maxFills) {
+                    if (!this._canRequest()) break;
+                    if (this._switchGen !== myGen) break;
 
-                const fillCandles = this._transformKlines(data);
+                    this._markRequest();
+                    fillCount++;
+                    pageRequestsForThisGap++;
+                    // Request candles from just after gapAfterX
+                    const url = this._buildGapFillUrl(gapAfterX, gapBeforeX);
+                    const data = await this._fetchJson(url);
 
-                if (fillCandles.length > 0) {
-                    // Use mergeCandles which can insert into the middle
-                    const applied = await this.chartApi.mergeCandles(fillCandles);
-                    if (applied > 0) anyApplied = true;
+                    // Stale guard — a newer switchAsset happened during gap fill
+                    if (this._switchGen !== myGen) break;
+
+                    const fillCandles = this._transformKlines(data);
+
+                    if (fillCandles.length > 0) {
+                        // Use mergeCandles which can insert into the middle
+                        const applied = await this.chartApi.mergeCandles(fillCandles);
+                        if (applied > 0) anyApplied = true;
+                        // Advance gapAfterX to the last fetched candle
+                        const lastFetchedX = fillCandles[fillCandles.length - 1]._x;
+                        if (lastFetchedX > gapAfterX) {
+                            gapAfterX = lastFetchedX + intervalMs;
+                            gapRemaining = Math.floor((gapBeforeX - gapAfterX) / intervalMs);
+                        } else {
+                            // No progress — break to avoid infinite loop
+                            break;
+                        }
+                    } else {
+                        // No candles returned — gap can't be filled
+                        break;
+                    }
                 }
             }
 
@@ -56492,6 +56662,24 @@ class CoinListService {
         const results = [];
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 5000);
+        // V121-fix: fetch instruments-info for linear to get launchTime.
+        //   The tickers endpoint does NOT return listingDate — it's only
+        //   available in instruments-info. Without this, all ByBit coins
+        //   have launchTime=null and the "Listed" filter returns empty.
+        const launchTimeMap = new Map();
+        try {
+            const infoResp = await fetch('https://api.bybit.com/v5/market/instruments-info?category=linear', { signal: ctrl.signal });
+            if (infoResp.ok) {
+                const infoData = await infoResp.json();
+                const infoList = infoData?.result?.list || [];
+                for (const item of infoList) {
+                    if (item.symbol && item.launchTime) {
+                        const ms = parseInt(item.launchTime, 10);
+                        if (isFinite(ms) && ms > 0) launchTimeMap.set(item.symbol, ms);
+                    }
+                }
+            }
+        } catch (e) { /* CORS or timeout — skip launchTime enrichment */ }
         try {
             // Linear (perp) tickers
             const resp = await fetch('https://api.bybit.com/v5/market/tickers?category=linear', { signal: ctrl.signal });
@@ -56503,6 +56691,9 @@ class CoinListService {
                     if (!symbol.endsWith('USDT')) continue;
                     const base = symbol.slice(0, -4);
                     if (!base) continue;
+                    // V121-fix: use launchTime from instruments-info (not
+                    //   t.listingDate which doesn't exist in the tickers response)
+                    const lt = launchTimeMap.get(symbol) || null;
                     results.push({
                         exchange: 'bybit',
                         symbol,
@@ -56515,7 +56706,7 @@ class CoinListService {
                         // V50 FIX: use isFinite check — funding rate = 0 is valid
                         fundingRate: (() => { const v = parseFloat(t.fundingRate); return isFinite(v) ? v : null; })(),
                         openInterest: (() => { const v = parseFloat(t.openInterest); return isFinite(v) ? v : null; })(),
-                        launchTime: t.listingDate ? parseInt(t.listingDate, 10) : null,
+                        launchTime: lt,
                     });
                 }
             }
@@ -58871,11 +59062,39 @@ class DataSourceOrchestrator {
                 //   so restore + prefetch use the correct symbol. switchAsset
                 //   will still load chart data, but anchor data is restored
                 //   from cache instantly (no delay).
+                // V121-fix: save the OLD symbol's chart data to cache BEFORE
+                //   overwriting adapter.symbol. Without this, switchAsset's
+                //   cache-save logic saves old data under the NEW symbol's key
+                //   (cache poisoning). We capture oldSymbol here and pass it
+                //   to switchAsset via params._oldSymbolForCache.
+                const _oldSymbolForCache = adapter.symbol;
+                try {
+                    if (adapter.isCacheEnabled && adapter._active && adapter.chartApi && _oldSymbolForCache) {
+                        const exported = adapter.chartApi.exportAllCandles();
+                        try { devLog('[V121-cache] saving OLD symbol cache', {
+                            oldSymbol: _oldSymbolForCache,
+                            newSymbol: value,
+                            exportedCount: exported.count,
+                            firstCandleX: exported.candles?.[0]?._x,
+                            firstCandleClose: exported.candles?.[0]?.close,
+                            lastCandleX: exported.candles?.[exported.count - 1]?._x,
+                            lastCandleClose: exported.candles?.[exported.count - 1]?.close,
+                        }); } catch(_) {}
+                        if (exported.count > 0 && adapter.dataCache) {
+                            const saveTf = adapter.timeframe;
+                            const saveIntervalMs = adapter._tfToMs(saveTf);
+                            adapter.dataCache.set(adapter.sourceId, _oldSymbolForCache, saveTf, exported.candles, saveIntervalMs, {
+                                merge: false,
+                                meta: adapter._buildCacheMeta(),
+                            }).catch(() => { /* best-effort */ });
+                        }
+                    }
+                } catch (_) { /* best-effort */ }
                 try {
                     const engine = this.api?._ctx?.engine || window._chart?.engine;
                     const im = engine?.indicatorManager;
                     if (im) {
-                        const oldSymbol = adapter.symbol;
+                        const oldSymbol = _oldSymbolForCache;
                         if (oldSymbol && typeof im.saveAnchorToSymbolCache === 'function') {
                             im.saveAnchorToSymbolCache(oldSymbol);
                         }
@@ -58900,7 +59119,9 @@ class DataSourceOrchestrator {
                     }
                 } catch (_) { /* best-effort */ }
             }
+            try { devLog('[V121-switch] _onParam calling switchAsset', { param, value, adapterSymbol: adapter.symbol, adapterActive: adapter._active }); } catch(_) {}
             await adapter.switchAsset({ [param]: value });
+            try { devLog('[V121-switch] _onParam switchAsset DONE', { param, value, adapterSymbol: adapter.symbol, dataCount: this.api?.getDataRange?.()?.count || 0 }); } catch(_) {}
             // V83: prefetch AFTER switchAsset (adapter.symbol is now set by
             //   both our early set AND switchAsset). This fills any gaps
             //   in the restored cache data (e.g. new candles since cache save).
