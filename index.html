@@ -59134,7 +59134,16 @@ class DataSourceOrchestrator {
                 adapter._closeWebSocket();
                 adapter._stopPolling();
                 adapter._switchGen++;
-                // Save old data to cache (fire-and-forget)
+                // V121-fix-3: delete the NEW symbol's cache entry to prevent
+                //   loading poisoned data from a previous (buggy) session.
+                //   The cache was poisoned because switchAsset used to save
+                //   old symbol's data under the new symbol's key. Even though
+                //   that bug is fixed, the poisoned entry may still be in
+                //   session cache. Deleting it forces a fresh REST fetch.
+                if (adapter.isCacheEnabled && adapter.dataCache && value) {
+                    try { adapter.dataCache.invalidate(adapter.sourceId, value, adapter.timeframe); } catch(_) {}
+                }
+                // Save old data to cache (fire-and-forget) — safe now, _oldSymbolForCache captured before overwrite
                 try {
                     if (adapter.isCacheEnabled && adapter._active && adapter.chartApi && _oldSymbolForCache) {
                         const exported = adapter.chartApi.exportAllCandles();
