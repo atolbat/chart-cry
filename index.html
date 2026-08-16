@@ -61755,12 +61755,27 @@ class PresetManager {
             }
         }
 
+        // V121-swipe-preset: capture swipe groups from PanelCarouselManager
+        //   so presets preserve swipe group membership + active index.
+        let swipeGroups = null;
+        const cm = api.getPanelCarouselManager?.();
+        if (cm && cm._groups && cm._groups.size > 0) {
+            swipeGroups = {};
+            for (const [panelId, group] of cm._groups) {
+                swipeGroups[panelId] = {
+                    indicators: [...group.indicators],
+                    activeIdx: group.activeIdx,
+                };
+            }
+        }
+
         return {
             panels,
             indicators: indicatorSnapshots,
             panelOrder,
             panelRatios,
             panelConfigs,
+            swipeGroups,
         };
     }
 
@@ -62031,31 +62046,36 @@ class PresetManager {
                 }
             }
         }
-        // V121-swipe-fix: restore swipe groups from PanelCarouselManager.
-        //   Swipe groups are stored in localStorage (by indicator ID), but
-        //   _applySnapshot removes all indicators and re-adds them. The
-        //   carousel manager's _groups still reference the old IDs. Since
-        //   we reuse original IDs (step 4), the groups are still valid —
-        //   BUT the carousel manager needs to re-apply visibility (hide
-        //   non-active indicators). We call _restoreVisibility for each group.
+        // V121-swipe-fix: restore swipe groups from snapshot.
+        //   Unlike localStorage-based restore (which references indicator IDs
+        //   that may not match after preset load), this uses the snapshot's
+        //   own swipeGroups data — guaranteed to match the indicator IDs we
+        //   just re-created (since we reuse original IDs in step 4).
         const cm = api.getPanelCarouselManager?.();
-        if (cm && cm._groups) {
-            const allInds = api.getIndicator() || [];
-            const existingIds = new Set(allInds.map(i => i.id));
-            for (const [panelId, group] of cm._groups) {
-                // Filter out indicator IDs that no longer exist
-                group.indicators = group.indicators.filter(id => existingIds.has(id));
-                if (group.activeIdx >= group.indicators.length) {
-                    group.activeIdx = 0;
-                }
-                cm._save();
-                // Re-apply visibility: hide all except active
-                for (let i = 0; i < group.indicators.length; i++) {
-                    const ind = allInds.find(x => x.id === group.indicators[i]);
-                    if (ind) {
-                        ind.visible = (i === group.activeIdx);
+        if (cm) {
+            // Clear existing groups first (from localStorage — may be stale)
+            cm._groups.clear();
+            if (snapshot.swipeGroups) {
+                for (const [panelId, group] of Object.entries(snapshot.swipeGroups)) {
+                    if (group.indicators && group.indicators.length > 0) {
+                        // Filter to IDs that exist now
+                        const allInds = api.getIndicator() || [];
+                        const existingIds = new Set(allInds.map(i => i.id));
+                        const validIndicators = group.indicators.filter(id => existingIds.has(id));
+                        if (validIndicators.length > 0) {
+                            cm._groups.set(panelId, {
+                                indicators: validIndicators,
+                                activeIdx: Math.max(0, Math.min(group.activeIdx || 0, validIndicators.length - 1)),
+                            });
+                            // Apply visibility: active visible, others hidden
+                            for (let i = 0; i < validIndicators.length; i++) {
+                                const ind = allInds.find(x => x.id === validIndicators[i]);
+                                if (ind) ind.visible = (i === (cm._groups.get(panelId).activeIdx));
+                            }
+                        }
                     }
                 }
+                cm._save();
             }
         }
 
