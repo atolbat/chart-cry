@@ -18874,6 +18874,9 @@ class IndicatorBrick extends IndicatorBase {
                 this.params[p.name] = cfg[p.name] !== undefined ? cfg[p.name] : p.default;
             }
         }
+        // V121-offset: ensure offset param exists for all IndicatorBrick
+        //   subclasses. If the META doesn't define it, default to 0.
+        if (this.params.offset === undefined) this.params.offset = 0;
         // Apply input defaults
         this.inputs = {};
         if (Meta?.inputs) {
@@ -20587,10 +20590,12 @@ class IndicatorBrick extends IndicatorBase {
 
 
     _drawLine(ctx, data, color, lineWidth, alpha, xScale, yScale, xData, iMin, iMax) {
+        // V121-offset: shift the line horizontally by `offset` bars.
+        //   offset > 0 shifts right (into the future), offset < 0 shifts left.
+        //   Default is 0 (no shift). The offset is read from this.params.offset.
+        const offset = Math.round(this.params?.offset || 0);
         ctx.lineWidth = lineWidth;
         // V51-line-styles: apply dash style from outputStyles if set.
-        //   The outputName is the 11th arg (optional). If not provided,
-        //   default to solid (backward compat).
         const outputName = arguments[10];
         const dashStyle = outputName ? (this.outputStyles?.[outputName]?.lineStyle || 'solid') : 'solid';
         applyLineStyle(ctx, dashStyle);
@@ -20605,10 +20610,9 @@ class IndicatorBrick extends IndicatorBase {
             for (let j = 0; j <= (iMax - iMin); j++) {
                 const v = data[iMin + j];
                 if (!isFinite(v)) { started = false; continue; }
-                const px = xScale.valToPix(xData[j]);
-                // FIX V49n-perf-render: skip duplicate pixels — when multiple
-                // data points map to the same pixel column, only draw the first.
-                // This is safe (no visual difference) and reduces lineTo calls.
+                // V121-offset: shift xData index by offset
+                const xIdx = Math.max(0, Math.min(xData.length - 1, j + offset));
+                const px = xScale.valToPix(xData[xIdx]);
                 if (px === lastPx) continue;
                 lastPx = px;
                 const py = yScale.valToPix(v);
@@ -20617,15 +20621,15 @@ class IndicatorBrick extends IndicatorBase {
             }
             ctx.stroke();
         } else {
-            // V38: Pass barIdx (iMin + j) to condFn so 'above' mode can
-            // look up the close price at that index.
             let prevV = NaN, prevPx = 0, prevPy = 0;
             let started = false, curColor = null, curAlpha = alpha;
             for (let j = 0; j <= (iMax - iMin); j++) {
                 const v = data[iMin + j];
                 if (!isFinite(v)) { started = false; prevV = NaN; continue; }
                 const barIdx = iMin + j;
-                const px = xScale.valToPix(xData[j]);
+                // V121-offset: shift xData index by offset
+                const xIdx = Math.max(0, Math.min(xData.length - 1, j + offset));
+                const px = xScale.valToPix(xData[xIdx]);
                 const py = yScale.valToPix(v);
                 if (started) {
                     const segColor = condFn ? (condFn(v, prevV, barIdx) || color) : color;
@@ -43974,6 +43978,7 @@ class ToolBase extends Tool {
 
         // Total volume over the period — sum volumes of candles between p1.x and p2.x
         let totalVol = 0;
+        let barCount = 0;
         try {
             // api._ctx.dataStore is the live DataStore (NOT api._ctx.dataPort.dataStore
             //   — that path is null at runtime even though ctxKeys lists dataPort).
@@ -43983,6 +43988,7 @@ class ToolBase extends Tool {
                 const xMax = Math.max(p1.x, p2.x);
                 const [iMin, iMax] = ds.getVisibleLogicalIndices(xMin, xMax);
                 if (iMax >= iMin) {
+                    barCount = iMax - iMin + 1;
                     // Find the volume series
                     let volId = null;
                     if (ds.seriesMap['vol']) volId = 'vol';
@@ -44003,6 +44009,7 @@ class ToolBase extends Tool {
             ? (pctChange === 0 ? '0.00%' : sign(pctChange) + Math.abs(pctChange).toFixed(2) + '%')
             : '—';
         const volStr = (totalVol > 0) ? formatValue(totalVol) : '—';
+        const barsStr = barCount > 0 ? String(barCount) : '—';
 
         // Direction: if p2 is ABOVE p1 on screen (smaller py), we're "measuring up"
         //   → box goes ABOVE the rectangle. If p2 is BELOW p1 (larger py), we're
@@ -44026,11 +44033,13 @@ class ToolBase extends Tool {
         const timeW = ctx.measureText(timeStr).width;
         ctx.font = smFont;
         const volW = ctx.measureText('Vol: ' + volStr).width;
+        const barsW = ctx.measureText('Bars: ' + barsStr).width;
 
-        const contentW = Math.max(pctW, timeW, volW);
+        const contentW = Math.max(pctW, timeW, volW, barsW);
         const boxW = Math.ceil(contentW + padX * 2);
         const bigH = 22, medH = 16, smH = 14;
-        const boxH = padY * 2 + bigH + innerGap + medH + innerGap + smH;
+        // V121: added 4th line for bar count
+        const boxH = padY * 2 + bigH + innerGap + medH + innerGap + smH + innerGap + smH;
 
         // Horizontal center on rectangle
         let bx = rectLeft + rectW / 2 - boxW / 2;
@@ -44126,6 +44135,10 @@ class ToolBase extends Tool {
         ctx.font = smFont;
         ctx.fillStyle = '#8b949e';
         ctx.fillText('Vol: ' + volStr, centerX, ty);
+
+        // V121: Line 4: bar count (small, dimmer)
+        ty += smH / 2 + innerGap + smH / 2;
+        ctx.fillText('Bars: ' + barsStr, centerX, ty);
 
         ctx.restore();
     }
@@ -56984,7 +56997,7 @@ class CoinListService {
      *  retry-once with backoff on HTTP 418/429 (Binance Futures IP-bans when
      *  too many parallel requests), and an `isPerp`-aware cache key so a fresh
      *  fetch is issued when the user switches between Spot and Perp filters. */
-    async fetchSparkline(exchange, symbol, interval = '1h', limit = 48, isPerp = false, startTime = null) {
+    async fetchSparkline(exchange, symbol, interval = '1h', limit = 48, isPerp = false, startTime = null, endTime = null) {
         const buildUrl = () => {
             if (exchange === 'binance') {
                 // V101: convert picker format ('240', '60', 'D') to Binance
@@ -56999,10 +57012,21 @@ class CoinListService {
                     url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${binanceInterval}&limit=${limit}`;
                 }
                 if (startTime) url += `&startTime=${Math.round(startTime)}`;
+                if (endTime) url += `&endTime=${Math.round(endTime)}`;
                 return url;
             } else if (exchange === 'bybit') {
                 const category = isPerp ? 'linear' : 'spot';
-                return `https://api.bybit.com/v5/market/kline?category=${category}&symbol=${symbol}&interval=${interval}&limit=${limit}`;
+                // V121-fix: convert Binance-style TF ('4h', '1h', '1d') to
+                //   ByBit format ('240', '60', 'D'). The old code passed the
+                //   raw interval which worked for picker format ('240') but
+                //   failed for chart TF ('4h') in miniChart mode — ByBit
+                //   doesn't understand '4h', it expects '240'.
+                const bybitMap = { '1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '2h': '120', '4h': '240', '6h': '360', '12h': '720', '1d': 'D', '1w': 'W', '1M': 'M' };
+                const bybitInterval = bybitMap[interval] || interval;
+                let url = `https://api.bybit.com/v5/market/kline?category=${category}&symbol=${symbol}&interval=${bybitInterval}&limit=${limit}`;
+                if (startTime) url += `&start=${Math.round(startTime)}`;
+                if (endTime) url += `&end=${Math.round(endTime)}`;
+                return url;
             } else if (exchange === 'coinbase') {
                 // V51-coinbase: Coinbase granularity in seconds.
                 // Bybit intervals (1,5,15,60,240,D) → Coinbase granularity (60,300,900,3600,21600,86400).
@@ -57027,33 +57051,32 @@ class CoinListService {
         const doFetch = async () => {
             const url = buildUrl();
             if (!url) return null;
-            const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 8000);
+            // V121-cors: use _fetchJsonWithCors instead of raw fetch —
+            //   supports CORS proxy fallback for when the chart is hosted
+            //   on a regular website (not iframe).
             try {
-                const resp = await fetch(url, { signal: ctrl.signal });
-                if (resp.status === 418 || resp.status === 429) {
-                    // Binance rate-limit / IP ban — caller handles retry/backoff.
-                    return { rateLimited: true };
-                }
-                if (!resp.ok) return null;
+                const data = await this._fetchJsonWithCors(url, 8000);
+                if (!data) return null;
                 if (exchange === 'binance') {
-                    const data = await resp.json();
+                    if (!Array.isArray(data)) return null;
                     // V99: return OHLC for mini-chart mode
                     return data.map(k => ({ o: parseFloat(k[1]), h: parseFloat(k[2]), l: parseFloat(k[3]), c: parseFloat(k[4]) }));
                 } else if (exchange === 'bybit') {
-                    const data = await resp.json();
                     const list = data?.result?.list || [];
                     return list.reverse().map(k => ({ o: parseFloat(k[1]), h: parseFloat(k[2]), l: parseFloat(k[3]), c: parseFloat(k[4]) }));
                 } else if (exchange === 'coinbase') {
                     // V51-coinbase: Coinbase returns [[t, l, h, o, c, v], ...] newest-first.
                     //   Reverse to oldest-first. o=3, h=2, l=1, c=4
-                    const data = await resp.json();
                     if (!Array.isArray(data)) return null;
                     return data.slice().reverse().map(k => ({ o: parseFloat(k[3]), h: parseFloat(k[2]), l: parseFloat(k[1]), c: parseFloat(k[4]) }));
                 }
                 return null;
-            } finally {
-                clearTimeout(timer);
+            } catch (e) {
+                // Check if it's a rate-limit response (corsproxy passes through HTTP status)
+                if (e?.message?.includes('418') || e?.message?.includes('429')) {
+                    return { rateLimited: true };
+                }
+                return null;
             }
         };
 
@@ -63848,6 +63871,10 @@ class ChartFactory {
             for (const p of meta.params) {
                 selectedParams[p.name] = isExisting ? (existingInd.params?.[p.name] ?? p.default) : p.default;
             }
+            // V121-offset: ensure offset param exists in selectedParams
+            if (selectedParams.offset === undefined) {
+                selectedParams.offset = isExisting ? (existingInd.params?.offset ?? 0) : 0;
+            }
 
             let html = `<div class="ind-modal">
                 <div class="ind-modal-header">
@@ -63872,12 +63899,7 @@ class ChartFactory {
                 groupStarted = true;
             }
             for (const p of meta.params) {
-                // V121-fix: skip 'markers' param for timemarker — it has a
-                //   custom editor (datetime-local pickers) rendered below.
-                //   Without this, it renders as <input type="number"> which
-                //   corrupts the JSON string on Save (parseFloat → NaN).
-                //   Also skip 'defaultColor' — it's a hex color but renders
-                //   as number input. The marker editor handles color per-marker.
+                // V121-offset: skip 'markers' and 'defaultColor' for timemarker
                 if (indType === 'timemarker' && (p.name === 'markers' || p.name === 'defaultColor')) continue;
                 const grp = p.group || '__none__';
                 if (grp !== currentGroup) {
@@ -63898,6 +63920,16 @@ class ChartFactory {
                 } else {
                     html += `<div class="s-row"><span class="s-row-label">${p.label}</span><input type="number" class="s-input" data-param="${p.name}" value="${val}" min="${p.min ?? ''}" max="${p.max ?? ''}" step="${p.step ?? 1}"></div>`;
                 }
+            }
+            // V121-offset: add offset input for all indicators (not in META)
+            {
+                const grp = 'Display';
+                if (grp !== currentGroup) {
+                    closeGroup();
+                    openGroup(grp);
+                    currentGroup = grp;
+                }
+                html += `<div class="s-row"><span class="s-row-label">Offset (bars)</span><input type="number" class="s-input" data-param="offset" value="${selectedParams.offset ?? 0}" min="-500" max="500" step="1"></div>`;
             }
             closeGroup();
             // V108: Custom marker editor for TimeMarkerBrick.
@@ -66988,8 +67020,21 @@ class CoinPicker {
         this._activeSymbol = currentSymbol;
         this._exchange = (exchange || 'binance').toLowerCase();
         // V100: store chart TF + xRange for miniChart mode
+        // V121-fix: if xRange changed since last open, clear sparkline cache
+        //   so mini charts re-fetch with the new time range.
+        const newChartXRange = opts.chartXRange || null;
+        const xRangeChanged = !this._chartXRange || !newChartXRange ||
+            this._chartXRange.min !== newChartXRange.min ||
+            this._chartXRange.max !== newChartXRange.max;
+        const tfChanged = this._chartTf !== (opts.chartTf || '');
         this._chartTf = opts.chartTf || '';
-        this._chartXRange = opts.chartXRange || null;
+        this._chartXRange = newChartXRange;
+        if ((xRangeChanged || tfChanged) && this._sparklines) {
+            this._sparklines.clear();
+            this._quoteSparkCache = null;
+            this._quoteSparkCacheKey = null;
+            this._lastRenderedWindow = null;
+        }
         this._buildDOM();
         // FIX: re-attach the Escape key listener on every open — close()
         //   now removes it to avoid the listener surviving the close cycle.
@@ -67994,7 +68039,9 @@ class CoinPicker {
         // Scroll jitter fix: if the visible window hasn't changed (same
         // startIdx/endIdx, same filtered length, same options that affect row
         // rendering), skip the innerHTML rebuild entirely.
-        const sig = `${startIdx}:${endIdx}:${this._filtered.length}:${this._options.showChart}:${this._options.chartBehind}:${this._options.extraColumn}`;
+        // V121-fix: include miniChart in the signature — without it, toggling
+        // miniChart doesn't trigger a re-render (same startIdx/endIdx/length).
+        const sig = `${startIdx}:${endIdx}:${this._filtered.length}:${this._options.showChart}:${this._options.chartBehind}:${this._options.extraColumn}:${this._options.miniChart}`;
         if (this._lastRenderedWindow === sig) return;
         this._lastRenderedWindow = sig;
 
@@ -68187,7 +68234,7 @@ class CoinPicker {
         let chartBehindHtml = '';
         const isMiniChart = this._options.miniChart === true;
         if (this._options.showChart) {
-            const sparkKey = coin.base + ':' + coin.quote + ':' + (displayMkt.isPerp ? 'perp' : 'spot') + ':' + (() => { try { return _safeStorage.getItem('chartEngine_quoteCurrency') || 'USDT'; } catch (e) { return 'USDT'; } })();
+            const sparkKey = coin.base + ':' + coin.quote + ':' + (displayMkt.isPerp ? 'perp' : 'spot') + ':' + (() => { try { return _safeStorage.getItem('chartEngine_quoteCurrency') || 'USDT'; } catch (e) { return 'USDT'; } })() + ':' + (isMiniChart ? 'mc' + (this._options.chartInterval || '') : 'sp');
             const spark = this._sparklines.get(sparkKey);
             if (spark && spark.length >= 2) {
                 if (isMiniChart) {
@@ -68406,19 +68453,20 @@ class CoinPicker {
                 const coin = this._filtered[i];
                 const market = this._displayMarket(coin);
                 if (!market) continue;
-                const key = coin.base + ':' + coin.quote + ':' + (market.isPerp ? 'perp' : 'spot') + ':' + (savedQuote || 'USDT');
+                const key = coin.base + ':' + coin.quote + ':' + (market.isPerp ? 'perp' : 'spot') + ':' + (savedQuote || 'USDT') + ':' + (this._options.miniChart ? 'mc' + (this._options.chartInterval || '') : 'sp');
                 if (this._sparklines.has(key)) continue;
                 this._sparklines.set(key, null);
                 pending.push({ coin, key, market });
             }
             if (!pending.length) return;
 
-            // Concurrency-limited execution: max 4 parallel kline requests.
-            // Binance Futures (fapi) is aggressive about IP-banning when too many
-            // parallel requests hit — it returns HTTP 418 with a ban window and
-            // perp sparklines then "hang" for the duration of the ban. Limiting to
-            // 4 in-flight keeps us well under the rate limit.
-            const CONCURRENCY = 4;
+            // Concurrency-limited execution.
+            // V121-fix: increased from 4 to 8 — the old limit caused visible
+            //   rows to stay empty for several seconds on first open. With
+            //   CORS proxy fallback (which adds latency), 4 parallel is too
+            //   slow. 8 keeps us under Binance's rate limit (1200 weight/min,
+            //   each kline = 1-2 weight) while loading 2× faster.
+            const CONCURRENCY = 8;
             const queue = pending.slice();
             const inflight = [];
 
@@ -68433,13 +68481,15 @@ class CoinPicker {
             //   sparklines will fall back to USDT data.
             let quoteSpark = null;
             if (savedQuote && savedQuote !== 'USDT') {
-                // V100: use chart TF + limit in miniChart mode
+                // V121-fix: use picker chartInterval (not _chartTf) and convert
+                //   picker format to Binance format for tfToMs.
+                const pickerToBinance = { '1': '1m', '5': '5m', '15': '15m', '60': '1h', '240': '4h', 'D': '1d' };
                 let qTf = this._options.chartInterval;
                 let qLimit = this._options.chartLimit;
-                if (this._options.miniChart && this._chartTf) {
-                    qTf = this._chartTf;
+                if (this._options.miniChart) {
+                    const binanceTf = pickerToBinance[qTf] || qTf;
                     if (this._chartXRange) {
-                        const tfMs = tfToMs(this._chartTf);
+                        const tfMs = tfToMs(binanceTf);
                         if (tfMs > 0) qLimit = Math.min(1000, Math.ceil((this._chartXRange.max - this._chartXRange.min) / tfMs) + 5);
                     }
                 }
@@ -68452,7 +68502,8 @@ class CoinPicker {
                             'binance', savedQuote + 'USDT',
                             qTf, qLimit,
                             false,
-                            (this._options.miniChart && this._chartXRange) ? this._chartXRange.min : null
+                            (this._options.miniChart && this._chartXRange) ? this._chartXRange.min : null,
+                            (this._options.miniChart && this._chartXRange) ? this._chartXRange.max : null
                         );
                         this._quoteSparkCache = quoteSpark;
                         this._quoteSparkCacheKey = quoteSparkKey;
@@ -68465,26 +68516,38 @@ class CoinPicker {
                     const item = queue.shift();
                     const { coin, key, market } = item;
                     try {
-                        // V100: in miniChart mode, use chart TF + xRange
+                        // V121-fix: TF priority for miniChart mode:
+                        //   chartInterval from picker settings controls mini candles.
+                        //   The TF dropdown (5,15,60,240,D) is picker format —
+                        //   must be converted to Binance format (5m,15m,1h,4h,1d)
+                        //   for tfToMs() to work correctly.
+                        const pickerToBinance = { '1': '1m', '5': '5m', '15': '15m', '60': '1h', '240': '4h', 'D': '1d' };
                         let sparkTf = this._options.chartInterval;
                         let sparkLimit = this._options.chartLimit;
-                        if (this._options.miniChart && this._chartTf) {
-                            sparkTf = this._chartTf;
-                            // Calculate limit from xRange span
+                        let sparkStart = null, sparkEnd = null;
+                        if (this._options.miniChart) {
+                            // Convert picker TF to Binance TF for tfToMs
+                            const binanceTf = pickerToBinance[sparkTf] || sparkTf;
                             if (this._chartXRange) {
-                                const tfMs = tfToMs(this._chartTf);
+                                const tfMs = tfToMs(binanceTf);
                                 if (tfMs > 0) {
                                     sparkLimit = Math.min(1000, Math.ceil((this._chartXRange.max - this._chartXRange.min) / tfMs) + 5);
                                 }
+                                sparkStart = this._chartXRange.min;
+                                sparkEnd = this._chartXRange.max;
                             }
+                            try { devLog('[V121-spark] fetch params', {
+                                sparkTf, binanceTf, sparkLimit, sparkStart: sparkStart ? new Date(sparkStart).toISOString().slice(0,10) : null,
+                                sparkEnd: sparkEnd ? new Date(sparkEnd).toISOString().slice(0,10) : null,
+                                symbol: market.symbol, miniChart: this._options.miniChart,
+                            }); } catch(_) {}
                         }
                         let data = await _coinListService.fetchSparkline(
                             market.exchange, market.symbol,
                             sparkTf, sparkLimit,
                             market.isPerp,
-                            // V100: pass startTime = chartXRange.min so mini
-                            //   charts show the same time range as the chart
-                            (this._options.miniChart && this._chartXRange) ? this._chartXRange.min : null
+                            sparkStart,
+                            sparkEnd
                         );
                         // V49n-quote-currency: divide by quote sparkline to
                         //   produce ratio sparkline (coin/quote). If quoteSpark
@@ -68516,13 +68579,17 @@ class CoinPicker {
                             continue;
                         }
                         this._sparklines.set(key, data);
-                        // Patch the row's spark element in place (if still visible).
-                        const row = this._listEl?.querySelector(`[data-key="${coin.base + ':' + coin.quote}"]`);
-                        if (row) {
-                            const sparkEl = row.querySelector('.cp-spark');
-                            if (sparkEl) {
-                                const change = market.change24h ?? coin.change24h;
-                                sparkEl.innerHTML = this._buildSparkSvg(data, 56, 22, change >= 0);
+                        // V121-fix: for non-miniChart, patch the spark element
+                        //   in-place. For miniChart, DON'T render per-sparkline —
+                        //   batch render after ALL sparklines are loaded (below).
+                        if (!this._options.miniChart) {
+                            const row = this._listEl?.querySelector(`[data-key="${coin.base + ':' + coin.quote}"]`);
+                            if (row) {
+                                const sparkEl = row.querySelector('.cp-spark');
+                                if (sparkEl) {
+                                    const change = market.change24h ?? coin.change24h;
+                                    sparkEl.innerHTML = this._buildSparkSvg(data, 56, 22, change >= 0);
+                                }
                             }
                         }
                     } catch (e) {
@@ -68534,6 +68601,14 @@ class CoinPicker {
                 inflight.push(processNext());
             }
             await Promise.allSettled(inflight);
+            // V121-fix: after ALL sparklines are loaded, do a single batch
+            //   re-render for miniChart mode. This is more efficient than
+            //   re-rendering after each individual sparkline, and ensures
+            //   all rows show the correct TF data.
+            if (this._options.miniChart) {
+                this._lastRenderedWindow = null;
+                this._renderVisible();
+            }
         })();
         this._sparkPrefetchInflight = done;
         try {
@@ -68859,11 +68934,16 @@ class CoinPicker {
                     this._options.miniChart = !this._options.miniChart;
                     // V100: clear sparkline cache — miniChart uses different TF/limit
                     this._sparklines.clear();
+                    // V121-fix: reset scroll cache so _renderVisible doesn't skip
+                    this._lastRenderedWindow = null;
                 } else if (opt === 'chartInterval') {
                     // Changing the interval invalidates all cached sparklines
                     // (different candle period) — clear the cache so they re-fetch.
                     this._options.chartInterval = val;
                     this._sparklines.clear();
+                    this._quoteSparkCache = null;
+                    this._quoteSparkCacheKey = null;
+                    this._lastRenderedWindow = null;
                 } else if (opt === 'chartLimit') {
                     this._options.chartLimit = parseInt(val, 10);
                     this._sparklines.clear();
