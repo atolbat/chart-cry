@@ -20594,6 +20594,14 @@ class IndicatorBrick extends IndicatorBase {
         //   offset > 0 shifts right (into the future), offset < 0 shifts left.
         //   Default is 0 (no shift). The offset is read from this.params.offset.
         const offset = Math.round(this.params?.offset || 0);
+        // V121-offset-fix: extend the loop range when offset != 0 so the line
+        //   is drawn for ALL visible bars. Without this, positive offset causes
+        //   the left side to be cut off (data starts at iMin, but the shifted
+        //   line starts at iMin+offset). We extend the loop by |offset| bars
+        //   on the opposite side: for offset>0, start earlier (iMin-offset);
+        //   for offset<0, end later (iMax-offset).
+        const loopStart = Math.max(0, iMin - Math.max(0, offset));
+        const loopEnd = Math.min(data.length - 1, iMax + Math.max(0, -offset));
         ctx.lineWidth = lineWidth;
         // V51-line-styles: apply dash style from outputStyles if set.
         const outputName = arguments[10];
@@ -20607,11 +20615,11 @@ class IndicatorBrick extends IndicatorBase {
             ctx.beginPath();
             let started = false;
             let lastPx = -Infinity;
-            for (let j = 0; j <= (iMax - iMin); j++) {
-                const v = data[iMin + j];
+            for (let j = loopStart; j <= loopEnd; j++) {
+                const v = data[j];
                 if (!isFinite(v)) { started = false; continue; }
                 // V121-offset: shift xData index by offset
-                const xIdx = Math.max(0, Math.min(xData.length - 1, j + offset));
+                const xIdx = Math.max(0, Math.min(xData.length - 1, (j - iMin) + offset));
                 const px = xScale.valToPix(xData[xIdx]);
                 if (px === lastPx) continue;
                 lastPx = px;
@@ -20623,12 +20631,12 @@ class IndicatorBrick extends IndicatorBase {
         } else {
             let prevV = NaN, prevPx = 0, prevPy = 0;
             let started = false, curColor = null, curAlpha = alpha;
-            for (let j = 0; j <= (iMax - iMin); j++) {
-                const v = data[iMin + j];
+            for (let j = loopStart; j <= loopEnd; j++) {
+                const v = data[j];
                 if (!isFinite(v)) { started = false; prevV = NaN; continue; }
-                const barIdx = iMin + j;
+                const barIdx = j;
                 // V121-offset: shift xData index by offset
-                const xIdx = Math.max(0, Math.min(xData.length - 1, j + offset));
+                const xIdx = Math.max(0, Math.min(xData.length - 1, (j - iMin) + offset));
                 const px = xScale.valToPix(xData[xIdx]);
                 const py = yScale.valToPix(v);
                 if (started) {
@@ -22814,7 +22822,19 @@ class AOBrick extends IndicatorBrick {
             if (!isFinite(v)) continue;
             const px = xScale.valToPix(xData[j]);
             const py = yScale.valToPix(v);
-            ctx.fillStyle = v >= 0 ? upColor : downColor;
+            // V121-ao-momentum: detect momentum reversal — if the bar is
+            //   green (v>=0) but falling vs previous, or red (v<0) but rising,
+            //   make it lighter to signal momentum shift.
+            const prevV = j > 0 ? computed.line[iMin + j - 1] : v;
+            let fillColor;
+            if (v >= 0) {
+                // Green zone — check if momentum is fading (falling)
+                fillColor = (isFinite(prevV) && v < prevV) ? '#5ac868' : upColor;
+            } else {
+                // Red zone — check if momentum is fading (rising)
+                fillColor = (isFinite(prevV) && v > prevV) ? '#ff6b63' : downColor;
+            }
+            ctx.fillStyle = fillColor;
             if (v >= 0) ctx.fillRect(px - halfW, py, barW, Math.max(0.5, zeroY - py));
             else        ctx.fillRect(px - halfW, zeroY, barW, Math.max(0.5, py - zeroY));
         }
