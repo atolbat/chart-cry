@@ -64721,7 +64721,15 @@ class ChartFactory {
                             } else {
                                 existingInd.sourceRef = null;
                                 existingInd.inputs.source = srcValEx;
-                                existingInd.sourceId = srcValEx === 'close' ? 'price' : srcValEx === 'volume' ? 'vol' : srcValEx;
+                                // V121-fix: for non-close sources (high, low, open,
+                                //   hl2, hlc3, ohlc4), keep sourceId='price' so
+                                //   computeAll fetches the close series from DataStore.
+                                //   _resolveSrc inside _computeRaw will replace it
+                                //   with the correct OHLC field using the ohlc frame.
+                                //   Previously sourceId was set to 'hl2' etc., but
+                                //   DataStore has no 'hl2' series → getFullSeriesData
+                                //   returned null → empty sourceData → MA line disappeared.
+                                existingInd.sourceId = (srcValEx === 'volume') ? 'vol' : 'price';
                                 // V55-source-ohlc: update needsOHLC when source changes.
                                 // V118: preserve needsOHLC for indicators that always
                                 //   need OHLC (AO, MACD, VPIN, etc.). These set
@@ -65003,8 +65011,12 @@ class ChartFactory {
                                 // V55-source-ui: set both sourceId AND source input.
                                 //   sourceId tells the framework which series to fetch.
                                 //   source input tells _resolveSrc which OHLC field to use.
-                                cfg.sourceId = srcVal === 'close' ? 'price' : srcVal === 'volume' ? 'vol' : srcVal;
-                                cfg.source = srcVal;  // V55: so constructor reads it into inputs.source
+                                // V121-fix: for non-close sources (high, low, open,
+                                //   hl2, hlc3, ohlc4), keep sourceId='price' so
+                                //   computeAll fetches close series from DataStore.
+                                //   _resolveSrc will replace it with the correct OHLC field.
+                                cfg.sourceId = (srcVal === 'volume') ? 'vol' : 'price';
+                                cfg.source = srcVal;
                             }
                         }
                         const pmSel = configArea.querySelector('[data-panelmode]');
