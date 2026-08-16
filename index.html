@@ -62031,6 +62031,34 @@ class PresetManager {
                 }
             }
         }
+        // V121-swipe-fix: restore swipe groups from PanelCarouselManager.
+        //   Swipe groups are stored in localStorage (by indicator ID), but
+        //   _applySnapshot removes all indicators and re-adds them. The
+        //   carousel manager's _groups still reference the old IDs. Since
+        //   we reuse original IDs (step 4), the groups are still valid —
+        //   BUT the carousel manager needs to re-apply visibility (hide
+        //   non-active indicators). We call _restoreVisibility for each group.
+        const cm = api.getPanelCarouselManager?.();
+        if (cm && cm._groups) {
+            const allInds = api.getIndicator() || [];
+            const existingIds = new Set(allInds.map(i => i.id));
+            for (const [panelId, group] of cm._groups) {
+                // Filter out indicator IDs that no longer exist
+                group.indicators = group.indicators.filter(id => existingIds.has(id));
+                if (group.activeIdx >= group.indicators.length) {
+                    group.activeIdx = 0;
+                }
+                cm._save();
+                // Re-apply visibility: hide all except active
+                for (let i = 0; i < group.indicators.length; i++) {
+                    const ind = allInds.find(x => x.id === group.indicators[i]);
+                    if (ind) {
+                        ind.visible = (i === group.activeIdx);
+                    }
+                }
+            }
+        }
+
         api.markAllDirtyAndRender();
         try { devLog('[V76-import] FINAL state', {
             configPanels: config.panels.map(p => p.id),
@@ -64090,11 +64118,23 @@ class ChartFactory {
             // V109e: "swipe target" checkbox — shown when adding to an existing panel.
             //   When checked, the indicator is added to the panel's swipe group
             //   (hidden, accessible via swipe) instead of being shown alongside.
-            if (!isExisting) {
-                html += `<div class="s-check-row" id="swipe-target-row" style="display:none;">`;
-                html += `<input type="checkbox" class="s-check" data-swipe-target>`;
-                html += `<span class="s-check-label">Add as swipe target (hidden, access via swipe)</span>`;
-                html += `</div>`;
+            // V121-swipe-toggle: also show for EXISTING indicators on non-main panels
+            //   so the user can toggle swipe group membership on/off after creation.
+            {
+                const cm = api.getPanelCarouselManager?.();
+                const isInSwipeGroup = isExisting && cm && existingInd?.panelId
+                    && cm._groups?.get(existingInd.panelId)?.indicators?.includes(existingInd.id);
+                if (!isExisting) {
+                    html += `<div class="s-check-row" id="swipe-target-row" style="display:none;">`;
+                    html += `<input type="checkbox" class="s-check" data-swipe-target>`;
+                    html += `<span class="s-check-label">Add as swipe target (hidden, access via swipe)</span>`;
+                    html += `</div>`;
+                } else if (existingInd?.panelId && existingInd.panelId !== 'main') {
+                    html += `<div class="s-check-row" id="swipe-target-row">`;
+                    html += `<input type="checkbox" class="s-check" data-swipe-toggle ${isInSwipeGroup ? 'checked' : ''}>`;
+                    html += `<span class="s-check-label">Swipe group ${isInSwipeGroup ? '(ON)' : ''}</span>`;
+                    html += `</div>`;
+                }
             }
             html += `</div>`;
             // ── V38: Timeframe anchoring ──
@@ -64954,6 +64994,22 @@ class ChartFactory {
                             existingInd._srProbCacheResults = null;
                         }
                         engine._apiCtx?.indicatorManager?.invalidateCache?.();
+                        // V121-swipe-toggle: handle swipe group checkbox for
+                        //   existing indicators on non-main panels.
+                        const swipeToggleCb = backdrop.querySelector('[data-swipe-toggle]');
+                        if (swipeToggleCb && existingInd.panelId && existingInd.panelId !== 'main') {
+                            const cm = engine._apiCtx?.panelCarouselManager || api.getPanelCarouselManager?.();
+                            if (cm) {
+                                if (swipeToggleCb.checked) {
+                                    // Add to swipe group
+                                    cm.register(existingInd.panelId, existingInd.id);
+                                } else {
+                                    // Remove from swipe group
+                                    cm.unregister(existingInd.panelId, existingInd.id);
+                                    existingInd.visible = true;
+                                }
+                            }
+                        }
                         engine._apiCtx?.markAllDirtyAndRender?.();
                     } else {
                         // Create new indicator
