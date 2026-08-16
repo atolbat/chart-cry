@@ -51643,13 +51643,32 @@ class DataCache {
 
     // ── Public API ──
 
-    /** Get cached data. Checks session first, then IDB. Returns null on miss. */
+    /** Get cached data. Checks session first, then IDB (only if IDB is enabled).
+     *  V121-fix: validates entry.symbol matches the requested symbol —
+     *    poisoned entries (where old buggy code saved ETH data under
+     *    BTCUSDT key) are detected, deleted, and treated as a cache miss. */
     async get(sourceId, symbol, tf) {
         const key = this._key(sourceId, symbol, tf);
         const sessionEntry = this._session.get(key);
-        if (sessionEntry) return sessionEntry;
+        if (sessionEntry) {
+            // V121-fix: validate session entry — if symbol doesn't match,
+            //   it's poisoned. Delete and return null.
+            if (sessionEntry.symbol && sessionEntry.symbol !== symbol) {
+                this._session.delete(key);
+                return null;
+            }
+            return sessionEntry;
+        }
+        // V121-fix: only check IDB when idb is enabled.
+        if (!this.idb) return null;
         const idbEntry = await this._idbCache.get(key);
         if (idbEntry) {
+            // V121-fix: validate IDB entry — if symbol doesn't match, it's
+            //   poisoned from a previous buggy session. Delete it.
+            if (idbEntry.symbol && idbEntry.symbol !== symbol) {
+                await this._idbCache.delete(key);
+                return null;
+            }
             // Promote to session cache for faster next read (refresh cachedAt)
             const promoted = { ...idbEntry, cachedAt: Date.now() };
             this._session.set(key, promoted);
@@ -59155,6 +59174,11 @@ class DataSourceOrchestrator {
             //   For TIMEFRAME switches, adapter.symbol is unchanged so the
             //   early prefetch is safe and remains as a perf optimization.
             if (param === 'timeframe') {
+                // V121-fix: removed dataCache.invalidate — the root cause
+                //   (IDB being checked in session mode) is now fixed in
+                //   DataCache.get(). Cache is no longer poisoned because
+                //   _onParam saves old symbol data BEFORE overwriting
+                //   adapter.symbol.
                 try {
                     const engine = this.api?._ctx?.engine || window._chart?.engine;
                     const im = engine?.indicatorManager;
@@ -59196,15 +59220,10 @@ class DataSourceOrchestrator {
                 adapter._closeWebSocket();
                 adapter._stopPolling();
                 adapter._switchGen++;
-                // V121-fix-3: delete the NEW symbol's cache entry to prevent
-                //   loading poisoned data from a previous (buggy) session.
-                //   The cache was poisoned because switchAsset used to save
-                //   old symbol's data under the new symbol's key. Even though
-                //   that bug is fixed, the poisoned entry may still be in
-                //   session cache. Deleting it forces a fresh REST fetch.
-                if (adapter.isCacheEnabled && adapter.dataCache && value) {
-                    try { adapter.dataCache.invalidate(adapter.sourceId, value, adapter.timeframe); } catch(_) {}
-                }
+                // V121-fix: removed dataCache.invalidate for symbol switch too.
+                //   The root cause (IDB reads in session mode) is fixed.
+                //   Cache is correct: old symbol saved BEFORE symbol change,
+                //   new symbol fetched fresh from REST.
                 // Save old data to cache (fire-and-forget) — safe now, _oldSymbolForCache captured before overwrite
                 try {
                     if (adapter.isCacheEnabled && adapter._active && adapter.chartApi && _oldSymbolForCache) {
