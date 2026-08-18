@@ -12736,6 +12736,17 @@ class DataStore {
         this._prevSize = 0; // size before last mutation — enables incremental detection
         this._mutation = 'init'; // 'init'|'append'|'update'|'bulk' — type of last mutation
         this.seriesMap = {};
+        // V121-cache-truth: the DataStore is the AUTHORITATIVE source of which
+        //   symbol + tf its current candles belong to. Set by loadHistory
+        //   (which receives candles + their symbol/tf from the caller). Read
+        //   by exportAllCandles so _saveCacheFromChart can save under the
+        //   CORRECT key — eliminating the entire class of cache-poisoning
+        //   races where this.symbol changed between fetch and save.
+        //   Before this fix, _saveCacheFromChart read `this.symbol` from the
+        //   adapter (which could have switched to a new symbol during await)
+        //   and saved the OLD symbol's candles under the NEW symbol's key.
+        this.symbol = null;
+        this.tf = null;
         // V38-anchor: read chart interval from config so anchor-TF logic
         // can compare intervals without needing the full chart config.
         // Updated by ChartAPI.setIntervalMs (see line ~32098).
@@ -13005,6 +13016,11 @@ class DataStore {
         this._sliceBufCount = 0;
         this._fullBufs = null;
         this._ohlcBufs = null;
+        // V121-cache-truth: clear the symbol/tf stamp. A cleared store holds
+        //   no candles — the previous symbol/tf are no longer valid. The next
+        //   loadHistory will stamp them again.
+        this.symbol = null;
+        this.tf = null;
     }
 
     /**
@@ -13074,7 +13090,7 @@ class DataStore {
      * Used when switching assets/timeframes.
      * @param {Array} candles - array of pushPoint-compatible objects
      */
-    loadHistory(candles) {
+    loadHistory(candles, symbol, tf) {
         // non-iterable argument would reach `for (const c of candles)` and
         // throw TypeError mid-method — AFTER `this.clear()` had already
         // wiped the dataset. The store would be left empty with _batchMode
@@ -13086,6 +13102,14 @@ class DataStore {
             throw new TypeError(`DataStore.loadHistory: expected Array, got ${candles === null ? 'null' : typeof candles}`);
         }
         this.clear();
+        // V121-cache-truth: stamp the store with the symbol + tf these candles
+        //   belong to. The caller KNOWS which symbol these candles are for
+        //   (they just fetched them from the exchange for that symbol). This
+        //   information flows through loadHistory → store.symbol/tf →
+        //   exportAllCandles → _saveCacheFromChart, which uses it as the
+        //   cache key. No more "this.symbol might have changed" race.
+        this.symbol = (typeof symbol === 'string') ? symbol : null;
+        this.tf = (typeof tf === 'string') ? tf : null;
         this._batchMode = true;
         try {
             for (const c of candles) {
@@ -13340,7 +13364,11 @@ class DataStore {
     }
 
     /** Export all candles as an array of { _x, open, high, low, close, vol } objects.
-     *  Used by the adapter cache to save the current chart data (including lazy-loaded history). */
+     *  Used by the adapter cache to save the current chart data (including lazy-loaded history).
+     *  V121-cache-truth: also returns `symbol` and `tf` — the candles inside are
+     *    STAMPED with the symbol/tf that was passed to loadHistory. The caller
+     *    (_saveCacheFromChart) uses these for the cache key, NOT this.symbol
+     *    on the adapter (which could have changed during an await). */
     exportAllCandles() {
         const result = new Array(this.size);
         // Find the candlestick series (has openData) and the volume series
@@ -13359,7 +13387,7 @@ class DataStore {
                     result[i][id] = this.seriesMap[id].data[pi];
                 }
             }
-            return result;
+            return { candles: result, symbol: this.symbol, tf: this.tf };
         }
         const cs = this.seriesMap[candleId];
         for (let i = 0; i < this.size; i++) {
@@ -13374,7 +13402,10 @@ class DataStore {
                 price: cs.data[pi],
             };
         }
-        return result;
+        // V121-cache-truth: return candles WRAPPED with the symbol/tf stamp.
+        //   Old callers expected a bare array — see the ChartAPI.exportAllCandles
+        //   compat wrapper that unwraps for them.
+        return { candles: result, symbol: this.symbol, tf: this.tf };
     }
 
     /**
@@ -13600,8 +13631,8 @@ class SeriesBackedDataStore extends DataStore {
     // calls this.clear() (which clears the frame) then this.pushPoint × N
     // (which populates the frame with notify=false during _batchMode).
     // The frame is correctly populated WITHOUT firing stale events.
-    loadHistory(candles) {
-        super.loadHistory(candles);  // clear() + pushPoint × N + _version++
+    loadHistory(candles, symbol, tf) {
+        super.loadHistory(candles, symbol, tf);  // clear() + pushPoint × N + _version++ + stamp symbol/tf
         this._developingPOCSeq = null;
         // FIX V49n-perf: after batch push, recompute regularity for all
         // columns. This is O(N) but called once per loadHistory, not per push.
@@ -14633,8 +14664,12 @@ class DataContext {
         return { firstX: 0, lastX: 0 };
     }
 
-    _loadHistory({ candles }) {
-        this.dataStore.loadHistory(candles);
+    _loadHistory({ candles, symbol, tf }) {
+        // V121-cache-truth: pass symbol/tf through so the DataStore can stamp
+        //   them. The store is now the authoritative source of which symbol
+        //   its candles belong to — _saveCacheFromChart reads them back via
+        //   _exportCandles instead of trusting the adapter's this.symbol.
+        this.dataStore.loadHistory(candles, symbol, tf);
         return {
             firstX: this.dataStore.size > 0 ? this.dataStore.getX(0) : 0,
             lastX:  this.dataStore.getLastX(),
@@ -14653,11 +14688,24 @@ class DataContext {
     }
 
     _exportCandles() {
+        // V121-cache-truth: dataStore.exportAllCandles now returns
+        //   { candles, symbol, tf } — pass them through so the adapter's
+        //   _saveCacheFromChart can use them as the authoritative cache key.
+        const exported = this.dataStore.exportAllCandles();
+        // Backward-compat: if exportAllCandles somehow returned a bare array
+        //   (shouldn't happen, but defensive), wrap it.
+        if (Array.isArray(exported)) {
+            return { candles: exported, count: exported.length, symbol: null, tf: null,
+                     firstX: this.dataStore.size > 0 ? this.dataStore.getX(0) : 0,
+                     lastX:  this.dataStore.getLastX() };
+        }
         return {
-            candles: this.dataStore.exportAllCandles(),
+            candles: exported.candles,
             count:   this.dataStore.size,
             firstX:  this.dataStore.size > 0 ? this.dataStore.getX(0) : 0,
             lastX:   this.dataStore.getLastX(),
+            symbol:  exported.symbol,
+            tf:      exported.tf,
         };
     }
 
@@ -42417,7 +42465,7 @@ class ChartAPI {
         return (this._ctx._transitionDepth || 0) > 0;
     }
 
-    async loadHistory(candles) {
+    async loadHistory(candles, opts = {}) {
         // DataStore.loadHistory — same rationale as pushPoint's _x guard.
         // _transformKlines already does this for exchange data, but external
         // callers (cache reloads, deserialize) bypass that filter.
@@ -42430,7 +42478,15 @@ class ChartAPI {
                 console.warn(`ChartAPI.loadHistory: dropped ${before - candles.length} candle(s) with non-finite _x`);
             }
         }
-        const result = await this._ctx.dataPort.send({ type: 'LOAD_HISTORY', payload: { candles } });
+        // V121-cache-truth: caller passes { symbol, tf } so the DataStore can
+        //   stamp them. This is the AUTHORITATIVE source of which symbol/tf
+        //   the candles belong to — _saveCacheFromChart reads them back via
+        //   exportAllCandles instead of trusting the adapter's this.symbol
+        //   (which may have changed during an await between fetch and save).
+        const payload = { candles };
+        if (typeof opts.symbol === 'string') payload.symbol = opts.symbol;
+        if (typeof opts.tf === 'string') payload.tf = opts.tf;
+        const result = await this._ctx.dataPort.send({ type: 'LOAD_HISTORY', payload });
         this._ctx.setLastDataX(result.lastX);
         this._ctx.reinitAxisUnitSystem();
         this._ctx.invalidateYRangeCache?.(); // prevent stale Y ranges from old data
@@ -42494,14 +42550,16 @@ class ChartAPI {
         });
     }
 
-    async mergeCandles(candles) {
+    async mergeCandles(candles, opts = {}) {
         if (!candles || candles.length === 0) return 0;
         // race concurrent WS/REST ticks while we export + reload the DataStore.
         return await this._withAdapterLock(async () => {
             const range = this._ctx.dataPort.query({ type: 'GET_DATA_RANGE' });
             if (range.count === 0) {
                 // No existing data — just load as history
-                return (await this.loadHistory(candles)).count;
+                // V121-cache-truth: pass opts.symbol/opts.tf through so the
+                //   store stamps them even on the empty-store path.
+                return (await this.loadHistory(candles, opts)).count;
             }
 
             // Export all current chart data
@@ -42516,7 +42574,14 @@ class ChartAPI {
             if (insertedOrUpdated === 0) return 0;
 
             // Reload the store with merged data
-            await this._ctx.dataPort.send({ type: 'LOAD_HISTORY', payload: { candles: merged } });
+            // V121-cache-truth: preserve symbol/tf from the exported data so
+            //   the DataStore keeps tracking which symbol its candles belong
+            //   to. Without this, the LOAD_HISTORY call below would reset
+            //   dataStore.symbol/tf to null, breaking _saveCacheFromChart.
+            await this._ctx.dataPort.send({
+                type: 'LOAD_HISTORY',
+                payload: { candles: merged, symbol: exported.symbol, tf: exported.tf }
+            });
             this._ctx.setLastDataX(merged[merged.length - 1]._x);
             this._ctx.invalidateYRangeCache?.(); // prevent stale Y ranges
             this._ctx.markAllDirtyAndRender();
@@ -51399,9 +51464,9 @@ class IDBCache {
      * @param {boolean} opts.enabled — whether IDB caching is active
      * @param {number}  opts.maxAge        — max age in ms for both layers, 0 = no limit
      * @param {number}  opts.maxAgeOffline — max age in ms for IDB only, 0 = no limit
-     * @param {number}  opts.schemaVersion — IDB schema version (default 2)
+     * @param {number}  opts.schemaVersion — IDB schema version (default 3)
      */
-    constructor({ enabled = false, maxAge = 0, maxAgeOffline = 0, schemaVersion = 2 } = {}) {
+    constructor({ enabled = false, maxAge = 0, maxAgeOffline = 0, schemaVersion = 3 } = {}) {
         this.enabled = enabled;
         this.maxAge = maxAge;
         this.maxAgeOffline = maxAgeOffline;
@@ -51421,6 +51486,20 @@ class IDBCache {
                 const req = indexedDB.open('ChartEngineCache', this._idbVersion);
                 req.onupgradeneeded = (e) => {
                     const db = e.target.result;
+                    const oldVersion = e.oldVersion || 0;
+                    // V121-cache-purge: when upgrading from v2 → v3, the old
+                    //   'kline' store may contain poisoned entries from a
+                    //   previous buggy version (candles saved under wrong
+                    //   symbol/TF key). Delete the store entirely and recreate
+                    //   it fresh so no poisoned data leaks into the new
+                    //   session. This is a one-time purge — after this, only
+                    //   the V121-fixed save paths write entries, so they're
+                    //   clean. (User-reported symptom: BTC at ~$60-69 instead
+                    //   of ~$63000 after switching TFs or refreshing the page.)
+                    if (oldVersion > 0 && oldVersion < 3 && db.objectStoreNames.contains('kline')) {
+                        try { db.deleteObjectStore('kline'); } catch (_) {}
+                        try { console.log('[IDBCache] v2→v3 upgrade: purged poisoned kline store'); } catch (_) {}
+                    }
                     if (!db.objectStoreNames.contains('kline')) {
                         db.createObjectStore('kline');
                     }
@@ -52151,6 +52230,17 @@ class DataSourceAdapter {
         this.sourceId          = config.sourceId || '';  // unique source identifier for cache keys
         this._cacheLoaded      = false; // true when data was loaded from cache (skip REST, do refresh)
         this._switchGen        = 0;      // generation counter — stale fetch detection for rapid TF switching
+        // V121-cache-validate: cache-entry last/first close prices captured
+        //   in _tryLoadFromCache so _refreshRecentCandles can validate them
+        //   against the fresh REST tail. Reset to null after each validation.
+        this._cachedLastClose  = null;
+        this._cachedFirstClose = null;
+        // V121-fix: track which symbol's data is ACTUALLY in the DataStore.
+        //   this.symbol may have changed (e.g. during a symbol switch) but
+        //   loadHistory hasn't replaced the data yet. _saveCacheFromChart
+        //   uses these to skip saving candles under a wrong key.
+        this._dataSymbol       = null;
+        this._dataTf           = null;
     }
 
     /** Called by Engine.setAdapter(). Override in subclass. */
@@ -52213,8 +52303,36 @@ class DataSourceAdapter {
         // don't load stale data — the newer _fetchAndStream will handle it.
         if (this._isStale(gen)) return false;
 
+        // V121-cache-validate: capture the cached last candle's close price so
+        //   _refreshRecentCandles can validate it against the fresh REST tail.
+        //   If the cache was poisoned by an earlier bug (e.g. candles from a
+        //   different symbol saved under this key), the REST tail's first
+        //   close will be wildly different (100x off) and _refreshRecentCandles
+        //   will detect it, invalidate the entry, and reload from REST.
+        //   Without this, a poisoned cache hit returns wrong prices to the
+        //   chart, and _refreshRecentCandles (which only fetches the TAIL)
+        //   can't fix the older poisoned candles — they survive the merge.
+        try {
+            const lastCandle = entry.candles[entry.candles.length - 1];
+            this._cachedLastClose = (lastCandle && typeof lastCandle.close === 'number')
+                ? lastCandle.close : null;
+            this._cachedFirstClose = (entry.candles[0] && typeof entry.candles[0].close === 'number')
+                ? entry.candles[0].close : null;
+        } catch (_) { this._cachedLastClose = null; this._cachedFirstClose = null; }
+
         // Load cached candles into chart
-        const result = await this.chartApi.loadHistory(entry.candles);
+        // V121-cache-truth: pass symbol/tf to loadHistory so the DataStore
+        //   stamps them. The cache key already validated that entry.symbol
+        //   matches this.symbol (in DataCache.get), so we know these candles
+        //   really are for this.symbol/this.timeframe.
+        const result = await this.chartApi.loadHistory(entry.candles, {
+            symbol: this.symbol, tf: this.timeframe
+        });
+        // V121-fix: track which symbol's data is actually in the DataStore.
+        //   _saveCacheFromChart checks this to avoid saving old symbol's
+        //   candles under the new symbol's key (cache poisoning).
+        this._dataSymbol = this.symbol;
+        this._dataTf = this.timeframe;
         if (result.count === 0) return false;
 
         // Notify that primary history has been loaded
@@ -52326,16 +52444,50 @@ class DataSourceAdapter {
     /** Update the cache by exporting current chart data (includes lazy-loaded history).
      *  V50: same race-safety — capture symbol/tf before await. */
     async _saveCacheFromChart(intervalMs) {
+        // V121-cache-truth: the DataStore is the AUTHORITATIVE source of which
+        //   symbol + tf its current candles belong to. We get those from
+        //   exportAllCandles() (which reads dataStore.symbol/tf, stamped by
+        //   loadHistory). This eliminates the entire class of poisoning races
+        //   that the previous _dataSymbol guard was patching:
+        //     - this.symbol may have switched (BTC→ETH) between loadHistory
+        //       and this save → old code saved BTC candles under ETH's key
+        //     - WS tick for the old symbol may have arrived mid-await
+        //   Now we read symbol/tf FROM THE STORE ITSELF. If the store's
+        //   symbol doesn't match this.symbol (the adapter moved on), we
+        //   SAVE UNDER THE STORE'S KEY (correct — those candles belong to
+        //   the store's symbol, not the adapter's current symbol). The
+        //   adapter's this.symbol/this.timeframe is only used as a fallback
+        //   if the store somehow has null symbol/tf (defensive).
         if (!this.isCacheEnabled || !this.sourceId) return;
-        const saveSymbol = this.symbol;
-        const saveTf     = this.timeframe;
         const exported = this.chartApi.exportAllCandles();
-        if (exported.count > 0) {
-            await this.dataCache.set(this.sourceId, saveSymbol, saveTf, exported.candles, intervalMs, {
-                merge: false,
-                meta: this._buildCacheMeta()
-            });
+        if (!exported || exported.count === 0) return;
+        const saveSymbol = exported.symbol || this.symbol;
+        const saveTf = exported.tf || this.timeframe;
+        if (!saveSymbol || !saveTf) {
+            // Store has no symbol/tf stamp (e.g. mergeCandles with empty
+            // store). Skip the save — we can't construct a meaningful cache
+            // key without knowing what these candles are for.
+            try { devLog('[V121-cache] SKIP _saveCacheFromChart — no symbol/tf stamp', {
+                thisSymbol: this.symbol, thisTf: this.timeframe,
+                storeSymbol: exported.symbol, storeTf: exported.tf,
+            }); } catch(_) {}
+            return;
         }
+        // Sanity check: if the store's symbol/tf don't match the adapter's
+        // current symbol/tf, log it — this means a concurrent switchAsset
+        // happened. We still save under the STORE'S key (those candles
+        // really are for the store's symbol). The new switch's data will
+        // overwrite this entry when its own loadHistory runs.
+        if (this.symbol !== saveSymbol || this.timeframe !== saveTf) {
+            try { devLog('[V121-cache] _saveCacheFromChart — store symbol/tf ≠ adapter symbol/tf (saving under store key)', {
+                thisSymbol: this.symbol, saveSymbol,
+                thisTf: this.timeframe, saveTf,
+            }); } catch(_) {}
+        }
+        await this.dataCache.set(this.sourceId, saveSymbol, saveTf, exported.candles, intervalMs, {
+            merge: false,
+            meta: this._buildCacheMeta()
+        });
     }
 
     /**
@@ -53683,8 +53835,16 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
                 const saveSymbol = this.symbol;
                 const saveTf     = this.timeframe;
                 try { devLog('[V121-fetch] before loadHistory', { symbol: saveSymbol, tf: saveTf, candleCount: candles.length, gen, switchGen: this._switchGen }); } catch(_) {}
-                const result = await this.chartApi.loadHistory(candles);
-                try { devLog('[V121-fetch] after loadHistory', { resultCount: result?.count, gen, switchGen: this._switchGen, stale: this._isStale(gen) }); } catch(_) {}
+                // V121-cache-truth: pass saveSymbol/saveTf to loadHistory so
+                //   the DataStore stamps them. _saveCacheFromChart then reads
+                //   them back from exportAllCandles — eliminating the race
+                //   where this.symbol changed during the await.
+                const result = await this.chartApi.loadHistory(candles, {
+                    symbol: saveSymbol, tf: saveTf
+                });
+                // V121-fix: track which symbol's data is actually in DataStore.
+                this._dataSymbol = this.symbol;
+                this._dataTf = this.timeframe;                try { devLog('[V121-fetch] after loadHistory', { resultCount: result?.count, gen, switchGen: this._switchGen, stale: this._isStale(gen) }); } catch(_) {}
 
                 // V50 FIX: stale check AFTER loadHistory, BEFORE save — critical.
                 //   Without this, a concurrent switchAsset could have bumped _switchGen
@@ -53847,7 +54007,85 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
 
             const recentCandles = this._transformKlines(data);
 
-            if (recentCandles.length > 0) {
+            // V121-cache-validate: detect poisoned cache. We compare the
+            //   cached LAST close to the REST FIRST close — these are
+            //   ADJACENT candles (REST starts at cachedLastX + intervalMs,
+            //   so its first candle is exactly one interval after the cache's
+            //   last candle). Adjacent candles NEVER differ by 10x in any
+            //   real market — even meme coins on 1d don't 10x in one bar.
+            //   So a 10x ratio here means the cache entry contains candles
+            //   from a DIFFERENT symbol/TF (poisoned by an earlier bug).
+            //   We also keep the cached-FIRST vs REST-LAST comparison but at
+            //   a much higher threshold (1000x) — that's for the rare case
+            //   where the entire cache is poisoned with a different price
+            //   magnitude (e.g. ratio-mode data ~1e-16 saved under a direct
+            //   BTC key). The 1000x threshold avoids false positives when
+            //   the cache legitimately covers a long time range (e.g. year
+            //   of 1d candles where price moved 5-10x for real).
+            const cachedLast = this._cachedLastClose;
+            const cachedFirst = this._cachedFirstClose;
+            const ADJACENT_POISON_RATIO = 10;     // 10x = 1000% in one bar → impossible for real assets
+            const DISTANT_POISON_RATIO  = 1000;   // 1000x = totally different price magnitude (ratio vs direct)
+            let poisoned = false;
+            let poisonReason = '';
+            if (cachedLast != null && recentCandles.length > 0) {
+                const restFirst = recentCandles[0].close;
+                const restLast  = recentCandles[recentCandles.length - 1].close;
+                // Adjacent comparison (strongest signal)
+                if (typeof restFirst === 'number' && restFirst > 0 && cachedLast > 0) {
+                    const ratio1 = Math.max(cachedLast, restFirst) / Math.min(cachedLast, restFirst);
+                    if (ratio1 >= ADJACENT_POISON_RATIO) {
+                        poisoned = true;
+                        poisonReason = `adjacent ratio ${ratio1.toFixed(2)} >= ${ADJACENT_POISON_RATIO}`;
+                    }
+                }
+                // Distant comparison (only fires for totally different price magnitude)
+                if (!poisoned && cachedFirst != null && cachedFirst > 0
+                        && typeof restLast === 'number' && restLast > 0) {
+                    const ratio2 = Math.max(cachedFirst, restLast) / Math.min(cachedFirst, restLast);
+                    if (ratio2 >= DISTANT_POISON_RATIO) {
+                        poisoned = true;
+                        poisonReason = `distant ratio ${ratio2.toFixed(2)} >= ${DISTANT_POISON_RATIO}`;
+                    }
+                }
+                if (poisoned) {
+                    try { devLog('[V121-cache] POISONED — invalidating entry and reloading from REST', {
+                        symbol: this.symbol, tf: this.timeframe,
+                        cachedLast, cachedFirst, restFirst, restLast,
+                        poisonReason,
+                    }); } catch(_) {}
+                }
+            }
+            // Clear the captured close regardless — only used once after a cache hit
+            this._cachedLastClose = null;
+            this._cachedFirstClose = null;
+
+            if (poisoned) {
+                // Invalidate the poisoned cache entry so we don't re-load it
+                // on the next switch.
+                try {
+                    await this.dataCache.invalidate(this.sourceId, this.symbol, this.timeframe);
+                } catch (e) { /* best-effort */ }
+                if (this._switchGen !== refreshGen) return;
+
+                // REPLACE the chart data with the fresh REST candles. This
+                //   is a small batch (just the tail) — we'll do a full
+                //   backfill via _detectAndFillGaps below. The key point is
+                //   that the poisoned candles are now gone from the chart.
+                if (recentCandles.length > 0) {
+                    // V121-cache-truth: pass this.symbol/this.timeframe so
+                    //   the store stamps the fresh (correct) candles with the
+                    //   right symbol/tf. _saveCacheFromChart will then save
+                    //   them under the correct cache key, overwriting the
+                    //   poisoned entry we just invalidated.
+                    await this.chartApi.loadHistory(recentCandles, {
+                        symbol: this.symbol, tf: this.timeframe
+                    });
+                    if (this._switchGen !== refreshGen) return;
+                    this._klineStartTime = recentCandles[recentCandles.length - 1]._x;
+                    // Skip the mergeRecentCandles call — we already replaced.
+                }
+            } else if (recentCandles.length > 0) {
                 const applied = await this.chartApi.mergeRecentCandles(recentCandles);
 
                 // Stale guard after another await
@@ -53955,7 +54193,11 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
 
                     if (fillCandles.length > 0) {
                         // Use mergeCandles which can insert into the middle
-                        const applied = await this.chartApi.mergeCandles(fillCandles);
+                        // V121-cache-truth: pass symbol/tf so the DataStore
+                        //   keeps its stamp even on the empty-store path.
+                        const applied = await this.chartApi.mergeCandles(fillCandles, {
+                            symbol: this.symbol, tf: this.timeframe
+                        });
                         if (applied > 0) anyApplied = true;
                         // Advance gapAfterX to the last fetched candle
                         const lastFetchedX = fillCandles[fillCandles.length - 1]._x;
@@ -55762,7 +56004,12 @@ class RatioAdapter extends DataSourceAdapter {
                         this._klineStartTime = ratioCandles[ratioCandles.length - 1]._x;
 
                         this.chartApi?._ctx?.invalidateYRangeCache?.();
-                        const result = await this.chartApi.loadHistory(ratioCandles);
+                        // V121-cache-truth: pass this.symbol/this.timeframe
+                        //   (which are "NUMERATOR/DENOMINATOR" composite + tf
+                        //   for RatioAdapter) so the DataStore stamps them.
+                        const result = await this.chartApi.loadHistory(ratioCandles, {
+                            symbol: this.symbol, tf: this.timeframe
+                        });
                         if (isStale()) return;
 
                         this.chartApi.setIntervalMs(intervalMs);
@@ -55834,7 +56081,12 @@ class RatioAdapter extends DataSourceAdapter {
             this._klineStartTime = ratioCandles[ratioCandles.length - 1]._x;
 
             this.chartApi?._ctx?.invalidateYRangeCache?.();
-            const result = await this.chartApi.loadHistory(ratioCandles);
+            // V121-cache-truth: stamp the store with this.symbol/this.timeframe
+            //   (composite "NUM/DEN" + tf) so _saveCacheFromChart saves under
+            //   the right key.
+            const result = await this.chartApi.loadHistory(ratioCandles, {
+                symbol: this.symbol, tf: this.timeframe
+            });
             if (isStale()) return;
 
             this.chartApi.setIntervalMs(intervalMs);
@@ -59228,10 +59480,20 @@ class DataSourceOrchestrator {
                 try {
                     if (adapter.isCacheEnabled && adapter._active && adapter.chartApi && _oldSymbolForCache) {
                         const exported = adapter.chartApi.exportAllCandles();
-                        if (exported.count > 0 && adapter.dataCache) {
-                            const saveTf = adapter.timeframe;
+                        // V121-cache-truth: use the symbol/tf STAMPED ON THE
+                        //   DATASTORE (exported.symbol/exported.tf) instead
+                        //   of the captured _oldSymbolForCache/adapter.timeframe.
+                        //   They should match (the candles in the chart ARE for
+                        //   the old symbol), but if there's any race where
+                        //   the store was overwritten mid-switch, the stamp
+                        //   is the AUTHORITATIVE source of what the candles
+                        //   actually are. Falls back to _oldSymbolForCache
+                        //   if the stamp is null (defensive).
+                        const saveSym = exported.symbol || _oldSymbolForCache;
+                        const saveTf = exported.tf || adapter.timeframe;
+                        if (exported.count > 0 && adapter.dataCache && saveSym && saveTf) {
                             const saveIntervalMs = adapter._tfToMs(saveTf);
-                            adapter.dataCache.set(adapter.sourceId, _oldSymbolForCache, saveTf, exported.candles, saveIntervalMs, {
+                            adapter.dataCache.set(adapter.sourceId, saveSym, saveTf, exported.candles, saveIntervalMs, {
                                 merge: false,
                                 meta: adapter._buildCacheMeta(),
                             }).catch(() => { /* best-effort */ });
@@ -59679,6 +59941,11 @@ class SourceUIController {
         this._bybitCategory = 'linear';
 
         this._bindButtons();
+        // V121-cache-persist: sync the cache button label with the actual
+        //   dataCache mode after construction. Without this, the button always
+        //   shows "Cache: Sess" (the hardcoded HTML default) on F5 even when
+        //   ChartFactory._wireDataStack has restored IDB mode from localStorage.
+        this._syncCacheButton();
 
         // Subscribe to events that update UI
         this._unsubConnected  = bus.on('source:connected', (evt) => this._onConnected(evt));
@@ -60007,9 +60274,7 @@ class SourceUIController {
                 return;
             }
             const next = this.CACHE_MODES[(idx + 1) % this.CACHE_MODES.length];
-            e.target.textContent = `Cache: ${this.CACHE_LABELS[next]}`;
-            e.target.classList.toggle('active', next !== 'off');
-            this.bus.emit('cache:mode', { mode: next }, 'SourceUIController');
+            this._applyCacheMode(next);
         }, { signal: sig });
 
         // V50: Populate cache buttons — pre-fetch 2 years of history for top-50 coins
@@ -60029,6 +60294,43 @@ class SourceUIController {
             e.stopPropagation();
             this._clearCache();
         }, { signal: sig });
+    }
+
+    /** V121-cache-persist: Apply a cache mode — update button label, emit the
+     *  event, AND persist the choice to localStorage so it survives F5.
+     *  Called from the btn-cache click handler. */
+    _applyCacheMode(next) {
+        if (!this.dataCache || !this.CACHE_MODES.includes(next)) return;
+        const btn = this._el('btn-cache');
+        if (btn) {
+            btn.textContent = `Cache: ${this.CACHE_LABELS[next]}`;
+            btn.classList.toggle('active', next !== 'off');
+        }
+        // Persist to localStorage so ChartFactory._wireDataStack can restore
+        // the same mode on the next page load. Without this, F5 always resets
+        // the cache to "session" (the hardcoded default), which is what the
+        // user reported: "когда я обновляю страницу, то в настройках кэш
+        // сбрасывается на сессионный всегда".
+        try {
+            const _ss = window._safeStorage;
+            if (_ss) _ss.setItem('chartEngine_cacheMode', next);
+        } catch (e) { /* best-effort */ }
+        this.bus.emit('cache:mode', { mode: next }, 'SourceUIController');
+    }
+
+    /** V121-cache-persist: Sync the btn-cache label with the dataCache's
+     *  ACTUAL current mode. Called once after construction so the button
+     *  reflects the persisted mode (set by ChartFactory._wireDataStack on
+     *  startup) instead of always showing the HTML default "Cache: Sess". */
+    _syncCacheButton() {
+        if (!this.dataCache) return;
+        const mode = this.dataCache.idb ? 'idb'
+                   : this.dataCache.session ? 'session' : 'off';
+        const btn = this._el('btn-cache');
+        if (btn) {
+            btn.textContent = `Cache: ${this.CACHE_LABELS[mode] || 'Sess'}`;
+            btn.classList.toggle('active', mode !== 'off');
+        }
     }
 
     /**
@@ -63296,6 +63598,23 @@ class ChartFactory {
         // If a caller wants IDB persistence, they pass idb:true at ChartFactory
         // config time — applies uniformly to main + aux data.
         const dataCache = new DataCache({ session: true, idb: false });
+        // V121-cache-persist: restore the user's last cache mode from
+        //   localStorage. Without this, F5 always resets to "session" (the
+        //   hardcoded default), which the user reported as a bug:
+        //   "когда я обновляю страницу, то в настройках кэш сбрасывается на
+        //    сессионный всегда".
+        //   SourceUIController._syncCacheButton() will sync the btn-cache label
+        //   with whatever mode we set here, so the UI and the actual cache
+        //   backend stay consistent after F5.
+        try {
+            const _ss = window._safeStorage;
+            if (_ss) {
+                const savedMode = _ss.getItem('chartEngine_cacheMode');
+                if (savedMode === 'off' || savedMode === 'session' || savedMode === 'idb') {
+                    dataCache.setMode(savedMode);
+                }
+            }
+        } catch (e) { /* best-effort — fall back to default 'session' */ }
 
         // ── InternalDataSimulator — synthetic data "worker" ──
         const simulator = new InternalDataSimulator(bus);
