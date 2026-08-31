@@ -5781,6 +5781,15 @@ const CE_MAIN_CANDLES_DEFAULTS = {
     lineColor: '',               // 'line' chartType
     lineWidth: 1.5,
     lineStyle: 'solid',          // 'line' chartType: 'solid' | 'dashed' | 'dotted'
+    // V136/V137: crosshair mark opt-ins for the base candles. Same trio
+    //   as indicator outputs: dot / Y-axis label / mark from other panels.
+    //   V137 defaults: the candle close IS marked on the main panel (chMark)
+    //   and from other panels (chCross) — user request «по умолчанию цена
+    //   закрытия на свечах на главном графике тоже подсвечивалась»; the
+    //   Y-axis pill stays opt-in.
+    chMark: true,
+    chLabel: false,
+    chCross: true,
 };
 const CE_MAIN_CANDLES = { ...CE_MAIN_CANDLES_DEFAULTS };
 (function _restoreMainCandlesCfg() {
@@ -5789,6 +5798,16 @@ const CE_MAIN_CANDLES = { ...CE_MAIN_CANDLES_DEFAULTS };
         if (raw) {
             const parsed = JSON.parse(raw);
             if (parsed && typeof parsed === 'object') {
+                // V137 migration: v136 stored chMark/chCross as the plain
+                //   DEFAULT false (indistinguishable from "not chosen").
+                //   Without a chv marker those are legacy defaults — drop
+                //   them so the new v137 defaults apply; true values are
+                //   real choices and survive.
+                if (parsed.chv !== 1) {
+                    for (const k of ['chMark', 'chLabel', 'chCross']) {
+                        if (parsed[k] !== true) delete parsed[k];
+                    }
+                }
                 Object.assign(CE_MAIN_CANDLES, sanitizeMainCandlesState(parsed));
                 // V129 legacy migration: v128 stored a `hollowUp` boolean.
                 //   If the new hollowMode is absent but hollowUp was on, map it.
@@ -5820,6 +5839,12 @@ function sanitizeMainCandlesState(obj) {
     if (isFinite(+obj.lineWidth) && +obj.lineWidth > 0 && +obj.lineWidth <= 12) out.lineWidth = +obj.lineWidth;
     if (obj.lineStyle === 'solid' || obj.lineStyle === 'dashed' || obj.lineStyle === 'dotted') out.lineStyle = obj.lineStyle;
     if (obj.gapConnectors === true || obj.gapConnectors === false) out.gapConnectors = obj.gapConnectors;
+    // V136/V137: crosshair opt-ins. Since v137 (chMark/chCross default ON)
+    //   both true AND false are explicit choices and persist; v136 legacy
+    //   input is pre-stripped by the callers via the chv marker.
+    for (const k of ['chMark', 'chLabel', 'chCross']) {
+        if (obj[k] === true || obj[k] === false) out[k] = obj[k];
+    }
     return out;
 }
 // V129: full-replace deserialization (preset import semantics — the snapshot
@@ -5828,8 +5853,40 @@ function applyMainCandlesState(obj) {
     Object.assign(CE_MAIN_CANDLES, CE_MAIN_CANDLES_DEFAULTS, sanitizeMainCandlesState(obj));
     saveMainCandlesCfg();
 }
+// V137: one-shot legacy migration for saved crosshair flags. v136 shipped
+//   chMark/chLabel/chCross with default FALSE and serialized them wholesale —
+//   a saved `false` was the default, not a user choice. v137 flips the
+//   defaults (chCross ON everywhere, candle chMark ON), so legacy non-true
+//   values must be stripped before deserialization or they would block the
+//   new defaults. Containers carrying `chv: 1` (saved by v137+) are trusted:
+//   their false values are explicit opt-outs and are kept.
+function stripLegacyChFlags(container) {
+    if (!container || typeof container !== 'object' || container.chv === 1) return;
+    if (Array.isArray(container.indicators)) {
+        for (const ind of container.indicators) {
+            const styles = ind && typeof ind === 'object' ? ind.outputStyles : null;
+            if (!styles || typeof styles !== 'object') continue;
+            for (const name in styles) {
+                const st = styles[name];
+                if (!st || typeof st !== 'object') continue;
+                for (const k of ['chMark', 'chLabel', 'chCross']) {
+                    if (st[k] !== true) delete st[k];
+                }
+            }
+        }
+    }
+    const mc = container.mainCandles;
+    if (mc && typeof mc === 'object') {
+        for (const k of ['chMark', 'chLabel', 'chCross']) {
+            if (mc[k] !== true) delete mc[k];
+        }
+    }
+}
 function saveMainCandlesCfg() {
-    try { _safeStorage.setItem('ce-main-candles-v1', JSON.stringify(CE_MAIN_CANDLES)); } catch (e) {}
+    // V137: chv marker distinguishes v137 saves (false = explicit choice)
+    //   from v136 saves (false was just the default). Sanitize drops the
+    //   marker, so it never enters the hub itself.
+    try { _safeStorage.setItem('ce-main-candles-v1', JSON.stringify({ ...CE_MAIN_CANDLES, chv: 1 })); } catch (e) {}
 }
 function resetMainCandlesCfg() {
     Object.assign(CE_MAIN_CANDLES, CE_MAIN_CANDLES_DEFAULTS);
@@ -6330,7 +6387,7 @@ function devLog(...args) {
 // reads window.__devMode (e.g. console inspection, eval'd snippets) sees
 // the live value. devLog() already uses the closure directly, so it works
 // correctly regardless.
-Object.assign(window, { _safeStorage, CHART_ENGINE_VERSION, UP_COLOR, DOWN_COLOR, CE_MAIN_CANDLES_DEFAULTS, CE_MAIN_CANDLES, applyMainCandlesToConfig, saveMainCandlesCfg, resetMainCandlesCfg, sanitizeMainCandlesState, applyMainCandlesState, DEBUG_YRANGE, scopedEl, _el, esc, _numAttr, _deepCloneWithFunctions, mergeCandlesByX, TIMEFRAME_MS_MAP, tfToMs, detectHorizontalSwipe, OVERLAY_TOOL_KEYS, _deselectOverlayTools, _endAllOverlayDrags, panelBounds, showToast, _debugLogLines, debugLog, _renderDebugLog, _initDebugLogPanel, toggleDebugLogPanel, toggleDevMode, isDevMode, devLog });
+Object.assign(window, { _safeStorage, CHART_ENGINE_VERSION, UP_COLOR, DOWN_COLOR, CE_MAIN_CANDLES_DEFAULTS, CE_MAIN_CANDLES, applyMainCandlesToConfig, saveMainCandlesCfg, resetMainCandlesCfg, sanitizeMainCandlesState, applyMainCandlesState, stripLegacyChFlags, DEBUG_YRANGE, scopedEl, _el, esc, _numAttr, _deepCloneWithFunctions, mergeCandlesByX, TIMEFRAME_MS_MAP, tfToMs, detectHorizontalSwipe, OVERLAY_TOOL_KEYS, _deselectOverlayTools, _endAllOverlayDrags, panelBounds, showToast, _debugLogLines, debugLog, _renderDebugLog, _initDebugLogPanel, toggleDebugLogPanel, toggleDevMode, isDevMode, devLog });
 // FIX: __lastGlobalErrorTs is a `let` binding scoped to this IIFE — exporting
 //   it via Object.assign(window, {__lastGlobalErrorTs}) only copies the value
 //   ONCE (at init time = 0). Subsequent updates (when an error fires) never
@@ -6362,7 +6419,7 @@ Object.defineProperty(window, '__devMode', {
 });
 
 // ── V39: регистрация в реестре модулей ──
-CE.registerModule('ce-preamble', [], ['_safeStorage', 'CHART_ENGINE_VERSION', 'UP_COLOR', 'DOWN_COLOR', 'CE_MAIN_CANDLES_DEFAULTS', 'CE_MAIN_CANDLES', 'applyMainCandlesToConfig', 'saveMainCandlesCfg', 'resetMainCandlesCfg', 'sanitizeMainCandlesState', 'applyMainCandlesState', 'DEBUG_YRANGE', '__lastGlobalErrorTs', 'scopedEl', '_el', 'esc', '_numAttr', '_deepCloneWithFunctions', 'mergeCandlesByX', 'TIMEFRAME_MS_MAP', 'tfToMs', 'detectHorizontalSwipe', 'OVERLAY_TOOL_KEYS', '_deselectOverlayTools', '_endAllOverlayDrags', 'panelBounds', 'showToast', '_debugLogLines', 'debugLog', '_renderDebugLog', '_initDebugLogPanel', 'toggleDebugLogPanel', '__devMode', 'toggleDevMode', 'isDevMode', 'devLog'], 'MAIN-THREAD ONLY');
+CE.registerModule('ce-preamble', [], ['_safeStorage', 'CHART_ENGINE_VERSION', 'UP_COLOR', 'DOWN_COLOR', 'CE_MAIN_CANDLES_DEFAULTS', 'CE_MAIN_CANDLES', 'applyMainCandlesToConfig', 'saveMainCandlesCfg', 'resetMainCandlesCfg', 'sanitizeMainCandlesState', 'applyMainCandlesState', 'stripLegacyChFlags', 'DEBUG_YRANGE', '__lastGlobalErrorTs', 'scopedEl', '_el', 'esc', '_numAttr', '_deepCloneWithFunctions', 'mergeCandlesByX', 'TIMEFRAME_MS_MAP', 'tfToMs', 'detectHorizontalSwipe', 'OVERLAY_TOOL_KEYS', '_deselectOverlayTools', '_endAllOverlayDrags', 'panelBounds', 'showToast', '_debugLogLines', 'debugLog', '_renderDebugLog', '_initDebugLogPanel', 'toggleDebugLogPanel', '__devMode', 'toggleDevMode', 'isDevMode', 'devLog'], 'MAIN-THREAD ONLY');
 })(window.CE, window);
 
 (function CE$module$ce$infra(CE, window) {
@@ -7808,7 +7865,13 @@ const ChartDefaults = {
             // crosses candles with very different closes (e.g. a tall spike
             // candle next to a flat one). EMA dampens those jumps.
             // Set tooltipSmoothing = 0 to disable (use raw close).
-            tooltipSmoothing: 5
+            tooltipSmoothing: 5,
+            // V136: %-from-price label on the horizontal crosshair line (main
+            //   panel only — it needs a real price scale). The line BREAKS at
+            //   the left edge of the plot and the value (e.g. "+1.23%") starts
+            //   in that gap — the same mechanic the horizontal line tool and
+            //   min/max inline labels use. Toggle: toolbar Settings → "CH %".
+            pctFromPrice: true
         },
         xAxis: null,  // set in buildConfig() — needs Axis.x()
         yAxis: {
@@ -11597,6 +11660,7 @@ const labelCache = new LabelCache();
 const Y_LABEL_FONT = '11px monospace';
 const OVERLAY_LABEL_FONT = '10px monospace';
 const INLINE_LABEL_FONT   = '9px monospace';    // smaller font for inline line annotations
+const CH_PCT_FONT         = '6.5px monospace'; // V138: crosshair %-label — between the 9px inline label and the 4.5px V137, tinted like the line
 const Y_LABEL_PAD  = 4;
 const Y_LABEL_H    = 15;
 const Y_LABEL_LEFT_MARGIN = 1;  // left margin when axis is on the right side
@@ -11675,10 +11739,10 @@ const STICKER_COLORS = {
 
 
 // ── V39: явный экспорт в window (обратная совместимость) ──
-Object.assign(window, { AxisUnitSystem, _pad2, _pad4, MONTH_SHORT, MONTH_FULL, _monthShort, _monthFull, _isFirstOfDay, LOG_SCALE_EPSILON, linearValToRatio, linearRatioToVal, linearXNormal_ratioToPix, linearXInverted_ratioToPix, linearXNormal_pixToVal, linearXInverted_pixToVal, linearYNormal_ratioToPix, linearYInverted_ratioToPix, linearYNormal_pixToRatio, linearYInverted_pixToRatio, needsLogClamp, clampForLog, valToLog, logToVal, logMinOf, logMaxOf, logRangeOf, isZeroReference, valToPct, pctToVal, pctRangeOf, LINEAR_TRANSFORMERS, getLinearTransformers, Scale, LogScale, PercentScale, createYScale, LabelCache, labelCache, Y_LABEL_FONT, OVERLAY_LABEL_FONT, INLINE_LABEL_FONT, Y_LABEL_PAD, Y_LABEL_H, Y_LABEL_LEFT_MARGIN, PANEL_LABEL_DEFAULTS, PANEL_DEL_BTN_SIZE, PANEL_DEL_BTN_GAP, PANEL_DEL_BTN_HIT_PAD, PANEL_DEL_BTN_COLORS, STICKER_COLORS });
+Object.assign(window, { AxisUnitSystem, _pad2, _pad4, MONTH_SHORT, MONTH_FULL, _monthShort, _monthFull, _isFirstOfDay, LOG_SCALE_EPSILON, linearValToRatio, linearRatioToVal, linearXNormal_ratioToPix, linearXInverted_ratioToPix, linearXNormal_pixToVal, linearXInverted_pixToVal, linearYNormal_ratioToPix, linearYInverted_ratioToPix, linearYNormal_pixToRatio, linearYInverted_pixToRatio, needsLogClamp, clampForLog, valToLog, logToVal, logMinOf, logMaxOf, logRangeOf, isZeroReference, valToPct, pctToVal, pctRangeOf, LINEAR_TRANSFORMERS, getLinearTransformers, Scale, LogScale, PercentScale, createYScale, LabelCache, labelCache, Y_LABEL_FONT, OVERLAY_LABEL_FONT, INLINE_LABEL_FONT, CH_PCT_FONT, Y_LABEL_PAD, Y_LABEL_H, Y_LABEL_LEFT_MARGIN, PANEL_LABEL_DEFAULTS, PANEL_DEL_BTN_SIZE, PANEL_DEL_BTN_GAP, PANEL_DEL_BTN_HIT_PAD, PANEL_DEL_BTN_COLORS, STICKER_COLORS });
 
 // ── V39: регистрация в реестре модулей ──
-CE.registerModule('ce-axis-system', ['ce-math-utils', 'ce-render-math'], ['AxisUnitSystem', '_pad2', '_pad4', 'MONTH_SHORT', 'MONTH_FULL', '_monthShort', '_monthFull', '_isFirstOfDay', 'LOG_SCALE_EPSILON', 'linearValToRatio', 'linearRatioToVal', 'linearXNormal_ratioToPix', 'linearXInverted_ratioToPix', 'linearXNormal_pixToVal', 'linearXInverted_pixToVal', 'linearYNormal_ratioToPix', 'linearYInverted_ratioToPix', 'linearYNormal_pixToRatio', 'linearYInverted_pixToRatio', 'needsLogClamp', 'clampForLog', 'valToLog', 'logToVal', 'logMinOf', 'logMaxOf', 'logRangeOf', 'isZeroReference', 'valToPct', 'pctToVal', 'pctRangeOf', 'LINEAR_TRANSFORMERS', 'getLinearTransformers', 'Scale', 'LogScale', 'PercentScale', 'createYScale', 'LabelCache', 'labelCache', 'Y_LABEL_FONT', 'OVERLAY_LABEL_FONT', 'INLINE_LABEL_FONT', 'Y_LABEL_PAD', 'Y_LABEL_H', 'Y_LABEL_LEFT_MARGIN', 'PANEL_LABEL_DEFAULTS', 'PANEL_DEL_BTN_SIZE', 'PANEL_DEL_BTN_GAP', 'PANEL_DEL_BTN_HIT_PAD', 'PANEL_DEL_BTN_COLORS', 'STICKER_COLORS', '_tzDate', 'setTimezone', 'getTimezone', 'getCommonTimezones'], 'WORKER-SAFE');
+CE.registerModule('ce-axis-system', ['ce-math-utils', 'ce-render-math'], ['AxisUnitSystem', '_pad2', '_pad4', 'MONTH_SHORT', 'MONTH_FULL', '_monthShort', '_monthFull', '_isFirstOfDay', 'LOG_SCALE_EPSILON', 'linearValToRatio', 'linearRatioToVal', 'linearXNormal_ratioToPix', 'linearXInverted_ratioToPix', 'linearXNormal_pixToVal', 'linearXInverted_pixToVal', 'linearYNormal_ratioToPix', 'linearYInverted_ratioToPix', 'linearYNormal_pixToRatio', 'linearYInverted_pixToRatio', 'needsLogClamp', 'clampForLog', 'valToLog', 'logToVal', 'logMinOf', 'logMaxOf', 'logRangeOf', 'isZeroReference', 'valToPct', 'pctToVal', 'pctRangeOf', 'LINEAR_TRANSFORMERS', 'getLinearTransformers', 'Scale', 'LogScale', 'PercentScale', 'createYScale', 'LabelCache', 'labelCache', 'Y_LABEL_FONT', 'OVERLAY_LABEL_FONT', 'INLINE_LABEL_FONT', 'CH_PCT_FONT', 'Y_LABEL_PAD', 'Y_LABEL_H', 'Y_LABEL_LEFT_MARGIN', 'PANEL_LABEL_DEFAULTS', 'PANEL_DEL_BTN_SIZE', 'PANEL_DEL_BTN_GAP', 'PANEL_DEL_BTN_HIT_PAD', 'PANEL_DEL_BTN_COLORS', 'STICKER_COLORS', '_tzDate', 'setTimezone', 'getTimezone', 'getCommonTimezones'], 'WORKER-SAFE');
 })(window.CE, window);
 
 (function CE$module$ce$panel$render$utils(CE, window) {
@@ -19763,6 +19827,19 @@ class IndicatorBrick extends IndicatorBase {
                     alpha: saved.alpha ?? cfg[`${out.name}_alpha`] ?? out.alpha ?? 0.8,
                     // V51-line-styles: line dash style (solid/dash/dot/dashdot/longdash)
                     lineStyle: saved.lineStyle || cfg[`${out.name}_lineStyle`] || out.lineStyle || 'solid',
+                    // V136/V137: crosshair mark opt-ins (per-line, set via the
+                    //   indicator settings "Crosshair marks" section):
+                    //   chMark  — snap dot where the crosshair crosses this line (same panel)
+                    //   chLabel — ALSO draw a value pill on the Y-axis label strip
+                    //   chCross — ALSO mark this line while the crosshair is in ANOTHER panel
+                    //   V137 defaults: chCross is ON by default («по умолчанию
+                    //   всегда отмечались когда кроссхэйр на другой панели») —
+                    //   absent → true, explicit false → off. chMark/chLabel
+                    //   stay opt-in. Legacy v136 saves (false = plain default)
+                    //   are stripped by stripLegacyChFlags before this point.
+                    chMark:  saved.chMark === true,
+                    chLabel: saved.chLabel === true,
+                    chCross: saved.chCross !== false,
                 };
             }
         }
@@ -19951,6 +20028,24 @@ class IndicatorBrick extends IndicatorBase {
         // FIX V49n-gex-skip: GEX and other AuxSeriesBrick indicators that
         // fetch external data on a timer must NOT be cached by the fast-path.
         // They need _computeRaw called every frame so the timer check runs.
+        // V139-volnorm-clock: VolNorm's forming-bar volume extrapolation
+        //   depends on WALL-CLOCK time (the elapsed fraction of the OPEN
+        //   bar), which the version-keyed fast path can't see — on a quiet
+        //   symbol (no data bumps) the correction would stay frozen while
+        //   the wall clock advances. Bypass the fast path while VolNorm's
+        //   last bar is open; the brick's own _computeRaw cache (minute-
+        //   bucketed key) keeps the actual recompute cost at ~1 per minute.
+        const _vnLastX = (this.constructor?.META?.type === 'volnormcandles' &&
+            ohlc && ohlc._x && ohlc._x.length && ohlc._intervalMs > 0)
+            ? ohlc._x[ohlc._x.length - 1] : NaN;
+        // V139: true while VolNorm's last bar is OPEN — the result depends on
+        //   wall-clock time, which neither the fast path below nor the shared
+        //   version-keyed compute cache further down can see. While forming,
+        //   BOTH are bypassed; the brick's own minute-bucketed _vncCache keys
+        //   the actual recompute (~1/min) and keeps exactly ONE result alive
+        //   (no per-minute growth of the manager's compute-cache Map).
+        const _vnForming = isFinite(_vnLastX) &&
+            (Date.now() - _vnLastX) >= 0 && (Date.now() - _vnLastX) < ohlc._intervalMs;
         const isTimerBased = this._gexRefreshTimer !== undefined ||
             (this.constructor?.META?.type === 'gammaexposure') ||
             (this.constructor?.META?.type === 'fundingrate') ||
@@ -19960,7 +20055,9 @@ class IndicatorBrick extends IndicatorBase {
             // must NOT be cached by the fast-path, otherwise _computeRaw
             // (which triggers the fetch) never runs again after the first
             // frame, and the events never appear.
-            (this.constructor?.META?.type === 'econevents');
+            (this.constructor?.META?.type === 'econevents') ||
+            // V139-volnorm-clock (see above)
+            _vnForming;
 
         // FIX V49n-perf-pan: fast-path — if nothing changed since last compute,
         // return cached result immediately. During panning, chart data version,
@@ -20232,7 +20329,11 @@ class IndicatorBrick extends IndicatorBase {
         }
 
         // If manager cache is available, try to dedup
-        if (manager && typeof manager.getCached === 'function') {
+        // V139-volnorm-clock: skipped while VolNorm's last bar is forming —
+        //   the shared cache is keyed by data version only and would serve
+        //   a stale (wrongly-sized) candle on a quiet symbol; see the
+        //   _vnForming comment at the top of compute().
+        if (manager && typeof manager.getCached === 'function' && !_vnForming) {
             const key = this._cacheKey(sourceData, count, version);
             const result = manager.getCached(key, version, () => {
                 return this._computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager);
@@ -31315,7 +31416,18 @@ class VolNormCandlesBrick extends IndicatorBrick {
 
         // Cache by (version, count, params) — re-compute only when data
         // or params change. Panning without lazy-load = cache hit (fast).
-        const cacheKey = `${version}:${count}:${period}:${mult}:${scale}:${lambda}:${volUnit}:${heikinAshi ? 1 : 0}`;
+        // V139: while the LAST bar is still FORMING, its elapsed fraction
+        //   advances with wall-clock time, but version only bumps when DATA
+        //   changes — a quiet symbol could freeze a stale correction for
+        //   minutes. Re-key at most once a minute while the bar is open;
+        //   a closed last bar keeps the fully static key (zero extra work).
+        let _forming = false;
+        if (ohlc && ohlc._x && ohlc._intervalMs > 0 && ohlc._x.length) {
+            const _lastX = ohlc._x[ohlc._x.length - 1];
+            const _age = Date.now() - _lastX;
+            _forming = isFinite(_lastX) && _age >= 0 && _age < ohlc._intervalMs;
+        }
+        const cacheKey = `${version}:${count}:${period}:${mult}:${scale}:${lambda}:${volUnit}:${heikinAshi ? 1 : 0}${_forming ? ':t' + Math.floor(Date.now() / 60000) : ''}`;
         if (this._vncCacheKey === cacheKey && this._vncCache) {
             this._computed = { ...this._vncCache, count, visibleRange };
             return this._computed;
@@ -31343,6 +31455,43 @@ class VolNormCandlesBrick extends IndicatorBrick {
             return result;
         }
 
+        // V139-forming-volume / V140-forming-cap: trailing stats over the
+        //   last 20 CLOSED bars (valid = finite & > 0; ≥ 5 required, else
+        //   0 → the brick falls back to the V122 linear extrapolation):
+        //   • V̄ (avgClosedVol)   — volume anchor for the forming estimate;
+        //   • B̄ (avgAbsBodyNorm) — mean |normalized body| of closed bars;
+        //   • R̄ (avgRangeNorm)   — mean normalized candle range (|body| +
+        //     both wicks) of closed bars. V140 bounds the forming bar's
+        //   outputs by capK·B̄ / capK·R̄ (see the loop) so a partial move
+        //   divided by a partial-volume estimate can't dwarf the family
+        //   and squash the panel's auto-fit. The last bar is excluded
+        //   because its volume is partial by definition.
+        let avgClosedVol = 0, avgAbsBodyNorm = 0, avgRangeNorm = 0;
+        {
+            let _sv = 0, _nv = 0, _sb = 0, _sr = 0, _nb = 0;
+            for (let j = count - 2; j >= 0 && _nv < 20; j--) {
+                const _vv = volArr[j];
+                if (!(isFinite(_vv) && _vv > 0)) continue;
+                _sv += _vv; _nv++;
+                // V140: the closed bars' own normalized body/range use the
+                //   SAME denominator formula as the loop below (their final
+                //   volume, no extrapolation) — the family reference must
+                //   match what the loop will actually produce for them.
+                const _o = openArr[j], _h = highArr[j], _l = lowArr[j], _c = closeArr[j];
+                if (!isFinite(_o) || !isFinite(_h) || !isFinite(_l) || !isFinite(_c)) continue;
+                let _d = _vv;
+                if (volUnit === 'dollar') _d *= Math.abs(_c);
+                if (lambda !== 1 && _d > 0) _d = Math.pow(_d, lambda);
+                if (_d > 0) {
+                    _sb += Math.abs(_c - _o) / _d * scale;
+                    _sr += (Math.abs(_c - _o) + _h - _l) / _d * scale;
+                    _nb++;
+                }
+            }
+            if (_nv >= 5) avgClosedVol = _sv / _nv;
+            if (_nb >= 5) { avgAbsBodyNorm = _sb / _nb; avgRangeNorm = _sr / _nb; }
+        }
+
         // Single pass: build the gapless chain. (V127: the rolling Z-score
         // part was extracted verbatim into _rollingZ(); V128: the
         // Delta/ATRNorm/Heikin-Ashi subclasses were removed — the helper
@@ -31353,19 +31502,52 @@ class VolNormCandlesBrick extends IndicatorBrick {
             if (!isFinite(o) || !isFinite(h) || !isFinite(l) || !isFinite(c) || !isFinite(v) || v <= 0) {
                 continue;
             }
-            // V122-forming-candle: the LAST bar is usually still forming — its
-            //   volume only covers the ELAPSED fraction of the interval, so
-            //   dividing by the partial volume inflated body/wicks (a huge
-            //   false "anomaly" candle right after the bar opens). Extrapolate
-            //   the volume to a full candle linearly by elapsed time (capped
-            //   at 20× so the first seconds of a bar don't over-correct).
+            // V139-forming-volume / V140-forming-floor: the LAST bar is
+            //   usually still forming — its volume only covers the ELAPSED
+            //   fraction of the interval, so dividing by the partial volume
+            //   inflates body/wicks (a false "anomaly" monster right after
+            //   a high-TF bar opens). V139 anchored the TOP of the estimate
+            //   (3·V̄) but left the BOTTOM open: 5 min into a 4h bar a quiet
+            //   or feed-stale open gives v/frac far BELOW V̄ (even v/48 can
+            //   be ~0.1·V̄), so the partial move divided by that tiny
+            //   estimate still explodes — «5 минут от 4ч — слишком
+            //   большая». V140 closes the band from both sides:
+            //     vEff = clamp(max(v/frac, v), V̄·(1−frac)², 3·V̄)
+            //   • floor V̄·(1−frac)²: right after the open the estimate
+            //     assumes a typical bar — the early candle shows the PARTIAL
+            //     move over typical volume → small, then grows into its
+            //     final size as both move and volume accumulate (TV-like);
+            //   • floor decays to 0 as frac→1 → v/frac ≈ v wins →
+            //     CONTINUOUS at bar close (no jump when the bar closes);
+            //   • open burst → clamped at 3·V̄ → bounded, stays visible;
+            //   • lower bound v → never below the volume already traded;
+            //   • quiet open → floored near V̄ → body like a normal bar.
             //   Closed bars (elapsed >= interval) are untouched.
             let vEff = v;
+            let _frmCapB = 0, _frmCapR = 0;   // V140-forming-cap: 0 = no cap
             if (i === count - 1 && ohlc._x && ohlc._intervalMs > 0 && ohlc._x.length > i) {
                 const barOpen = ohlc._x[i];
                 if (isFinite(barOpen)) {
                     const frac = (Date.now() - barOpen) / ohlc._intervalMs;
-                    if (frac > 0.02 && frac < 1) vEff = v / Math.max(frac, 0.05);
+                    if (frac > 0 && frac < 1) {
+                        vEff = avgClosedVol > 0
+                            ? Math.min(Math.max(v / frac, v, avgClosedVol * Math.pow(1 - frac, 2)), 3 * avgClosedVol)  // V139 anchor + V140 floor
+                            : v / Math.max(frac, 0.05);                                                                 // V122 fallback (young chart)
+                        // V140-forming-cap: the partial move/wicks are NOT
+                        //   extrapolated (only the volume is), so a genuine
+                        //   early spike on thin/stale volume can still push
+                        //   move-per-volume far outside the closed-bar
+                        //   family. Bound the forming bar's outputs by
+                        //   capK × trailing mean body/range; capK relaxes
+                        //   2 → 20 as frac 0 → 1, so near bar close the
+                        //   bound is effectively free (no discontinuity
+                        //   when the closed-bar path takes over).
+                        if (avgAbsBodyNorm > 0 && avgRangeNorm > 0) {
+                            const capK = 2 + 18 * frac * frac;
+                            _frmCapB = capK * avgAbsBodyNorm;
+                            _frmCapR = capK * avgRangeNorm;
+                        }
+                    }
                 }
             }
             // V127: denominator with elasticity + unit.
@@ -31377,9 +31559,23 @@ class VolNormCandlesBrick extends IndicatorBrick {
             if (volUnit === 'dollar') denom = vEff * Math.abs(c);
             if (lambda !== 1 && denom > 0) denom = Math.pow(denom, lambda);
             // Volume-normalized body + wicks (scaled for readability)
-            const body = (c - o) / denom * scale;
-            const upperWick = (h - Math.max(o, c)) / denom * scale;
-            const lowerWick = (Math.min(o, c) - l) / denom * scale;
+            let body = (c - o) / denom * scale;
+            let upperWick = (h - Math.max(o, c)) / denom * scale;
+            let lowerWick = (Math.min(o, c) - l) / denom * scale;
+            // V140-forming-cap: uniform shape-preserving clamp of the
+            //   forming bar's outputs to capK × the closed-bar family (see
+            //   the _frmCapB/_frmCapR comment above). Scaling body and both
+            //   wicks by the same factor keeps the candle's proportions;
+            //   the gapless chain anchor (syn_o) is untouched, so the walk
+            //   stays continuous. Skipped for degenerate non-finite values
+            //   (denominator collapse) — those keep the legacy behavior.
+            if (_frmCapB > 0 && isFinite(body) && isFinite(upperWick) && isFinite(lowerWick)) {
+                const _fr = Math.abs(body) + Math.max(0, upperWick) + Math.max(0, lowerWick);
+                const _s = Math.min(1,
+                    _frmCapB / Math.max(Math.abs(body), 1e-12),
+                    _frmCapR / Math.max(_fr, 1e-12));
+                if (_s < 1) { body *= _s; upperWick *= _s; lowerWick *= _s; }
+            }
             // Gapless chain: open[i] = close[i-1]
             const syn_o = (i === 0 || !isFinite(synClose[i - 1])) ? 0 : synClose[i - 1];
             const syn_c = syn_o + body;
@@ -36450,6 +36646,27 @@ class OverlayRenderer {
         return xAxisUnitSystem.formatCrosshairLabel(xValue, xLabelFmt, intervalMs);
     }
 
+    /**
+     * V136: %-from-price label text for the horizontal crosshair line.
+     * Returns "+1.23%"-style text (distance from the current price to the
+     * crosshair level), or null when the feature is off / not applicable:
+     *   - settings.crosshair.pctFromPrice === false (toolbar "CH %" toggle)
+     *   - active panel is not 'main' (indicator panels are not price scales)
+     *   - no finite current price (e.g. before the first tick loads)
+     *   - non-finite level (log-scale clamping edge cases)
+     */
+    _crosshairPctText(snap, yScale, my, currentPriceData) {
+        const cfg = this.config.settings?.crosshair;
+        if (!cfg || cfg.pctFromPrice === false) return null;
+        if (snap.activePanelId !== 'main') return null;
+        const price = currentPriceData?.panelPrices?.main?.value;
+        if (!isFinite(price) || price <= 0) return null;
+        if (!yScale || typeof yScale.pixToVal !== 'function') return null;
+        const level = yScale.pixToVal(my);
+        if (!isFinite(level)) return null;
+        try { return formatPctDelta(level, price); } catch (e) { return null; }
+    }
+
     render(snap, layout, xScale, yScales, xAxisUnitSystem, currentPriceData, yColW, yFormatters) {
         const { ctx, csc, strokeRound } = initRendererCtx(this.ctx, this._csc, layout.width, layout.height);
         this._csc = csc;
@@ -36470,8 +36687,33 @@ class OverlayRenderer {
         ctx.strokeStyle = UI_COLORS.crosshair; ctx.lineWidth = 1;
         ctx.setLineDash([4, 4]);
         drawVLine(ctx, strokeRound(mx), layout.plotTop, layout.plotBottom);
-        drawHLine(ctx, strokeRound(my), layout.plotLeft, layout.plotRight);
-        ctx.setLineDash([]);
+        // V136: optional %-from-price inline label on the horizontal line.
+        //   The line BREAKS right where the text starts (gap mechanic, same
+        //   as line-tool inline labels) — no line segment under the text.
+        //   V137: the text uses the SAME color and alpha as the horizontal
+        //   crosshair line it sits on (the way the line-tool inline label
+        //   uses its line's color+alpha) and a much smaller font — it reads
+        //   as part of the line, not as a separate bright label.
+        //   V138: font raised to 6.5px — between the 9px inline label and
+        //   the 4.5px of V137 ("чуть побольше"), gap 4→5 to match.
+        const pctText = this._crosshairPctText(snap, yS, my, currentPriceData);
+        if (pctText) {
+            ctx.font = CH_PCT_FONT;
+            const tw  = ctx.measureText(pctText).width;
+            const off = 6, gap = 5;                       // V138: gap scales with the in-between font (4→5)
+            const tx  = layout.plotLeft + off;             // text starts at the left edge
+            const gapRight = tx + tw + gap;
+            if (gapRight < layout.plotRight - 4) {
+                drawHLine(ctx, strokeRound(my), gapRight, layout.plotRight);
+            }
+            ctx.setLineDash([]);
+            ctx.fillStyle = UI_COLORS.crosshair;          // the line's color AND alpha
+            ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+            ctx.fillText(pctText, tx, strokeRound(my));
+        } else {
+            drawHLine(ctx, strokeRound(my), layout.plotLeft, layout.plotRight);
+            ctx.setLineDash([]);
+        }
 
         // X axis label on crosshair — format using AxisUnitSystem (skip if X-axis is 'none')
         if (layout.axisXMode !== 'none') {
@@ -36568,7 +36810,7 @@ class OverlayRenderer {
         }
 
         if (snap.isSnapped && snap.snappedValues) {
-            this._drawSnapHighlight(ctx, snap, layout, yS, xScale, xAxisUnitSystem, yScales);
+            this._drawSnapHighlight(ctx, snap, layout, yS, xScale, xAxisUnitSystem, yScales, yColW, yFormatters);
         }
     }
 
@@ -36669,42 +36911,89 @@ class OverlayRenderer {
         }
     }
 
-    _drawSnapHighlight(ctx, snap, layout, yScale, xScale, xAxisUnitSystem, yScales) {
+    _drawSnapHighlight(ctx, snap, layout, yScale, xScale, xAxisUnitSystem, yScales, yColW, yFormatters) {
         const vals = snap.snappedValues;
         const pId  = snap.activePanelId;
         const idx  = vals?.idx;  // logical index into dataStore + indicator arrays
 
-        const seriesForPanel = this.config.series.filter(s => s.panelId === pId && s.visible !== false);
-        // ── Snap dots for regular series on this panel ──
-        for (const sCfg of seriesForPanel) {
-            if (sCfg.type === 'bar') continue;
-            const val = vals[sCfg.id];
-            if (!isFinite(val)) continue;
-            // Use the correct Y-scale for overlay axis series
-            const yKey = sCfg.yAxis ? yAxisKey(pId, sCfg.yAxis) : pId;
-            const sYScale = (yScales && yScales[yKey]) || yScale;
-            const py = sYScale.valToPix(val);
-            const px = snap.snappedX;
-
-            ctx.fillStyle = sCfg.upColor || sCfg.color || '#ffffff';
+        // ══ V136/V137: crosshair marks — per-line flags ════════════════
+        // Before v136 the crosshair dotted EVERY series and indicator line it
+        // crossed (and only on the active panel). Since v136 each line is
+        // controlled by its own flags; v137 flipped the defaults — same-panel
+        // dots (chMark) remain opt-in EXCEPT the main candle close, while
+        // cross-panel marks (chCross) are ON by default:
+        //   indicators — outputStyles[out.name].chMark / chLabel / chCross
+        //                (indicator settings → "Crosshair marks")
+        //   main candles — CE_MAIN_CANDLES.chMark / chLabel / chCross
+        //                (Main Candles settings → "Crosshair")
+        //   other plain series — sCfg.chMark / chLabel / chCross (no UI)
+        // chLabel draws the value pill on the Y-axis label strip in addition
+        // to the dot; chCross marks the line even while the crosshair is
+        // active in ANOTHER panel (the vertical line spans all panels).
+        const _mc = (typeof CE_MAIN_CANDLES !== 'undefined') ? CE_MAIN_CANDLES : null;
+        // V137: candles chMark/chCross and plain-series chCross default ON
+        //   (absent → on, explicit false → off); chLabel and plain-series
+        //   chMark remain opt-in.
+        const seriesFlags = (sCfg) => {
+            if (sCfg.type === 'candlestick' && _mc) {
+                return { mark: _mc.chMark !== false, label: _mc.chLabel === true, cross: _mc.chCross !== false };
+            }
+            return { mark: sCfg.chMark === true, label: sCfg.chLabel === true, cross: sCfg.chCross !== false };
+        };
+        const dot = (px, py, color) => {
+            ctx.fillStyle = color;
             ctx.beginPath();
             ctx.arc(px, py, RENDER_CONSTANTS.SNAP_DOT_RADIUS, 0, Math.PI * 2);
             ctx.fill();
             ctx.strokeStyle = UI_COLORS.snapDotStroke;
             ctx.lineWidth = RENDER_CONSTANTS.SNAP_DOT_STROKE_PX;
             ctx.stroke();
+        };
+        // Value pill on the Y-axis label strip (any panel — the strip spans the
+        // full chart height; py selects the panel visually).
+        const yPill = (pId2, py, val, color) => {
+            if (layout.axisYMode === 'none') return;
+            drawYAxisLabel(ctx, {
+                text: fmtYVal(yScales, yFormatters, pId2, val),
+                y: py,
+                ...yAxisGeom(layout, yColW),
+                bgColor: color, textColor: '#fff'
+            });
+        };
+        // Dot + optional label, clipped to the target panel's vertical range
+        // (valToPix can produce out-of-panel Y for values off the visible range).
+        const markAt = (pId2, yKey2, val, color, flags) => {
+            const tScale = (yScales && yScales[yKey2]) || (pId2 === pId ? yScale : null);
+            if (!tScale) return;
+            const py = tScale.valToPix(val);
+            const panel = layout.panels[pId2];
+            if (panel) {
+                const pb = panelBounds(panel);
+                if (py < pb.top || py > pb.bottom) return;
+            }
+            dot(snap.snappedX, py, color);
+            if (flags.label) yPill(pId2, py, val, color);
+        };
+
+        const seriesForPanel = this.config.series.filter(s => s.panelId === pId && s.visible !== false);
+        // ── Marks for regular series on this panel ──
+        for (const sCfg of seriesForPanel) {
+            if (sCfg.type === 'bar') continue;
+            const val = vals[sCfg.id];
+            if (!isFinite(val)) continue;
+            const f = seriesFlags(sCfg);
+            if (!f.mark) continue;
+            // Use the correct Y-scale for overlay axis series
+            const yKey = sCfg.yAxis ? yAxisKey(pId, sCfg.yAxis) : pId;
+            markAt(pId, yKey, val, sCfg.upColor || sCfg.color || '#ffffff', f);
         }
 
-        // ── Snap dots for indicators on this panel ──
+        // ── Marks for indicators on this panel ──
         // Indicators are NOT in config.series — they live in IndicatorManager
         // and compute to _computed[outputName] = Float64Array. We sample each
-        // output at the snapped logical index (vals.idx) and draw a snap dot
-        // at (snappedX, yScale.valToPix(val)) with the output's color.
-        //
-        // Multi-output indicators (Bollinger Bands, MACD, Stochastic) get
-        // one dot per output, each with its own color.
+        // output at the snapped logical index (vals.idx) and draw a dot at
+        // (snappedX, yScale.valToPix(val)) with the output's color.
         const panelIndicators = this.indicatorManager?.getAll?.() || [];
-        const indicatorValues = [];  // collected for the tooltip below
         for (const ind of panelIndicators) {
             if (ind.panelId !== pId || ind.visible === false) continue;
             const computed = ind._computed;
@@ -36716,18 +37005,50 @@ class OverlayRenderer {
                 const val = arr[idx];
                 if (!isValidNum(val)) continue;
 
-                indicatorValues.push({ ind, out, val });
+                // V136: dot only when this output opted in. (V137: the value
+                //   list collected here used to feed the legacy plain-text
+                //   popup — removed at the tail of this method.)
+                const st = ind.outputStyles?.[out.name] || {};
+                if (st.chMark === true) {
+                    markAt(pId, pId, val, st.color || out.color || '#58a6ff', { label: st.chLabel === true });
+                }
+            }
+        }
 
-                // Draw snap dot at the indicator line position
-                const py = yScale.valToPix(val);
-                const px = snap.snappedX;
-                ctx.fillStyle = out.color || '#58a6ff';
-                ctx.beginPath();
-                ctx.arc(px, py, RENDER_CONSTANTS.SNAP_DOT_RADIUS, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.strokeStyle = UI_COLORS.snapDotStroke;
-                ctx.lineWidth = RENDER_CONSTANTS.SNAP_DOT_STROKE_PX;
-                ctx.stroke();
+        // ── V136/V137: cross-panel marks ──
+        // The vertical crosshair line spans ALL panels; lines flagged chCross
+        // (ON by default since v137) get marked at the same snapped X while
+        // the crosshair is active in this panel. _snapData returns values for
+        // ALL series (any panel), so series marks work too — e.g. the main
+        // candles close can be marked from an RSI panel. Indicator values come
+        // from their own computed arrays (store-aligned, same idx).
+        if (typeof idx === 'number' && idx >= 0) {
+            for (const sCfg of this.config.series) {
+                if (sCfg.panelId === pId || sCfg.visible === false || sCfg.type === 'bar') continue;
+                const val = vals[sCfg.id];
+                if (!isFinite(val)) continue;
+                const f = seriesFlags(sCfg);
+                if (!f.cross) continue;
+                const yKey = sCfg.yAxis ? yAxisKey(sCfg.panelId, sCfg.yAxis) : sCfg.panelId;
+                markAt(sCfg.panelId, yKey, val, sCfg.upColor || sCfg.color || '#ffffff', f);
+            }
+            for (const ind of panelIndicators) {
+                if (ind.panelId === pId || ind.visible === false) continue;
+                const st = ind.outputStyles || {};
+                // quick reject: no output of this indicator kept chCross on
+                // (V137: ON by default — only an explicit false opts out)
+                if (!ind.constructor?.META?.outputs?.some(o => st[o.name]?.chCross !== false)) continue;
+                const computed = ind._computed;
+                if (!computed) continue;
+                for (const out of ind.constructor.META.outputs) {
+                    const ost = st[out.name] || {};
+                    if (ost.chCross === false) continue;
+                    const arr = computed[out.name];
+                    if (!arr || idx >= arr.length) continue;
+                    const val = arr[idx];
+                    if (!isValidNum(val)) continue;
+                    markAt(ind.panelId, ind.panelId, val, ost.color || out.color || '#58a6ff', { label: ost.chLabel === true });
+                }
             }
         }
 
@@ -36794,62 +37115,13 @@ class OverlayRenderer {
             return;
         }
 
-        // Fallback: non-candlestick series (lines, bars) — show indicator values
-        const lines = [];
-        // Only show time on main panel — sub-panels show their indicator values
-        if (pId === 'main' && isFinite(vals.x)) {
-            const xLabel = this._formatXLabel(vals.x, xAxisUnitSystem);
-            lines.push(`T: ${xLabel}`);
-        }
-        for (const sCfg of seriesForPanel) {
-            const v = vals[sCfg.id];
-            if (!isValidNum(v)) continue;
-            // Use series name or id as label — for indicators this shows 'RSI', 'AO', etc.
-            const label = sCfg.name || (sCfg.id.charAt(0).toUpperCase() + sCfg.id.slice(1));
-            lines.push(`${label}: ${formatValue(v, isCompactPanel(sCfg.panelId))}`);
-        }
-        // V37: indicator values on this panel — sampled at the snapped X.
-        // For multi-output indicators (Bollinger Bands, MACD) we emit one
-        // line per output, labeled with the indicator's label + output label.
-        // For single-output indicators (RSI, EMA, ATR) we use just the label.
-        for (const { ind, out, val } of indicatorValues) {
-            const indLabel = ind.label || ind.constructor?.META?.label || ind.type?.toUpperCase() || ind.id;
-            // If the indicator has multiple outputs, qualify the line with the output label.
-            const outputs = ind.constructor?.META?.outputs || [];
-            const lineLabel = outputs.length > 1 ? `${indLabel} ${out.label}` : indLabel;
-            lines.push(`${lineLabel}: ${formatValue(val, isCompactPanel(pId))}`);
-        }
-
-        if (lines.length > 0) {
-            // V37: place the tooltip at the Y of the first indicator snap-dot
-            // (i.e. where the crosshair vertical line intersects the indicator
-            // line), not at the cursor's Y. This makes it obvious which data
-            // point the values in the tooltip correspond to.
-            // For mode='x' snap.snappedY === cursor Y — visually disconnected
-            // from the snap-dot. Using the indicator value's pixel Y aligns
-            // the info box with the actual data intersection.
-            //
-            // V37 smoothing: optionally use EMA of the indicator's recent
-            // output values (instead of raw value at idx) to dampen vertical
-            // jumps. Same setting as main panel: settings.crosshair.tooltipSmoothing.
-            let tooltipY = snap.snappedY;
-            if (indicatorValues.length > 0) {
-                const first = indicatorValues[0];
-                let anchorVal = first.val;
-                const smoothPeriod = snapCfg?.tooltipSmoothing;
-                if (typeof smoothPeriod === 'number' && smoothPeriod > 1) {
-                    const arr = first.ind._computed?.[first.out.name];
-                    if (arr && typeof idx === 'number' && idx < arr.length) {
-                        const start = Math.max(0, idx - 49);
-                        const slice = Array.from(arr.slice(start, idx + 1));
-                        const ema = computeEma(slice, smoothPeriod);
-                        if (isFinite(ema)) anchorVal = ema;
-                    }
-                }
-                tooltipY = yScale.valToPix(anchorVal);
-            }
-            drawDataTooltip(ctx, lines, snap.snappedX, tooltipY, layout);
-        }
+        // V137: the legacy plain-text popup ("T: …" + series/indicator values
+        // that floated next to the intersection, mostly on indicator panels)
+        // was REMOVED at user request — «вообще лучше убери этот возникающий
+        // всплывающий лэйбл. Только для цены на основном он нужен». The compact
+        // candle tooltip above (the price on the main chart) is the only
+        // crosshair info box left; indicator panels now render marks/pills
+        // only, no floating box.
     }
 }
 
@@ -59858,6 +60130,33 @@ class ToolbarController {
             api.markAllDirtyAndRender();
         });
 
+        // ── V136: crosshair %-from-price toggle ──
+        // Shows "+1.23%" on the horizontal crosshair line (main panel): the
+        //   line breaks at the left edge and the % distance from the current
+        //   price to the crosshair level starts there. Persisted for free via
+        //   StatePersistence (settings.crosshair shallow-copied).
+        this._on(this._el('btn-ch-pct'), 'click', (e) => {
+            const cfg = api.config;
+            if (!cfg.settings.crosshair) cfg.settings.crosshair = {};
+            const cur = cfg.settings.crosshair.pctFromPrice !== false;
+            const next = !cur;
+            cfg.settings.crosshair.pctFromPrice = next;
+            e.target.classList.toggle('active', next);
+            e.target.textContent = `CH %: ${next ? 'On' : 'Off'}`;
+            api.markAllDirtyAndRender();
+        });
+        // Initialize the button text/state from the current config
+        // (a restored session may have it off).
+        {
+            const cfg = api.config;
+            const cur = cfg.settings.crosshair?.pctFromPrice !== false;
+            const btn = this._el('btn-ch-pct');
+            if (btn) {
+                btn.textContent = `CH %: ${cur ? 'On' : 'Off'}`;
+                btn.classList.toggle('active', cur);
+            }
+        }
+
         // V37: Volume display mode toggle — cycles between 'coins' and 'dollars'.
         // Affects volume axis labels, volume min/max tags (unless overridden per-
         // label via `volumeFormat`), and the crosshair tooltip Vol row.
@@ -63713,6 +64012,9 @@ class PresetManager {
         } catch (e) { /* overlay API unavailable — snapshot without drawings */ }
 
         return {
+            // V137: save-format marker for the crosshair flags — a `false`
+            //   in a chv:1 snapshot is an explicit choice, not the old default.
+            chv: 1,
             panels,
             indicators: indicatorSnapshots,
             panelOrder,
@@ -63740,6 +64042,12 @@ class PresetManager {
         if (!snapshot) return;
         const config = api.config;
         const layout = api.layout;
+
+        // V137: strip v136-legacy crosshair flags (false = the old default)
+        //   BEFORE addIndicator/applyMainCandlesState, so restored indicators
+        //   pick up the new defaults (chCross ON). Snapshots saved by v137+
+        //   carry chv: 1 and pass through untouched.
+        try { stripLegacyChFlags(snapshot); } catch (e) { /* defensive */ }
 
         // 1. Remove all current indicators
         const currentInds = api.getIndicator() || [];
@@ -64296,6 +64604,7 @@ const TOOLBAR_ARIA_LABELS = {
     'btn-zoom-y':       'Toggle Y-axis zoom',
     'btn-scale-mode':   'Cycle Y-axis scale mode',
     'btn-snap-mode':    'Cycle crosshair snap mode',
+    'btn-ch-pct':       'Toggle crosshair %-from-price label on the horizontal line',
     'btn-xlabel-fmt':   'Cycle X-axis label format',
     'btn-decimation':   'Cycle decimation strategy',
     'btn-xunit-mode':   'Cycle X-axis unit mode',
@@ -64648,6 +64957,7 @@ class ChartFactory {
         // ─── Labels & Format ───
         _addMenuLabel('Labels & Format');
         _addMenuBtn(['btn-snap-mode',   'Snap: X',      { active: true }]);
+        _addMenuBtn(['btn-ch-pct',      'CH %: On',     { active: true }]);
         _addMenuBtn(['btn-xlabel-fmt',  'XLbl: Auto',   { active: true }]);
         _addMenuBtn(['btn-date-fmt',    'Fmt: Smart']);
         _addMenuBtn(['btn-show-time',   'Time: Auto']);
@@ -66117,6 +66427,13 @@ class ChartFactory {
                             (isCandles ? '<div class="s-check-row"><input type="checkbox" class="s-check" data-mc-gaps' + ((mc.gapConnectors !== false) ? ' checked' : '') + '><span class="s-check-label">Gap connector lines</span></div>' : '') +
                         '</div>') +
                         '<div class="s-section-div">' +
+                            '<div class="s-section-label">Crosshair</div>' +
+                            '<div class="s-desc" style="font-size:10px;">Crosshair marks for the base candles. By default the candle close is marked on the main panel and from other panels; Y label additionally adds the value pill on the price axis. Uncheck to disable.</div>' +
+                            '<div class="s-check-row"><input type="checkbox" class="s-check" data-mc-chmark' + (mc.chMark ? ' checked' : '') + '><span class="s-check-label">Mark candle close at crosshair</span></div>' +
+                            '<div class="s-check-row"><input type="checkbox" class="s-check" data-mc-chlabel' + (mc.chLabel ? ' checked' : '') + '><span class="s-check-label">Y-axis label at the mark</span></div>' +
+                            '<div class="s-check-row"><input type="checkbox" class="s-check" data-mc-chcross' + (mc.chCross ? ' checked' : '') + '><span class="s-check-label">Mark from other panels</span></div>' +
+                        '</div>' +
+                        '<div class="s-section-div">' +
                             '<div class="s-section-label">System</div>' +
                             '<div class="s-desc" style="font-size:10px;">This element belongs to the chart itself — it cannot be removed or hidden. Colors left on the theme default follow the active theme; Reset restores all defaults.</div>' +
                             '<div class="s-row"><button class="ind-btn" data-mc-resetall style="flex:1;padding:6px;">Reset to defaults</button></div>' +
@@ -66200,6 +66517,10 @@ class ChartFactory {
             on('[data-mc-linew]',  (e) => { const v = parseFloat(e.target.value); if (isFinite(v) && v > 0) { mc.lineWidth = v; apply(); } });
             on('[data-mc-cwr]',    (e) => { const v = parseFloat(e.target.value); if (isFinite(v) && v > 0) { mc.candleWidthRatio = v; apply(); } });
             on('[data-mc-wwr]',    (e) => { const v = parseFloat(e.target.value); if (isFinite(v) && v > 0) { mc.wickWidthRatio = v; apply(); } });
+            // V136: crosshair opt-ins for the base candles
+            on('[data-mc-chmark]',  (e) => { mc.chMark = e.target.checked; apply(); });
+            on('[data-mc-chlabel]', (e) => { mc.chLabel = e.target.checked; apply(); });
+            on('[data-mc-chcross]', (e) => { mc.chCross = e.target.checked; apply(); });
 
             // Per-color reset → back to the theme default ('' = follow theme).
             backdrop.querySelectorAll('[data-mc-reset]').forEach(b => {
@@ -67043,6 +67364,30 @@ class ChartFactory {
                 html += `</div>`;
             }
             html += `</div>`;
+            // ── V136/V137: per-line crosshair marks ──
+            // Per-output flags. Mark = dot at the crosshair intersection
+            //   (same panel, opt-in); Y label = ALSO a value pill on the
+            //   Y-axis label strip (opt-in); Other panels = ALSO mark this
+            //   line while the crosshair is active in a different panel —
+            //   ON by default since v137 (the vertical line spans all panels).
+            html += `<div class="s-section-div">`;
+            html += `<div class="s-section-label collapsed">Crosshair marks</div>`;
+            for (const out of meta.outputs) {
+                // Candle outputs are painted with up/down colors — a mark dot
+                //   would be misleading; skip them (same policy as Colors).
+                if (out.type === 'candles') continue;
+                // V137: a NEW indicator starts from the constructor defaults
+                //   (chCross ON → checkbox checked); an existing one shows its
+                //   saved flags.
+                const exSt = isExisting ? (existingInd.outputStyles?.[out.name] || {}) : { chCross: true };
+                html += `<div class="s-row" style="align-items:center;gap:10px;flex-wrap:wrap;">`;
+                html += `<span class="s-row-label" style="min-width:60px;">${esc(out.label)}</span>`;
+                html += `<label style="font-size:10px;color:#8b949e;display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" data-ch-mark="${out.name}" ${exSt.chMark ? 'checked' : ''}>Mark</label>`;
+                html += `<label style="font-size:10px;color:#8b949e;display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" data-ch-label="${out.name}" ${exSt.chLabel ? 'checked' : ''}>Y label</label>`;
+                html += `<label style="font-size:10px;color:#8b949e;display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" data-ch-cross="${out.name}" ${exSt.chCross ? 'checked' : ''}>Other panels</label>`;
+                html += `</div>`;
+            }
+            html += `</div>`;
             // ── V38: Dynamic Color Scheme ──
             // Per-output: mode (fixed/direction/above/zones), colors, smooth, applyToBands.
             // Collapsed by default.
@@ -67394,6 +67739,24 @@ class ChartFactory {
                         const name = inp.dataset.styleAlpha;
                         if (!styleConfig[name]) styleConfig[name] = {};
                         styleConfig[name].alpha = parseFloat(inp.value);
+                    });
+                    // V136: capture per-output crosshair mark flags. Always
+                    // written (true or false) so Object.assign overwrites the
+                    // previous value on re-save — unchecking truly disables.
+                    backdrop.querySelectorAll('[data-ch-mark]').forEach(chk => {
+                        const name = chk.dataset.chMark;
+                        if (!styleConfig[name]) styleConfig[name] = {};
+                        styleConfig[name].chMark = chk.checked;
+                    });
+                    backdrop.querySelectorAll('[data-ch-label]').forEach(chk => {
+                        const name = chk.dataset.chLabel;
+                        if (!styleConfig[name]) styleConfig[name] = {};
+                        styleConfig[name].chLabel = chk.checked;
+                    });
+                    backdrop.querySelectorAll('[data-ch-cross]').forEach(chk => {
+                        const name = chk.dataset.chCross;
+                        if (!styleConfig[name]) styleConfig[name] = {};
+                        styleConfig[name].chCross = chk.checked;
                     });
 
                     // V38: Capture dynamic color scheme config from the UI
@@ -72440,7 +72803,9 @@ const ChartStatePersistence = (() => {
         const engine = _chart.engine;
         if (!api || !engine) return null;
 
-        const state = { v: SCHEMA_VERSION, ts: Date.now() };
+        // V137: chv marks the crosshair-flag save format — restore uses it
+        //   to tell v137 explicit-false choices from v136 default-false.
+        const state = { v: SCHEMA_VERSION, ts: Date.now(), chv: 1 };
 
         // ── Source (exchange / symbol / timeframe) ──
         try {
@@ -72743,6 +73108,11 @@ const ChartStatePersistence = (() => {
         const engine = chart.engine;
         const bus = chart.bus;
         _bus = bus;
+        // V137: strip v136-legacy crosshair flags (false = the old default)
+        //   BEFORE indicators are constructed, so restored indicators pick
+        //   up the new defaults (chCross ON). State saved by v137+ carries
+        //   chv: 1 and passes through untouched.
+        try { stripLegacyChFlags(state); } catch (e) { /* defensive */ }
 
         // ── 1. Apply settings BEFORE source switch (so the chart is configured correctly) ──
         if (state.settings) {
@@ -73043,6 +73413,18 @@ const ChartStatePersistence = (() => {
                         ind.outputStyles = {};
                         for (const k in saved.outputStyles) {
                             ind.outputStyles[k] = { ...saved.outputStyles[k] };
+                        }
+                        // V137: normalize the crosshair flags after the wholesale
+                        //   copy — a migrated legacy (v136) save lacks the keys
+                        //   entirely, which renders as ON but would show the
+                        //   settings checkbox unchecked. Materialize the resolved
+                        //   values (chCross ON unless explicitly false).
+                        for (const k in ind.outputStyles) {
+                            const st = ind.outputStyles[k];
+                            if (!st || typeof st !== 'object') continue;
+                            st.chMark  = st.chMark === true;
+                            st.chLabel = st.chLabel === true;
+                            st.chCross = st.chCross !== false;
                         }
                     }
                     if (saved.levelVisible) {
