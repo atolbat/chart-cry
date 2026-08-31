@@ -5853,15 +5853,25 @@ function applyMainCandlesState(obj) {
     Object.assign(CE_MAIN_CANDLES, CE_MAIN_CANDLES_DEFAULTS, sanitizeMainCandlesState(obj));
     saveMainCandlesCfg();
 }
-// V137: one-shot legacy migration for saved crosshair flags. v136 shipped
-//   chMark/chLabel/chCross with default FALSE and serialized them wholesale —
-//   a saved `false` was the default, not a user choice. v137 flips the
-//   defaults (chCross ON everywhere, candle chMark ON), so legacy non-true
-//   values must be stripped before deserialization or they would block the
-//   new defaults. Containers carrying `chv: 1` (saved by v137+) are trusted:
-//   their false values are explicit opt-outs and are kept.
+// V137/V141: one-shot legacy migration for saved crosshair flags.
+//   • v136 (no chv): shipped chMark/chLabel/chCross with default FALSE and
+//     serialized them wholesale — a saved `false` was the default, not a
+//     user choice. Non-true values are stripped so defaults apply; a `true`
+//     was an EXPLICIT opt-in (the default was off) and survives.
+//   • v137–v140 (chv: 1): the constructor MATERIALIZED chCross=true into
+//     every output ("default ON"), and serialize copied it wholesale — a
+//     saved `true` is NOT a user choice. V141 flips the default back to
+//     opt-in, so chCross is DELETED from chv:1 indicators (true or false —
+//     both resolve to the new OFF default; a deliberate v137-era opt-in is
+//     lost, but the checkbox state was indistinguishable from materialized).
+//     chMark/chLabel in chv:1 saves are real choices (default false — a
+//     saved true IS an opt-in; a saved false equals the default either way)
+//     → kept as-is. Main Candles in chv:1: explicit choices (its own UI
+//     writes them + its default stays ON) → untouched.
+//   • v141+ (chv: 2): fully trusted — all three flags are explicit choices.
 function stripLegacyChFlags(container) {
-    if (!container || typeof container !== 'object' || container.chv === 1) return;
+    if (!container || typeof container !== 'object' || container.chv === 2) return;
+    const v137save = container.chv === 1;
     if (Array.isArray(container.indicators)) {
         for (const ind of container.indicators) {
             const styles = ind && typeof ind === 'object' ? ind.outputStyles : null;
@@ -5869,6 +5879,7 @@ function stripLegacyChFlags(container) {
             for (const name in styles) {
                 const st = styles[name];
                 if (!st || typeof st !== 'object') continue;
+                if (v137save) { delete st.chCross; continue; }   // V141: materialized true — strip
                 for (const k of ['chMark', 'chLabel', 'chCross']) {
                     if (st[k] !== true) delete st[k];
                 }
@@ -5876,7 +5887,7 @@ function stripLegacyChFlags(container) {
         }
     }
     const mc = container.mainCandles;
-    if (mc && typeof mc === 'object') {
+    if (mc && typeof mc === 'object' && !v137save) {
         for (const k of ['chMark', 'chLabel', 'chCross']) {
             if (mc[k] !== true) delete mc[k];
         }
@@ -19827,19 +19838,23 @@ class IndicatorBrick extends IndicatorBase {
                     alpha: saved.alpha ?? cfg[`${out.name}_alpha`] ?? out.alpha ?? 0.8,
                     // V51-line-styles: line dash style (solid/dash/dot/dashdot/longdash)
                     lineStyle: saved.lineStyle || cfg[`${out.name}_lineStyle`] || out.lineStyle || 'solid',
-                    // V136/V137: crosshair mark opt-ins (per-line, set via the
-                    //   indicator settings "Crosshair marks" section):
+                    // V136/V137/V141: crosshair mark opt-ins (per-line, set via
+                    //   the indicator settings "Crosshair marks" section):
                     //   chMark  — snap dot where the crosshair crosses this line (same panel)
                     //   chLabel — ALSO draw a value pill on the Y-axis label strip
                     //   chCross — ALSO mark this line while the crosshair is in ANOTHER panel
-                    //   V137 defaults: chCross is ON by default («по умолчанию
-                    //   всегда отмечались когда кроссхэйр на другой панели») —
-                    //   absent → true, explicit false → off. chMark/chLabel
-                    //   stay opt-in. Legacy v136 saves (false = plain default)
-                    //   are stripped by stripLegacyChFlags before this point.
+                    //   V141: ALL THREE are opt-in for indicator outputs — the
+                    //   v137 chCross default-ON is reverted (user report: «отметки
+                    //   на другой панели видны вне зависимости от настроек» — the
+                    //   default-ON marks looked uncontrollable). absent → false,
+                    //   explicit true → on. The MAIN CANDLES close keeps its own
+                    //   ON default (CE_MAIN_CANDLES.chCross — separate v137
+                    //   request, no complaint). v137–v140 saves (chv:1) carried a
+                    //   MATERIALIZED true (not a user choice) — stripped by
+                    //   stripLegacyChFlags; chv:2 saves are trusted verbatim.
                     chMark:  saved.chMark === true,
                     chLabel: saved.chLabel === true,
-                    chCross: saved.chCross !== false,
+                    chCross: saved.chCross === true,
                 };
             }
         }
@@ -36916,12 +36931,15 @@ class OverlayRenderer {
         const pId  = snap.activePanelId;
         const idx  = vals?.idx;  // logical index into dataStore + indicator arrays
 
-        // ══ V136/V137: crosshair marks — per-line flags ════════════════
+        // ══ V136/V137/V141: crosshair marks — per-line flags ════════════════
         // Before v136 the crosshair dotted EVERY series and indicator line it
         // crossed (and only on the active panel). Since v136 each line is
-        // controlled by its own flags; v137 flipped the defaults — same-panel
-        // dots (chMark) remain opt-in EXCEPT the main candle close, while
-        // cross-panel marks (chCross) are ON by default:
+        // controlled by its own flags. V141: ALL flags are opt-in — the v137
+        // chCross default-ON is reverted (user report: cross-panel marks
+        // showed «вне зависимости от настроек» while same-panel marks
+        // correctly followed the opt-in checkboxes). The MAIN CANDLES close
+        // is the single exception — its chMark/chCross stay ON by default
+        // (explicit v137 request, no complaint):
         //   indicators — outputStyles[out.name].chMark / chLabel / chCross
         //                (indicator settings → "Crosshair marks")
         //   main candles — CE_MAIN_CANDLES.chMark / chLabel / chCross
@@ -36931,14 +36949,13 @@ class OverlayRenderer {
         // to the dot; chCross marks the line even while the crosshair is
         // active in ANOTHER panel (the vertical line spans all panels).
         const _mc = (typeof CE_MAIN_CANDLES !== 'undefined') ? CE_MAIN_CANDLES : null;
-        // V137: candles chMark/chCross and plain-series chCross default ON
-        //   (absent → on, explicit false → off); chLabel and plain-series
-        //   chMark remain opt-in.
+        // V141 defaults: candles chMark/chCross ON (explicit false → off);
+        //   plain series (incl. the no-UI ones) — all three flags opt-in.
         const seriesFlags = (sCfg) => {
             if (sCfg.type === 'candlestick' && _mc) {
                 return { mark: _mc.chMark !== false, label: _mc.chLabel === true, cross: _mc.chCross !== false };
             }
-            return { mark: sCfg.chMark === true, label: sCfg.chLabel === true, cross: sCfg.chCross !== false };
+            return { mark: sCfg.chMark === true, label: sCfg.chLabel === true, cross: sCfg.chCross === true };
         };
         const dot = (px, py, color) => {
             ctx.fillStyle = color;
@@ -37015,13 +37032,17 @@ class OverlayRenderer {
             }
         }
 
-        // ── V136/V137: cross-panel marks ──
+        // ── V136/V137/V141: cross-panel marks ──
         // The vertical crosshair line spans ALL panels; lines flagged chCross
-        // (ON by default since v137) get marked at the same snapped X while
-        // the crosshair is active in this panel. _snapData returns values for
-        // ALL series (any panel), so series marks work too — e.g. the main
-        // candles close can be marked from an RSI panel. Indicator values come
-        // from their own computed arrays (store-aligned, same idx).
+        // get marked at the same snapped X while the crosshair is active in
+        // this panel. V141: chCross is OPT-IN — the v137 default-ON is
+        // reverted («отметки … видны вне зависимости от настроек»); only
+        // lines whose "Other panels" checkbox is explicitly checked are
+        // marked. The MAIN CANDLES close is the exception — CE_MAIN_CANDLES
+        // keeps its own ON default (chCross !== false). _snapData returns
+        // values for ALL series (any panel), so series marks work too.
+        // Indicator values come from their own computed arrays (store-
+        // aligned, same idx).
         if (typeof idx === 'number' && idx >= 0) {
             for (const sCfg of this.config.series) {
                 if (sCfg.panelId === pId || sCfg.visible === false || sCfg.type === 'bar') continue;
@@ -37035,14 +37056,14 @@ class OverlayRenderer {
             for (const ind of panelIndicators) {
                 if (ind.panelId === pId || ind.visible === false) continue;
                 const st = ind.outputStyles || {};
-                // quick reject: no output of this indicator kept chCross on
-                // (V137: ON by default — only an explicit false opts out)
-                if (!ind.constructor?.META?.outputs?.some(o => st[o.name]?.chCross !== false)) continue;
+                // quick reject: no output of this indicator opted chCross in
+                // (V141: opt-in — only an explicit true enables the mark)
+                if (!ind.constructor?.META?.outputs?.some(o => st[o.name]?.chCross === true)) continue;
                 const computed = ind._computed;
                 if (!computed) continue;
                 for (const out of ind.constructor.META.outputs) {
                     const ost = st[out.name] || {};
-                    if (ost.chCross === false) continue;
+                    if (ost.chCross !== true) continue;
                     const arr = computed[out.name];
                     if (!arr || idx >= arr.length) continue;
                     const val = arr[idx];
@@ -64012,9 +64033,10 @@ class PresetManager {
         } catch (e) { /* overlay API unavailable — snapshot without drawings */ }
 
         return {
-            // V137: save-format marker for the crosshair flags — a `false`
-            //   in a chv:1 snapshot is an explicit choice, not the old default.
-            chv: 1,
+            // V137/V141: save-format marker for the crosshair flags — chv:2
+            //   snapshots carry only explicit flag choices (v141 opt-in);
+            //   restore strips the materialized chCross from chv:1 snapshots.
+            chv: 2,
             panels,
             indicators: indicatorSnapshots,
             panelOrder,
@@ -64043,10 +64065,10 @@ class PresetManager {
         const config = api.config;
         const layout = api.layout;
 
-        // V137: strip v136-legacy crosshair flags (false = the old default)
+        // V137/V141: strip legacy crosshair flags (see stripLegacyChFlags)
         //   BEFORE addIndicator/applyMainCandlesState, so restored indicators
-        //   pick up the new defaults (chCross ON). Snapshots saved by v137+
-        //   carry chv: 1 and pass through untouched.
+        //   pick up the v141 opt-in default. Snapshots saved by v141+ carry
+        //   chv: 2 and pass through untouched.
         try { stripLegacyChFlags(snapshot); } catch (e) { /* defensive */ }
 
         // 1. Remove all current indicators
@@ -67364,22 +67386,25 @@ class ChartFactory {
                 html += `</div>`;
             }
             html += `</div>`;
-            // ── V136/V137: per-line crosshair marks ──
+            // ── V136/V137/V141: per-line crosshair marks ──
             // Per-output flags. Mark = dot at the crosshair intersection
             //   (same panel, opt-in); Y label = ALSO a value pill on the
             //   Y-axis label strip (opt-in); Other panels = ALSO mark this
             //   line while the crosshair is active in a different panel —
-            //   ON by default since v137 (the vertical line spans all panels).
+            //   OPT-IN since V141 (the v137 default-ON is reverted: the
+            //   marks showed «вне зависимости от настроек»). V141 also
+            //   renders this section EXPANDED — the flags are the only
+            //   control for cross-panel marks, they must be discoverable.
             html += `<div class="s-section-div">`;
-            html += `<div class="s-section-label collapsed">Crosshair marks</div>`;
+            html += `<div class="s-section-label">Crosshair marks</div>`;
             for (const out of meta.outputs) {
                 // Candle outputs are painted with up/down colors — a mark dot
                 //   would be misleading; skip them (same policy as Colors).
                 if (out.type === 'candles') continue;
-                // V137: a NEW indicator starts from the constructor defaults
-                //   (chCross ON → checkbox checked); an existing one shows its
-                //   saved flags.
-                const exSt = isExisting ? (existingInd.outputStyles?.[out.name] || {}) : { chCross: true };
+                // V141: a NEW indicator starts from the constructor defaults —
+                //   chCross is now opt-in (unchecked); an existing one shows
+                //   its saved flags.
+                const exSt = isExisting ? (existingInd.outputStyles?.[out.name] || {}) : {};
                 html += `<div class="s-row" style="align-items:center;gap:10px;flex-wrap:wrap;">`;
                 html += `<span class="s-row-label" style="min-width:60px;">${esc(out.label)}</span>`;
                 html += `<label style="font-size:10px;color:#8b949e;display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" data-ch-mark="${out.name}" ${exSt.chMark ? 'checked' : ''}>Mark</label>`;
@@ -72803,9 +72828,10 @@ const ChartStatePersistence = (() => {
         const engine = _chart.engine;
         if (!api || !engine) return null;
 
-        // V137: chv marks the crosshair-flag save format — restore uses it
-        //   to tell v137 explicit-false choices from v136 default-false.
-        const state = { v: SCHEMA_VERSION, ts: Date.now(), chv: 1 };
+        // V137/V141: chv marks the crosshair-flag save format — v141 (chv:2)
+        //   saves carry only explicit flag choices; v137–v140 (chv:1) saves
+        //   carry a materialized chCross=true that the restore strips.
+        const state = { v: SCHEMA_VERSION, ts: Date.now(), chv: 2 };
 
         // ── Source (exchange / symbol / timeframe) ──
         try {
@@ -73108,10 +73134,11 @@ const ChartStatePersistence = (() => {
         const engine = chart.engine;
         const bus = chart.bus;
         _bus = bus;
-        // V137: strip v136-legacy crosshair flags (false = the old default)
+        // V137/V141: strip legacy crosshair flags (see stripLegacyChFlags)
         //   BEFORE indicators are constructed, so restored indicators pick
-        //   up the new defaults (chCross ON). State saved by v137+ carries
-        //   chv: 1 and passes through untouched.
+        //   up the v141 opt-in default. State saved by v141+ carries chv: 2
+        //   and passes through untouched; chv:1 has its materialized
+        //   chCross=true stripped (new OFF default).
         try { stripLegacyChFlags(state); } catch (e) { /* defensive */ }
 
         // ── 1. Apply settings BEFORE source switch (so the chart is configured correctly) ──
@@ -73414,17 +73441,15 @@ const ChartStatePersistence = (() => {
                         for (const k in saved.outputStyles) {
                             ind.outputStyles[k] = { ...saved.outputStyles[k] };
                         }
-                        // V137: normalize the crosshair flags after the wholesale
-                        //   copy — a migrated legacy (v136) save lacks the keys
-                        //   entirely, which renders as ON but would show the
-                        //   settings checkbox unchecked. Materialize the resolved
-                        //   values (chCross ON unless explicitly false).
+                        // V141: normalize the crosshair flags after the wholesale
+                        //   copy — all three are opt-in for indicator outputs
+                        //   now (true → true, everything else → false).
                         for (const k in ind.outputStyles) {
                             const st = ind.outputStyles[k];
                             if (!st || typeof st !== 'object') continue;
                             st.chMark  = st.chMark === true;
                             st.chLabel = st.chLabel === true;
-                            st.chCross = st.chCross !== false;
+                            st.chCross = st.chCross === true;
                         }
                     }
                     if (saved.levelVisible) {
