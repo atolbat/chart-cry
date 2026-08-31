@@ -30708,26 +30708,40 @@ class PVTBrick extends IndicatorBrick {
 brickRegistry.register('pvt', PVTBrick);
 
 // ─── V130: CVD (Cumulative Volume Delta, approx) ───────────────────────────
-// Williams-proxy approximation of order-flow CVD without tape data:
-//   buy  = V · (C − L) / (H − L)
-//   sell = V · (H − C) / (H − L)
-//   delta = buy − sell = V · (2C − H − L) / (H − L)   (flat bar H==L → 0,
-//   the 50/50 split cancels itself)
+// Proxy approximation of order-flow CVD without tape data. V134 adds a
+// selectable DELTA APPROXIMATION (deltaMethod):
+//   williams (default): d = V·(2C−H−L)/(H−L)  — close position inside the
+//                        bar range (buy=V·(C−L)/(H−L), sell=V·(H−C)/(H−L));
+//                        smooth, bounded by ±V, the classic Williams proxy
+//                        the removed V127 Delta Candles used.
+//   body:               d = V·(C−O)/(H−L)   — body signed by range: discounts
+//                        gaps (gap-up doji ≈ 0 delta) and interior wicks.
+//   sign:               d = V·sign(C−O)    — tick-rule style: the whole bar's
+//                        volume is credited to the body's aggressor.
+//   median:             d = V·sign(C−(H+L)/2) — close vs bar median price.
 //   CVD[i] = Σ delta[k], k ≤ i   (with optional daily/weekly UTC reset)
 // Rising CVD = buyers in control, falling = sellers; divergence vs price =
 // absorption / trend weakness. Without aggressor-side tape data this is an
-// approximation of true CVD — the same proxy the removed V127 Delta Candles
-// used, resurrected as a regular line indicator.
+// approximation of true CVD — the method selector lets the user pick the
+// proxy that best fits their market regime.
 class CVDBrick extends IndicatorBrick {
     static META = {
         type: 'cvd',
         label: 'CVD (Cumulative Volume Delta, approx)',
         shortLabel: 'CVD',
-        description: 'Approximate Cumulative Volume Delta — splits each bar\'s volume between buyers and sellers by the close position inside the bar range (Williams proxy: buy=V·(C−L)/(H−L), sell=V·(H−C)/(H−L)), then accumulates the difference. Rising = buyers in control, falling = sellers. Without order-flow/tape data this is an approximation of true CVD.',
+        description: 'Approximate Cumulative Volume Delta — splits each bar\'s volume between buyers and sellers using a chosen proxy (Williams close-in-range, body/range, tick-rule sign or close-vs-median), then accumulates the difference. Rising = buyers in control, falling = sellers. Without order-flow/tape data this is an approximation of true CVD; switch the Delta method to compare proxies.',
         category: 'momentum',
         tags: ['volume', 'delta', 'orderflow', 'cumulative', 'cvd', 'divergence'],
         panelMode: 'separate',
         params: [
+            new BrickParam({ name: 'deltaMethod', label: 'Delta Method', type: 'select', default: 'williams',
+                options: [
+                    { value: 'williams', label: 'Williams (close in range)' },
+                    { value: 'body', label: 'Body / range' },
+                    { value: 'sign', label: 'Tick rule (body sign)' },
+                    { value: 'median', label: 'Close vs median' },
+                ],
+                tooltip: 'How each bar\'s buy/sell split is approximated without tape data. Williams: d=V·(2C−H−L)/(H−L). Body: d=V·(C−O)/(H−L) — discounts gaps. Tick rule: d=V·sign(C−O). Median: d=V·sign(C−(H+L)/2).' }),
             new BrickParam({ name: 'mode', label: 'Mode', type: 'select', default: 'cumulative',
                 options: [
                     { value: 'cumulative', label: 'Cumulative (CVD)' },
@@ -30765,10 +30779,16 @@ class CVDBrick extends IndicatorBrick {
             return { line: new Float64Array(0), signal: new Float64Array(0), count, visibleRange };
         }
         const H = ohlc.high, L = ohlc.low, V = ohlc.vol, X = ohlc._x;
+        const O = ohlc.open || null;   // body/sign/median methods need it
+        const method = this.params.deltaMethod || 'williams';
+        // Methods that need the open column degrade to the Williams proxy
+        //   when the data path didn't provide one (defensive — all real
+        //   candle paths do).
+        const effMethod = (O || method === 'williams') ? method : 'williams';
         const perbar = this.params.mode === 'perbar';
         // Reset is meaningless for per-bar view — force 'none' so cacheKey
-        //   differences (mode+reset both live in _cacheKey via params) can't
-        //   produce "reset" behavior in perbar mode.
+        //   differences (mode+reset+deltaMethod all live in _cacheKey via
+        //   params) can't produce "reset" behavior in perbar mode.
         const reset = perbar ? 'none' : (this.params.reset || 'none');
         const line = new Float64Array(count);
         let cum = 0;
@@ -30778,8 +30798,22 @@ class CVDBrick extends IndicatorBrick {
             let d = 0;
             if (isFinite(h) && isFinite(l) && isFinite(c) && isFinite(v)) {
                 const range = h - l;
-                // Flat bar (H==L): buy=sell=V/2 → delta cancels to 0.
-                if (range > 1e-12) d = v * (2 * c - h - l) / range;
+                if (effMethod === 'williams') {
+                    // Flat bar (H==L): buy=sell=V/2 → delta cancels to 0.
+                    if (range > 1e-12) d = v * (2 * c - h - l) / range;
+                } else if (effMethod === 'body') {
+                    // Body direction scaled by range — gaps don't count.
+                    const o = O[i];
+                    if (range > 1e-12 && isFinite(o)) d = v * (c - o) / range;
+                } else if (effMethod === 'sign') {
+                    // Tick rule: all volume to the body's aggressor.
+                    const o = O[i];
+                    if (isFinite(o)) d = v * (c > o ? 1 : c < o ? -1 : 0);
+                } else {
+                    // 'median': close vs the bar's midpoint.
+                    const mid = (h + l) / 2;
+                    d = v * (c > mid ? 1 : c < mid ? -1 : 0);
+                }
             }
             // Reset at UTC day / week (Monday) boundary. X is the chart's
             //   time column; on exotic data paths without it the reset
@@ -30872,10 +30906,16 @@ class CVDBrick extends IndicatorBrick {
             }
         }
         if (!isFinite(yMin)) return null;
-        // Always include zero so the baseline (and per-bar histogram base)
-        // stays visible.
-        yMin = Math.min(yMin, 0);
-        yMax = Math.max(yMax, 0);
+        // V135: zero is forced into the range ONLY in per-bar histogram
+        //   mode — bars are drawn from the zero baseline, so it must be
+        //   on-screen. In cumulative mode the fit tracks the line alone:
+        //   a CVD that has drifted far from zero used to get squashed
+        //   into a sliver of the pane because 0 was always included
+        //   (user report: «cvd всегда ноль при автофите держит на экране»).
+        if (this.params.mode === 'perbar') {
+            yMin = Math.min(yMin, 0);
+            yMax = Math.max(yMax, 0);
+        }
         const pad = (yMax - yMin) * 0.1 || 1;
         return { yMin: yMin - pad, yMax: yMax + pad };
     }
@@ -63656,6 +63696,22 @@ class PresetManager {
             if (hub) mainCandles = { ...hub };
         } catch (e) { /* hub not available — snapshot without it */ }
 
+        // ── V134: Drawings (overlay objects — trendlines, fibs, zones…) ──
+        //   Same toConfig() serialization StatePersistence uses, so the
+        //   exported/imported preset carries the user's drawings too (they
+        //   are part of "chart settings"). Stored as an ARRAY always — an
+        //   empty array means "no drawings" (apply = wipe), while a MISSING
+        //   key means "legacy snapshot — leave current drawings alone".
+        //   addObject re-applies per-object ticker scoping from the config,
+        //   so a line drawn on BTCUSDT stays on BTCUSDT after import.
+        let overlays = [];
+        try {
+            const allObjects = api.getAllObjects ? api.getAllObjects() : [];
+            overlays = allObjects.map(obj => {
+                try { return obj.toConfig(); } catch (e) { return null; }
+            }).filter(c => c !== null);
+        } catch (e) { /* overlay API unavailable — snapshot without drawings */ }
+
         return {
             panels,
             indicators: indicatorSnapshots,
@@ -63664,6 +63720,7 @@ class PresetManager {
             panelConfigs,
             swipeGroups,
             mainCandles,
+            overlays,
         };
     }
 
@@ -63980,6 +64037,32 @@ class PresetManager {
                 window.applyMainCandlesState(snapshot.mainCandles);
             } catch (e) {
                 console.warn('[PresetManager] mainCandles restore failed:', e?.message || e);
+            }
+        }
+
+        // ── V134: Drawings (overlay objects) deserialization ──
+        //   `overlays` as an ARRAY (even empty) → full replace: clear the
+        //   current objects, then re-create each one via addObject()
+        //   (same restore path StatePersistence uses). A MISSING key (legacy
+        //   snapshot, V133 and earlier) intentionally keeps the user's
+        //   current drawings untouched. Per-object try/catch — one bad
+        //   drawing must not abort the rest of the preset.
+        if (Array.isArray(snapshot.overlays)) {
+            try {
+                const existingObjs = api.getAllObjects ? api.getAllObjects() : [];
+                for (const obj of existingObjs) {
+                    try { api.removeObject(obj._key); } catch (e) {}
+                }
+                for (const cfg of snapshot.overlays) {
+                    if (!cfg || typeof cfg !== 'object' || !cfg.type) continue;  // untrusted file JSON
+                    try {
+                        api.addObject({ ...cfg });
+                    } catch (e) {
+                        console.warn('[PresetManager] failed to restore drawing:', cfg.type, e?.message || e);
+                    }
+                }
+            } catch (e) {
+                console.warn('[PresetManager] overlays restore failed:', e?.message || e);
             }
         }
 
@@ -65780,7 +65863,10 @@ class ChartFactory {
                             '<button class="ind-preset-save-btn">Save</button>' +
                         '</div>' +
                         '<div class="ind-presets-list">' + itemsHtml + '</div>' +
-                        // V52-preset-io: Export / Import buttons
+                        // V52-preset-io: Export / Import buttons — FILE ONLY.
+                        //   V135: the V134 text share row (Copy as text / Paste
+                        //   from text) was removed per user request — file
+                        //   import/export is sufficient.
                         '<div class="ind-presets-io-row" style="display:flex; gap:4px; padding:6px 0; border-top:1px solid rgba(255,255,255,0.06); margin-top:4px;">' +
                             '<button class="ind-preset-export-btn" style="flex:1; background:rgba(88,166,255,0.12); color:#58a6ff; border:1px solid rgba(88,166,255,0.3); border-radius:4px; padding:6px 8px; font-size:11px; font-weight:600; cursor:pointer; font-family:inherit;">↓ Export to file</button>' +
                             '<button class="ind-preset-import-btn" style="flex:1; background:rgba(63,185,80,0.12); color:#3fb950; border:1px solid rgba(63,185,80,0.3); border-radius:4px; padding:6px 8px; font-size:11px; font-weight:600; cursor:pointer; font-family:inherit;">↑ Import from file</button>' +
@@ -65947,6 +66033,9 @@ class ChartFactory {
                         }
                     };
                 }
+                // V135: the V134 text share/paste button wiring was removed
+                //   together with the buttons and the _openPresetTextIo dialog
+                //   (user request: file import/export is sufficient).
             }
 
             backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
@@ -73609,7 +73698,7 @@ const NumericKeypad = (() => {
 
     // ── long-press auto-repeat (⌫ / + / −) ──
     const REPEATABLE = { back: 1, minus: 1, plus: 1 };
-    const HOLD_DELAY = 420;     // ms of holding before auto-repeat kicks in
+    const HOLD_DELAY = 300;     // ms of holding before auto-repeat kicks in
     const HOLD_RATE = 90;       // ms between repeats
     let holdT = null;           // start-delay timer
     let holdI = null;           // repeat interval
@@ -73834,6 +73923,8 @@ const NumericKeypad = (() => {
         min: meta.min,
         max: meta.max,
         step: meta.step,
+        holdDelay: HOLD_DELAY,   // diagnostics/tests: long-press start delay (ms)
+        holdRate: HOLD_RATE,     // diagnostics/tests: repeat interval (ms)
         input: input || null,
     });
 
