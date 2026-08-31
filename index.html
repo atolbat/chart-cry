@@ -17167,6 +17167,15 @@ class TfStore {
         this.tf = tf;
         this.intervalMs = intervalMs;
         this.capacity = capacity;
+        // V124-fix(stale-anchor): identity stamp — WHICH symbol these candles
+        //   belong to. Set in MultiTfDataManager._prefetchOne (captured at
+        //   fetch-call time, before any await) and in restoreFromSymbolCache
+        //   (the snapshot key). Read by IndicatorManager._anchorTfGet to
+        //   reject stores that still hold a PREVIOUS coin's data after a
+        //   switch that bypassed the clear protocol (slow in-flight fetch
+        //   completing late, ratio exit, isPerp toggle, failed engine
+        //   lookup). null = unknown → check skipped (back-compat).
+        this.symbol = null;
         // FIX V49n-series2-deep: use single Frame with OHLCV columns + shared X.
         // This replaces 6 separate Source objects with one Frame, giving us:
         //   • Shared X array (no duplication)
@@ -17545,6 +17554,15 @@ class MultiTfDataManager {
      */
     async prefetchAll(adapter, chartDataStore, warmupByTf) {
         if (!adapter || typeof adapter.fetchHistoryTf !== 'function') return;
+        // V124-fix(stale-anchor): remember the CURRENT adapter so
+        //   _anchorTfGet can compare each store's symbol stamp against the
+        //   symbol the adapter actually serves right now. The adapter's
+        //   .symbol is updated synchronously at the START of a symbol
+        //   switch (before the chart reload completes), so — unlike the
+        //   chart DataStore's V121 stamp, which only flips when the new
+        //   candles land — it never produces false "mismatch" clears during
+        //   the restore-from-cache transition window.
+        this._adapter = adapter;
         // Compute the chart's full xRange (lazy-loaded history + visible)
         let xMin = null, xMax = null;
         try {
@@ -17714,6 +17732,17 @@ class MultiTfDataManager {
                 for (let iter = 0; iter < maxIterations; iter++) {
                     const fetchLimit = Math.min(1500, Math.ceil((xMax - fetchStartTime) / anchorMs) + 5);
                     if (__dbg) devLog('[V86-prefetch] fetch attempt', { tf, iter, fetchStartTime: new Date(fetchStartTime).toISOString(), fetchLimit, xMax: new Date(xMax).toISOString() });
+                    // V124-fix(stale-anchor): capture the symbol identity
+                    //   BEFORE the await. fetchHistoryTf bakes
+                    //   adapter.symbol into the request URL at call time, so
+                    //   callSym is the authoritative identity of whatever
+                    //   candles THIS call returns. If the user switches
+                    //   coins mid-fetch and the generation guard below is
+                    //   bypassed (a switch path that missed the clear
+                    //   protocol), stamping adapter.symbol at merge time
+                    //   would label OLD candles with the NEW symbol — the
+                    //   exact poisoning this stamp exists to detect.
+                    const callSym = adapter.symbol;
                     const candles = await adapter.fetchHistoryTf(tf, fetchLimit, fetchStartTime);
                     if (__dbg) devLog('[V86-prefetch] fetch result', { tf, iter, candlesLen: candles?.length, firstCx: candles?.[0]?._x, lastCx: candles?.[candles?.length-1]?._x });
                     // V49n-fix: abort if clearAnchorData was called during fetch.
@@ -17724,6 +17753,10 @@ class MultiTfDataManager {
                         return;
                     }
                     if (!this._stores.has(tf)) return;  // disposed
+                    // V124-fix(stale-anchor): stamp the identity BEFORE any
+                    //   state mutation so both the merge branch and the
+                    //   empty/no-data branches carry the correct symbol.
+                    store.symbol = callSym || store.symbol;
                     if (!candles || candles.length === 0) {
                         // FIX V50-anchor-TF: HTTP 200 + empty array is NOT an
                         //   error — it means the coin has no history for this
@@ -17922,10 +17955,29 @@ class MultiTfDataManager {
                     tf, error: e.message, errCount: prev + 1,
                 });
             } finally {
-                this._inflight.delete(tf);
+                // V124-fix(inflight-race): cleanup moved OUT of the inner
+                //   finally to the .then() handlers below the IIFE — see
+                //   comment there. (An unconditional delete here could drop
+                //   a NEWER prefetch's registration after a symbol switch
+                //   wiped _inflight, and the inner finally can't safely
+                //   reference `p` — it may run before `const p` is
+                //   initialized when the synchronous part throws.)
             }
         })();
         this._inflight.set(tf, p);
+        // V124-fix(inflight-race): only delete OUR OWN registration when the
+        //   prefetch settles. Old behavior: the inner finally deleted the
+        //   _inflight entry by tf unconditionally. After a symbol switch,
+        //   clearAllAnchorData()/restoreFromSymbolCache() wipe _inflight and
+        //   the next prefetch re-registers the same tf; the OLD (aborted)
+        //   prefetch's finally then deleted the NEW entry → the next
+        //   prefetchAll saw no inflight and started a duplicate concurrent
+        //   fetch. Identity check (get() === p) makes the delete safe.
+        //   Both fulfill AND reject handlers → no unhandled rejection.
+        p.then(
+            () => { if (this._inflight.get(tf) === p) this._inflight.delete(tf); },
+            () => { if (this._inflight.get(tf) === p) this._inflight.delete(tf); }
+        );
         return p;
     }
 
@@ -17979,6 +18031,7 @@ class MultiTfDataManager {
                 store.state = 'empty';
                 store.lastFetchTs = 0;  // force re-fetch (bypass TTL)
                 store._historyStart = null;  // V87: reset history-start marker
+                store.symbol = null;  // V124-fix(stale-anchor): reset identity
             } catch (e) { /* per-store best-effort */ }
         }
         // Clear inflight promises so the next prefetch starts fresh
@@ -18058,6 +18111,12 @@ class MultiTfDataManager {
         //   ETH candles → wrong lines on chart.
         this._generation = (this._generation || 0) + 1;
         this._inflight.clear();
+        // V124-fix(stale-anchor): reset error backoff too — the restored
+        //   symbol must not inherit the previous symbol's exponential
+        //   backoff level (clearAllAnchorData already did this; restore
+        //   used to skip it).
+        this._errorTs.clear();
+        this._errorCount.clear();
         let restored = 0;
         for (const [tf, store] of this._stores) {
             const cached = snapshot.get(tf);
@@ -18074,6 +18133,7 @@ class MultiTfDataManager {
                     store.state = 'empty';
                     store.lastFetchTs = 0;
                     store._historyStart = null;  // V87: reset
+                    store.symbol = null;  // V124-fix(stale-anchor): no data → no identity
                 } catch (e) { /* best-effort */ }
                 continue;
             }
@@ -18098,6 +18158,9 @@ class MultiTfDataManager {
                 store.lastX = cached.lastX;
                 store.state = cached.state || 'ready';
                 store._historyStart = cached._historyStart || null;  // V87: restore
+                // V124-fix(stale-anchor): the snapshot lives under `symbol`
+                //   in _symbolCache — these candles ARE that symbol's data.
+                store.symbol = symbol;
                 // V91-stale-cache: set lastFetchTs to 0 so the next prefetch
                 //   cycle WILL run (even though we restored from cache). This
                 //   ensures the forming candle gets refreshed with current
@@ -18240,6 +18303,40 @@ class IndicatorManager {
             }
             return null;
         }
+        // V124-fix(stale-anchor): symbol-identity check, read side. TfStores
+        //   are stamped with the symbol whose candles they hold (see
+        //   _prefetchOne / restoreFromSymbolCache). If that symbol differs
+        //   from the one the adapter currently serves, the store carries a
+        //   PREVIOUS coin's data — a slow in-flight fetch that completed
+        //   after the switch, or a switch path that bypassed the
+        //   save/restore/clear protocol (ratio exit, isPerp toggle, failed
+        //   engine lookup). Previously the only read-side condition was
+        //   size > 0 → the indicator happily drew lines from the previous
+        //   coin's candles ("indicator lines with anchor timeframes load
+        //   from the old coin").
+        //   Self-heal: clearAnchorData() drops ALL anchor stores (they are
+        //   all suspect), bumps _generation (aborts in-flight old-symbol
+        //   writes) and invalidates the compute caches; then return null →
+        //   the brick takes the anchor-pending path and the next prefetch
+        //   cycle re-fetches for the current symbol.
+        //   Note the reference is the ADAPTER's symbol (synchronous at
+        //   switch start), NOT the chart DataStore's V121 stamp (flips only
+        //   when new candles land) — that avoids false clears during the
+        //   restore-from-cache transition window, and it also auto-covers
+        //   the ratio-exit path (ratio pair "A/B" ≠ spot symbol).
+        const _curSym = this.multiTf?._adapter?.symbol || null;
+        if (store.symbol && _curSym && store.symbol !== _curSym) {
+            if (__dbg && !this._staleAnchorLogged) {
+                devLog('[anchor-TF] STALE symbol mismatch — clearing anchor stores', {
+                    tf, storeSymbol: store.symbol, currentSymbol: _curSym,
+                    storeSize: store.size,
+                });
+                this._staleAnchorLogged = true;
+                setTimeout(() => { this._staleAnchorLogged = false; }, 3000);
+            }
+            try { this.clearAnchorData(); } catch (_) { /* best-effort */ }
+            return null;
+        }
         // FIX V49n-perf: cache candles array — don't rebuild every frame.
         // During panning, _anchorTfGet is called every render frame (60fps).
         // Building 1000+ candle objects per frame causes GC pressure → stutters.
@@ -18361,6 +18458,7 @@ class IndicatorManager {
         this._anchorCandlesCache = null;
         this._anchorCandlesCacheKey = null;
         this._anchorGetNullLogged = false;
+        this._staleAnchorLogged = false;  // V124-fix(stale-anchor): rearm one-shot log
         // Invalidate compute cache so next computeAll re-runs
         this.invalidateCache();
         // Clear per-indicator _computed so anchor-TF indicators don't
@@ -47375,6 +47473,33 @@ class PointerController {
     _onMouseMove(e) {
         if (this._destroyed) return;
         if (this.api.activeController === 'touch') return;
+        // V124-fix(touch pass-through): ignore mousemove events that did NOT
+        //   originate on this canvas. mousemove is bound on WINDOW (so canvas-
+        //   initiated drags can continue outside the canvas bounds), which
+        //   used to let DOM-overlay events leak into the canvas input
+        //   pipeline: on Android, every tap on a DOM element (toolbar popup,
+        //   drawer, CoinPicker, modals) synthesizes a compat `mousemove`
+        //   targeted at that element after touchend; it bubbled to window,
+        //   ran this handler with the tap coordinates and drove
+        //   crosshair.set + draw-tool hover + handleGesture — the tap
+        //   "passed through the DOM" and drew/reacted on the canvas below.
+        //   While a canvas-initiated gesture is active (pan / overlay drag /
+        //   panel drag / pending press / swipe tracking) we still accept ANY
+        //   target — the pointer may legitimately leave the canvas mid-drag,
+        //   which is why the listener is on window in the first place.
+        //   Bonus: this also replaces the missing canvas mouseleave — the
+        //   crosshair no longer keeps tracking "through" DOM overlays when
+        //   the cursor (or synthesized tap) is above them.
+        const _canvasGestureActive = this.isPanning || this._panelDragging || this._mouseOverlayDrag
+            || this._labelLongPressPending || this._mouseSwipePanelId
+            || this._actionPanelPending || this._panelDeletePending;
+        if (!_canvasGestureActive && e.target !== this.canvas) {
+            if (this.api.crosshair && this.api.crosshair.visible) {
+                this.api.crosshair.hide();
+                this.api.requestRender();
+            }
+            return;
+        }
         const [x, y] = this._xy(e);
 
         // V37: panel drag-and-drop — if actively dragging, update the
@@ -47630,6 +47755,16 @@ class PointerController {
 
     _onKeyDown(e) {
         if (this._destroyed) return;
+        // V124-fix(keyboard target guard): don't hijack keys while the user
+        //   is typing in a DOM input (drawer fields, modals, CoinPicker
+        //   search). This handler is bound on WINDOW, so Backspace typed
+        //   into a text field used to DELETE the selected chart overlay
+        //   object (and Ctrl+Z used to trigger chart undo instead of text
+        //   undo). Return early and let the input keep its keys.
+        const _kt = e.target;
+        if (_kt && (_kt.tagName === 'INPUT' || _kt.tagName === 'TEXTAREA' || _kt.tagName === 'SELECT' || _kt.isContentEditable)) {
+            return;
+        }
         const key = e.key;
         const ctrl = e.ctrlKey || e.metaKey;
         // Undo/Redo
@@ -49971,8 +50106,30 @@ class CanvasLifecycle {
         //   the URL bar area on some browsers, giving a taller value than the
         //   visible area. Use the SMALLER of the two to ensure the chart fits
         //   within the visible viewport.
+        // V124-fix(keyboard-occlusion): ...but ONLY when the gap is
+        //   URL-bar-sized (≤ 15% of vh). When the SOFT KEYBOARD opens,
+        //   visualViewport.height also shrinks — by 30-45% of the screen —
+        //   yet that is an OCCLUSION over the page, NOT a layout change:
+        //   the wrapper (100dvh) keeps its CSS height and the keyboard
+        //   simply covers the bottom of it. The old code clamped the
+        //   backing store + layout height to vvh unconditionally → the
+        //   canvas element's CSS box stayed at wrapper height while its
+        //   resolution shrank to the above-keyboard height → every pixel
+        //   was VERTICALLY STRETCHED ("canvas becomes slightly taller but
+        //   the resolution stays the same" — user report when focusing the
+        //   CoinPicker search box; often amplified by the URL bar hiding
+        //   at the same moment, which grows the CSS box further).
+        //   A keyboard always eats ≥ ~25% of the screen; a URL bar ~8-13%.
+        //   15% safely separates the two: URL-bar gaps still clamp (V121
+        //   behaviour preserved), keyboard-scale gaps fall through to the
+        //   layout-viewport clamp and the canvas stays 1:1 with its CSS
+        //   box (crisp; the bottom is simply behind the keyboard, which is
+        //   correct — the keyboard and the picker sheet are on top anyway).
         const vvh = window.visualViewport?.height;
-        const effectiveVh = (vvh && vvh > 0 && vvh < vh) ? vvh : vh;
+        let effectiveVh = vh;
+        if (vvh && vvh > 0 && vvh < vh && (vh - vvh) <= vh * 0.15) {
+            effectiveVh = vvh;
+        }
         const w  = Math.min(r.width,  vw);
         const h  = Math.min(r.height, effectiveVh);
         if (r.height > vh + 1 || r.width > vw + 1) {
@@ -50851,10 +51008,20 @@ class Engine {
                       || this._container;
             if (!wrap) return;
             const r = wrap.getBoundingClientRect();
-            // V121-mobile-layout: also check against visualViewport.height
-            //   for more accurate detection of URL bar show/hide.
+            // V124-fix(keyboard-occlusion): apply the SAME rule as
+            //   CanvasLifecycle.resize — visualViewport gaps are trusted only
+            //   when URL-bar-sized (≤ 15% of vh). While the soft keyboard is
+            //   open, vvh is keyboard-scale smaller than the wrapper; the old
+            //   poll compared against min(r.height, vvh) unconditionally, so
+            //   it detected a "size change" EVERY second and forced a full
+            //   resize() (which itself stretched the canvas — see the resize
+            //   fix). Now the poll stays quiet during keyboard sessions.
+            const vh = window.innerHeight || document.documentElement.clientHeight || r.height;
             const vvh = window.visualViewport?.height;
-            const targetH = (vvh && vvh > 0) ? Math.min(r.height, vvh) : r.height;
+            let targetH = r.height;
+            if (vvh && vvh > 0 && vvh < vh && (vh - vvh) <= vh * 0.15) {
+                targetH = Math.min(targetH, vvh);
+            }
             if (targetH > 0 && Math.abs(targetH - (this.layout?.height ?? 0)) > 1) {
                 this.resize();
             }
@@ -59625,6 +59792,23 @@ class DataSourceOrchestrator {
             // V120-fix: also clear the captured pre-ratio source so a later
             // re-entry into ratio mode captures the THEN-current source afresh.
             this._preRatioSource = null;
+            // V124-fix(stale-anchor): leaving ratio mode changes the
+            //   instrument (the chart goes from the ratio pair "A/B" back
+            //   to a plain spot/perp symbol), but the anchor-TF stores
+            //   still hold the RATIO pair's candles — MTF indicator lines
+            //   would keep showing the old instrument's values on the new
+            //   chart until a refetch happened to run. Ratio ENTRY clears
+            //   anchors (V121-anchor-fix below); the EXIT path used to
+            //   skip it. (The read-side symbol check in _anchorTfGet also
+            //   catches this — a ratio "A/B" symbol never equals a plain
+            //   symbol — but clearing here is immediate.)
+            try {
+                const engine = this.api?._ctx?.engine || window._chart?.engine;
+                const im = engine?.indicatorManager;
+                if (im && typeof im.clearAnchorData === 'function') {
+                    im.clearAnchorData();
+                }
+            } catch (_) { /* best-effort */ }
         }
 
         // V120-fix: capture the pre-switch source BEFORE we overwrite srcMode.
@@ -59646,6 +59830,19 @@ class DataSourceOrchestrator {
         api.updateSourceInfo({ symbol: this.symbol, timeframe: this.timeframe });
 
         if (src === 'internal') {
+            // V124-fix(stale-anchor): switching to the internal simulator
+            //   replaces the chart with synthetic data, but the anchor-TF
+            //   stores still hold the previous exchange coin's REAL candles
+            //   (and no adapter serves internal mode, so nothing refetches
+            //   them) → MTF indicator lines drew real-market values over
+            //   simulated data. Drop them explicitly.
+            try {
+                const engine = this.api?._ctx?.engine || window._chart?.engine;
+                const im = engine?.indicatorManager;
+                if (im && typeof im.clearAnchorData === 'function') {
+                    im.clearAnchorData();
+                }
+            } catch (_) { /* best-effort */ }
             api.beginTransition();
             try {
                 const regenResult = await api.regenerateData(this.config.settings.xAxis);
@@ -59821,6 +60018,20 @@ class DataSourceOrchestrator {
             if (adapter) {
                 await adapter.switchAsset({ isPerp: !!value });
             }
+            // V124-fix(stale-anchor): spot ↔ perp is a MARKET change with the
+            //   SAME symbol name — the candles are from a different order
+            //   book (and the symbol stamp can't tell them apart), so drop
+            //   the anchor-TF stores explicitly and let the next prefetch
+            //   cycle re-fetch from the new endpoints. Without this, MTF
+            //   indicator lines kept the old market's values after the
+            //   toggle until a TTL/coverage refetch happened to run.
+            try {
+                const engine = this.api?._ctx?.engine || window._chart?.engine;
+                const im = engine?.indicatorManager;
+                if (im && typeof im.clearAnchorData === 'function') {
+                    im.clearAnchorData();
+                }
+            } catch (_) { /* best-effort */ }
             return;
         }
 
@@ -68033,7 +68244,18 @@ class CoinPicker {
         //   doesn't auto-update when quote currency changes while picker is closed).
         this._updateQuoteButtonUI();
         if (this._searchEl) {
-            this._searchEl.value = '';
+            // V124-fix(search-text-persist): keep the search text across
+            //   close/reopen. open() used to wipe the textbox (value = '')
+            //   while this._query — the actual list filter — stayed alive:
+            //   the picker reopened with a FILTERED list but an EMPTY search
+            //   box, which looked broken ("the name filter remains, but what
+            //   I typed disappears"). Restore the input from the live query
+            //   so the text and the filter stay in sync, and keep the ×
+            //   clear-button visibility consistent with it.
+            this._searchEl.value = this._searchText || this._query || '';
+            if (this._searchClearEl) {
+                this._searchClearEl.style.display = this._query ? 'block' : 'none';
+            }
             // V51-coinpicker-no-autofocus: do NOT autofocus the search box.
             //   Most users open the picker to browse the list, not to type a
             //   symbol. Autofocus pops up the mobile keyboard, covering half
@@ -68378,6 +68600,11 @@ class CoinPicker {
 
         // Wire events
         this._searchEl.addEventListener('input', (e) => {
+            // V124-fix(search-text-persist): keep the RAW text for restoring
+            //   on reopen (open() reads _searchText) — _query is the
+            //   lowercased/trimmed filter key and would come back as "eth"
+            //   after the user typed "ETH".
+            this._searchText = e.target.value;
             this._query = e.target.value.toLowerCase().trim();
             // Toggle the clear (×) button visibility based on whether there's text.
             this._searchClearEl.style.display = this._query ? 'block' : 'none';
@@ -68388,6 +68615,7 @@ class CoinPicker {
         this._searchClearEl.addEventListener('click', (e) => {
             e.stopPropagation();
             this._searchEl.value = '';
+            this._searchText = '';
             this._query = '';
             this._searchClearEl.style.display = 'none';
             this._searchEl.focus();
