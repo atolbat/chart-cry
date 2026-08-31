@@ -971,6 +971,31 @@
         }
         .cp-list::-webkit-scrollbar { width: 6px; }
         .cp-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+        /* V122: tiny on/off toggle buttons inside the CoinPicker count bar
+           (fav-only / all). Height-matched to the 11px counter text line so
+           the bar height does NOT grow. */
+        .cp-count-btn {
+            background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 4px; color: #8b949e; cursor: pointer;
+            font-size: 10px; font-family: inherit; font-weight: 600;
+            height: 16px; line-height: 1; padding: 0 7px;
+            white-space: nowrap; transition: background 0.12s, color 0.12s, border-color 0.12s;
+        }
+        .cp-count-btn:hover { background: rgba(255,255,255,0.1); color: #e6edf3; }
+        .cp-count-btn.active {
+            background: rgba(63,185,80,0.16); color: #3fb950; border-color: rgba(63,185,80,0.4);
+        }
+        .cp-count-btn.cp-count-all.active {
+            background: rgba(88,166,255,0.14); color: #58a6ff; border-color: rgba(88,166,255,0.35);
+        }
+        /* V123: per-kind fav toggles are narrow glyph buttons — tighter padding
+           so 5 of them fit on the counter line without growing its height. */
+        .cp-count-btn.cp-count-favtype, .cp-count-btn.cp-count-clear {
+            padding: 0 5px; min-width: 22px; text-align: center;
+        }
+        .cp-count-btn.cp-count-clear.active {
+            background: rgba(248,81,73,0.14); color: #f85149; border-color: rgba(248,81,73,0.4);
+        }
         /* Virtual scroll inner container — absolute positioning so adding/
            removing rows doesn't change the scrollable height (which would
            cause the browser to "correct" scrollTop and produce jitter). */
@@ -1258,12 +1283,16 @@ function _releaseDirty(obj) {
 class EventBus {
   constructor() { this._ls = []; this._holes = 0; this._pooled = false; }
   on(fn) {
-    const i = this._ls.length;
+    // V122-fix: do NOT capture the slot index — compaction (filter below)
+    //   shifts positions, so the captured index would tombstone a RANDOM
+    //   listener (unsubscribing someone else while ours leaks forever).
+    //   Locate the slot by function identity at unsubscribe time instead.
     this._ls.push(fn);
     let gone = false;
     return () => {
       if (gone) return; gone = true;
-      this._ls[i] = undefined; this._holes++;
+      const i = this._ls.indexOf(fn);
+      if (i >= 0) { this._ls[i] = undefined; this._holes++; }
       if (this._holes > (this._ls.length >> 1)) {
         this._ls = this._ls.filter(Boolean); this._holes = 0;
       }
@@ -1278,12 +1307,13 @@ class EventBus {
 class DirtyBus {
   constructor() { this._ls = []; this._holes = 0; }
   on(fn) {
-    const i = this._ls.length;
+    // V122-fix: identity-based unsubscribe — same compaction bug as EventBus.
     this._ls.push(fn);
     let gone = false;
     return () => {
       if (gone) return; gone = true;
-      this._ls[i] = undefined; this._holes++;
+      const i = this._ls.indexOf(fn);
+      if (i >= 0) { this._ls[i] = undefined; this._holes++; }
       if (this._holes > (this._ls.length >> 1)) {
         this._ls = this._ls.filter(Boolean); this._holes = 0;
       }
@@ -1362,6 +1392,13 @@ class Source {
     this._method = method;
     this._mode = opts.mode ?? LINEAR;
     this._type = opts.type ?? Float64Array;
+    // V122-fix: validate the interp method up-front — an unknown method
+    //   compiled no _interpFn and at() threw a cryptic TypeError on the
+    //   first x-lookup. Fall back to "asof" with a warning instead.
+    if (!["asof", "linear", "cosine", "cubic"].includes(this._method)) {
+      console.warn(`Source: unknown method "${this._method}", falling back to "asof"`);
+      this._method = "asof";
+    }
 
     const initCap = opts.capacity ?? Math.max(16, (values?.length ?? 16));
     this._cap = Math.max(1, initCap | 0);
@@ -1405,9 +1442,19 @@ class Source {
   _pushRaw(v, x) {
     if (this._len >= this._cap) {
       if (this._mode === RING) {
-        // evict oldest
+        // V122-fix(ring off-by-one): evict oldest, then write into the slot
+        //   the eviction just vacated and keep _len === _cap. The old code
+        //   computed phys = _mod(head + len, cap) AFTER eviction — which is
+        //   the slot of the NEW logical-0 element (a LIVE value) — and then
+        //   grew _len to cap+1. Backfilling more values than capacity
+        //   produced a scrambled series with length > capacity.
         this._head = _mod(this._head + 1, this._cap);
         this._len = this._cap;
+        const phys = _mod(this._head + this._len - 1, this._cap);
+        this._val[phys] = v;
+        if (this._x) this._x[phys] = x;
+        this._cursor.stale = true;
+        return;
       } else if (this._mode === BOUNDED) {
         throw new RangeError("Source: bounded overflow");
       } else {
@@ -1482,9 +1529,15 @@ class Source {
 
   pushBatch(values, xs) {
     const n = values.length;
+    // V122-fix: compute the x base ONCE before the loop — _len mutates on
+    //   every iteration, so the old inline expression produced triangular
+    //   steps (1,3,6,10…) and NaN when starting from an empty x-series.
+    const xBase = this._x
+      ? (this._len > 0 ? this._x[this._phys(this._len - 1)] + 1 : 0)
+      : this._len;
     for (let i = 0; i < n; i++) {
       const v = values[i];
-      const x = xs ? xs[i] : (this._x ? this._x[this._phys(this._len - 1)] + 1 + i : this._len + i);
+      const x = xs ? xs[i] : xBase + i;
       // for ring, push one by one (evict logic)
       if (this._mode === RING && this._len + 1 > this._cap) {
         this.push(v, x);
@@ -2143,12 +2196,16 @@ class Derived {
       if (r[0] > rangeStart) rangeStart = r[0];
     }
     // Find densest parent: most points with x >= rangeStart
+    // V122-perf: count from the tail backwards until x < rangeStart — same
+    //   result as the full scan for monotonic x, but O(tail) instead of O(N)
+    //   on every push (this runs per push event).
     let bestIdx = 0, bestN = -1;
     for (let k = 0; k < parents.length; k++) {
       const p = parents[k];
       let cnt = 0;
-      for (let i = 0; i < p.length; i++) {
+      for (let i = p.length - 1; i >= 0; i--) {
         if (p.xAt(i) >= rangeStart) cnt++;
+        else break;
       }
       if (cnt > bestN) { bestN = cnt; bestIdx = k; }
     }
@@ -2193,6 +2250,7 @@ class Derived {
     this._len = 0;
     this._state = this._initFn();
     for (const c of this._cursors) { c.lo = 0; c.stale = true; }
+    this._dcursor.stale = true;   // V122-fix: own lookup cursor must reset too (was returning undefined after shrink)
     if (this._snapStack) this._snapStack.clear();
     if (this._snapLens) this._snapLens.clear();
     this._snapCounter = 0;
@@ -2276,16 +2334,37 @@ class Derived {
   }
 
   _onParentPush() {
-    // check if common range grew
-    const oldEnd = this._rangeEnd;
+    // V122-fix(multi-parent race): parents emit push one-by-one (Frame pushes
+    //   each column in sequence; chained EMA parents update in dependency
+    //   order). Processing a new point after only the FIRST parent pushed
+    //   reads NaN from the rest — and EMA-style state keeps that NaN forever.
+    //   Rows are therefore processed only while they are BOTH pending (the
+    //   common range end is beyond the output's last x) AND readable (every
+    //   parent can supply them). The slow parent's own push re-enters here
+    //   and finishes the deferred row — even though it does not extend the
+    //   range any further.
     this._recomputeRange();
-    if (this._rangeEnd <= oldEnd) return; // noop — push in non-densest, no new points
-    // process new points from densest in (oldEnd, rangeEnd]
+    const outEnd = this._len > 0 ? this.xAt(this._len - 1) : -Infinity;
+    if (this._rangeEnd <= outEnd) return;  // nothing pending (covers no-op pushes too)
+    // process new points from densest in (outEnd, rangeEnd]
     const densest = this._parents[this._densestIdx];
+    // V122-perf: binary-search the first index with x > outEnd instead of
+    //   scanning from 0 on every push (was O(N) per live tick).
+    let start = 0, hi = densest.length;
+    while (start < hi) {
+      const mid = (start + hi) >> 1;
+      if (densest.xAt(mid) <= outEnd) start = mid + 1; else hi = mid;
+    }
     if (this._sameX) {
-      for (let i = 0; i < densest.length; i++) {
+      // V122-fix: multi-parent same-X — a row is only computable when EVERY
+      //   parent can supply it by index; stop at the first missing row.
+      let maxReadable = densest.length;
+      if (this._parents.length > 1) {
+        for (const p of this._parents) if (p.length < maxReadable) maxReadable = p.length;
+      }
+      for (let i = start; i < densest.length && i < maxReadable; i++) {
         const x = densest.xAt(i);
-        if (x <= oldEnd || x > this._rangeEnd) continue;
+        if (x > this._rangeEnd) break;
         for (let k = 0; k < this._parents.length; k++) {
           this._tmp[k] = this._parents[k].read(i);
         }
@@ -2294,9 +2373,9 @@ class Derived {
         this.events.dirty.emit(this._len - 1, this._len - 1 );
       }
     } else {
-      for (let i = 0; i < densest.length; i++) {
+      for (let i = start; i < densest.length; i++) {
         const x = densest.xAt(i);
-        if (x <= oldEnd || x > this._rangeEnd) continue;
+        if (x > this._rangeEnd) break;
         this._processPoint(x);
         this.events.push.emit(this._len - 1);
         this.events.dirty.emit(this._len - 1, this._len - 1 );
@@ -2306,14 +2385,31 @@ class Derived {
 
   _onParentPop() {
     if (this._len === 0) return;
+    // V122-fix(multi-parent pop): Frame columns emit pop one-per-column, so a
+    //   single logical row removal fired N pop events and decremented the
+    //   output N times (plus reverted with the wrong parent's inputs). For
+    //   same-X multi-parent series, wait until all parents re-aligned (the
+    //   last column's pop completes the row), then pop exactly once.
+    if (!this._single && this._sameX) {
+      let minLen = Infinity;
+      for (const p of this._parents) if (p.length < minLen) minLen = p.length;
+      for (const p of this._parents) {
+        if (p.length !== minLen) return;  // remaining columns still need to pop
+      }
+    }
     this._len--;
     // revert state
+    // V122-fix: pass the parent source so ringStep-based indicators can
+    //   reconstruct the evicted window value on revert (their dead
+    //   ctx.source branch was never fed before — revert was a silent no-op
+    //   that corrupted ring state after multiple pops).
+    const rctx = { sourceLen: this._len, source: this._single ? this._parents[0] : undefined };
     if (this._revert) {
-      if (this._single) this._revert(this._state, this._lastInputs.pop(), { sourceLen: this._len });
+      if (this._single) this._revert(this._state, this._lastInputs.pop(), rctx);
       else {
         const tmp = new Array(this._parents.length);
         for (let k = this._parents.length - 1; k >= 0; k--) tmp[k] = this._lastInputs.pop();
-        this._revert(this._state, tmp, { sourceLen: this._len });
+        this._revert(this._state, tmp, rctx);
       }
     } else if (this._snapStack) {
       const snap = this._snapStack.pop();
@@ -2378,6 +2474,7 @@ class Derived {
     // simple galloping for linear derived
     const c = this._dcursor;
     if (c.stale) { c.stale = false; c.lo = 0; }
+    if (c.lo >= this._len) c.lo = 0;   // V122-fix: series shrank (pop/recompute) — stale cursor read OOB slots and returned undefined
     let lo = c.lo;
     if (this._x[lo] > key) {
       while (lo > 0 && this._x[lo] > key) lo--;
@@ -2439,12 +2536,15 @@ class Derived {
   replace(value, x) {
     if (this._len === 0) return this;
     // revert state using old last input
+    // V122-fix: pass the parent source (same as _onParentPop) so ringStep
+    //   reverts can reconstruct the evicted window value.
+    const rctx = { sourceLen: this._len - 1, source: this._single ? this._parents[0] : undefined };
     if (this._revert) {
-      if (this._single) this._revert(this._state, this._lastInputs.at(this._lastInputs.length - 1), { sourceLen: this._len - 1 });
+      if (this._single) this._revert(this._state, this._lastInputs.at(this._lastInputs.length - 1), rctx);
       else {
         const tmp = new Array(this._parents.length);
         for (let k = this._parents.length - 1; k >= 0; k--) tmp[k] = this._lastInputs.at(this._lastInputs.length - this._parents.length + k);
-        this._revert(this._state, tmp, { sourceLen: this._len - 1 });
+        this._revert(this._state, tmp, rctx);
       }
     } else if (this._snapStack) {
       const snap = this._snapStack.pop();
@@ -2469,11 +2569,13 @@ class Derived {
     if (this._len === 0) return this;
     this._len--;
     if (this._revert) {
-      if (this._single) this._revert(this._state, this._lastInputs.pop(), { sourceLen: this._len });
+      // V122-fix: pass the parent source (same as _onParentPop).
+      const rctx = { sourceLen: this._len, source: this._single ? this._parents[0] : undefined };
+      if (this._single) this._revert(this._state, this._lastInputs.pop(), rctx);
       else {
         const tmp = new Array(this._parents.length);
         for (let k = this._parents.length - 1; k >= 0; k--) tmp[k] = this._lastInputs.pop();
-        this._revert(this._state, tmp, { sourceLen: this._len });
+        this._revert(this._state, tmp, rctx);
       }
     } else if (this._snapStack) {
       const snap = this._snapStack.pop();
@@ -2554,6 +2656,11 @@ class Derived {
 
 class ResampledView {
   constructor(parent, step, mode) {
+    // V122-fix: step must be a positive finite number — step<=0 produced an
+    //   infinite virtual grid (length=Infinity, values() never terminated).
+    if (!(Number(step) > 0) || !isFinite(step)) {
+      throw new RangeError("ResampledView: step must be a positive finite number");
+    }
     this._parent = parent;
     this._step = step;
     this._mode = mode;
@@ -2657,6 +2764,10 @@ class Histogram {
   _ensureRange(v) {
     if (!this._autoExt) return;
     if (v < this._lo) {
+      // V122-fix: snapshot the OLD grid so accumulated mass can be re-binned
+      //   onto the new grid instead of being silently discarded — a single
+      //   outlier used to wipe the entire histogram (counts/total reset to 0).
+      const oLo = this._lo, oBinW = this._binW, oCounts = this._counts, oMasses = this._masses;
       // extend down — double range. V121-fix: safety counter prevents
       //   infinite loop when range collapses to 0 (degenerate ranges with
       //   tiny values like 1e-13 ratio prices).
@@ -2673,10 +2784,10 @@ class Histogram {
         this._lo -= r;
         this._binW = (this._hi - this._lo) / this._n;
       }
-      this._counts = new Float64Array(this._n);
-      this._masses = new Float64Array(this._n);
-      this._total = 0; this._totalMass = 0;
+      this._rebin(oLo, oBinW, oCounts, oMasses);
     } else if (v > this._hi) {
+      // V122-fix: same — re-bin instead of resetting.
+      const oLo = this._lo, oBinW = this._binW, oCounts = this._counts, oMasses = this._masses;
       // extend up — double range. V121-fix: safety counter (see above).
       let safety = 0;
       while (v > this._hi && safety++ < 1000) {
@@ -2689,10 +2800,27 @@ class Histogram {
         this._hi += r;
         this._binW = (this._hi - this._lo) / this._n;
       }
-      this._counts = new Float64Array(this._n);
-      this._masses = new Float64Array(this._n);
-      this._total = 0; this._totalMass = 0;
+      this._rebin(oLo, oBinW, oCounts, oMasses);
     }
+  }
+
+  /** V122-fix: re-map old-bin counts/masses onto the current (extended) grid
+   *  by bin midpoint. Approximate (some smearing across new bin edges) but
+   *  lossless in total — the old code zeroed everything. */
+  _rebin(oLo, oBinW, oCounts, oMasses) {
+    const nc = new Float64Array(this._n);
+    const nm = new Float64Array(this._n);
+    for (let i = 0; i < oCounts.length; i++) {
+      const c = oCounts[i], m = oMasses[i];
+      if (!c && !m) continue;
+      const mid = oLo + (i + 0.5) * oBinW;
+      const idx = Math.min(this._n - 1, Math.max(0, Math.floor((mid - this._lo) / this._binW)));
+      nc[idx] += c;
+      nm[idx] += m;
+    }
+    this._counts = nc;
+    this._masses = nm;
+    // _total / _totalMass unchanged — no data lost
   }
 
   add(v, mass = 1) {
@@ -2856,7 +2984,10 @@ class WindowView {
     this.at = (key) => source.at(key);
 
     // position is a getter — always reflects current pos
-    Object.defineProperty(this, "position", { get: () => pos, set: (v) => { pos = v; }, enumerable: true });
+    // V122-fix: the setter now invalidates the cached stats — moving the
+    //   window used to leave sum/min-max/sorted caches stale (mean/min/max
+    //   silently reported the OLD window's values).
+    Object.defineProperty(this, "position", { get: () => pos, set: (v) => { pos = v; recompute(); }, enumerable: true });
 
     this.pan = (d) => {
       if (!d) return this;
@@ -3236,13 +3367,17 @@ const Indicators = {
   wma: (period) => {
     const p = Math.max(1, period | 0);
     const w = new Float64Array(p);
-    for (let i = 0; i < p; i++) w[i] = i + 1;
+    for (let i = 0; i < p; i++) w[i] = i + 1;   // w[i]: i-th OLDEST gets weight i+1 → newest gets p (canonical)
     const wsum = w.reduce((a, b) => a + b, 0);
     return ringStep(p, {
       compute: (s, v, olds) => {
         let sum = 0;
         for (let i = 0; i < p; i++) {
-          const j = (s.idx + i) % p;
+          // V122-fix: pair oldest→w[0]=1 … newest→w[p-1]=p (canonical WMA).
+          //   The old (s.idx + i) layout gave the NEWEST bar weight 1 and
+          //   the OLDEST bar weight p — inverted weighting (compare the
+          //   canonical ALMA layout (idx+1+i) above).
+          const j = (s.idx + 1 + i) % p;
           sum += s.buf[j] * w[i];
         }
         return sum / wsum;
@@ -3786,16 +3921,25 @@ Frame.prototype.push = function(row, xOrNotify, notify) {
   if (!doNotify) {
     for (const n of this._names) {
       const s = this._cols[n];
-      // Fast push without events or regularity check
-      if (s._len >= s._cap) {
-        if (s._mode === 'ring') { s._head = _mod(s._head + 1, s._cap); s._len = s._cap; }
-        else { s._grow(); }
+      // V122-fix(ring off-by-one): same eviction bug as Source._pushRaw —
+      //   after head++ the write must go to the VACATED slot (the new last
+      //   element), and _len must stay === cap. The old code wrote through
+      //   _phys(_len) === head (a LIVE element) and grew _len to cap+1, so
+      //   EVERY silent push after the ring filled corrupted one candle.
+      if (s._mode === 'ring' && s._len >= s._cap) {
+        s._head = _mod(s._head + 1, s._cap);
+        const phys = _mod(s._head + s._cap - 1, s._cap);
+        s._val[phys] = row[n];
+        if (s._x) s._x[phys] = x;
+        s._cursor.stale = true;
+      } else {
+        if (s._len >= s._cap) s._grow();
+        const phys = s._phys(s._len);
+        s._val[phys] = row[n];
+        if (s._x) s._x[phys] = x;
+        s._len++;
+        s._cursor.stale = true;
       }
-      const phys = s._phys(s._len);
-      s._val[phys] = row[n];
-      if (s._x) s._x[phys] = x;
-      s._len++;
-      s._cursor.stale = true;
     }
     // Deferred regularity check — will be recomputed on next at() call
     // or explicit _recomputeRegular(). Doing it per-push is O(N) total.
@@ -3825,7 +3969,27 @@ Frame.prototype.pop = function(notify) {
       }
     }
   } else {
-    for (const n of this._names) this._cols[n].pop();
+    for (const n of this._names) {
+      const s = this._cols[n];
+      if (s._len === 0) continue;
+      // V122-fix2(ring pop): Source.pop() THROWS on ring-mode columns
+      //   ("ring does not support pop"). SeriesBackedDataStore's OHLCV frame
+      //   is ring (cap = maxCapacity), and updateLastPoint() reaches this
+      //   notify=true path on EVERY live WS tick — the throw was swallowed by
+      //   the adapter's catch, so Derived series never saw the pop event and
+      //   the forming-candle recompute silently died. Ring tail removal is
+      //   well-defined: just _len-- (the vacated slot is at index _len).
+      //   Emit the exact same events Source.pop() would (pop + dirty) so
+      //   Derived._onParentPop alignment (V122) keeps working.
+      if (s._mode === 'ring') {
+        s._len--;
+        s._cursor.stale = true;
+        if (s.events?.pop) s.events.pop.emit(s._len);
+        if (s.events?.dirty) s.events.dirty.emit(s._len, s._len);
+      } else {
+        s.pop();
+      }
+    }
     this.events.pop.emit(this.length);
   }
   return this;
@@ -3880,7 +4044,11 @@ if (!Frame.prototype.resize) Frame.prototype.resize = function(n) {
     const s = this._cols[n2];
     if (s._val && s._val.length < n) {
       // grow
-      const nv = new s._type.constructor(n);
+      // V122-fix: `new s._type.constructor(n)` was `new Function(n)` —
+      //   Float64Array.constructor === Function, so resize silently created
+      //   a Function object instead of a typed array, breaking colArray()
+      //   and typed views downstream. Use the type constructor itself.
+      const nv = new s._type(n);
       for (let i = 0; i < s._len; i++) nv[i] = s._val[s._phys(i)];
       s._val = nv; s._cap = n; s._head = 0;
       if (s._x) {
@@ -5812,12 +5980,14 @@ function debugLog(msg) {
 function _renderDebugLog() {
     const body = document.getElementById('dlp-body');
     if (!body) return;
+    // V122-fix(XSS): log lines carry network traces / symbol names / error
+    //   texts — escape them (esc() exists in this scope but was not applied).
     body.innerHTML = _debugLogLines.map(line => {
         const m = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{3})\] (.*)$/);
         if (m) {
-            return `<div class="dlp-line"><span class="dlp-time">[${m[1]}]</span> ${m[2]}</div>`;
+            return `<div class="dlp-line"><span class="dlp-time">[${m[1]}]</span> ${esc(m[2])}</div>`;
         }
-        return `<div class="dlp-line">${line}</div>`;
+        return `<div class="dlp-line">${esc(line)}</div>`;
     }).join('');
     body.scrollTop = body.scrollHeight;
 }
@@ -7070,13 +7240,10 @@ class PresetRegistry {
     register(category, name, preset) {
         if (!this._presets.has(category)) this._presets.set(category, new Map());
         const cat = this._presets.get(category);
-        // Deep-clone to prevent external mutation of the registered preset.
-        // structuredClone preserves functions (unlike JSON.parse/stringify).
-        try {
-            cat.set(name, structuredClone(preset));
-        } catch (_) {
-            cat.set(name, JSON.parse(JSON.stringify(preset)));
-        }
+        // V122-fix: structuredClone THROWS on functions and the JSON fallback
+        //   silently DROPPED them (the inline comment claimed the opposite).
+        //   Use the function-preserving deep clone from ce-preamble.
+        cat.set(name, _deepCloneWithFunctions(preset));
     }
 
     /**
@@ -7088,11 +7255,9 @@ class PresetRegistry {
         if (!cat) return null;
         const preset = cat.get(name);
         if (!preset) return null;
-        try {
-            return structuredClone(preset);
-        } catch (_) {
-            return JSON.parse(JSON.stringify(preset));
-        }
+        // V122-fix: function-preserving clone (structuredClone throws on fns,
+        // JSON fallback dropped them — see register()).
+        return _deepCloneWithFunctions(preset);
     }
 
     /**
@@ -7295,12 +7460,9 @@ function resolveConfig(config) {
     if (!config || typeof config !== 'object') return config;
 
     // Deep clone first so we never mutate the user's config object
-    let resolved;
-    try {
-        resolved = structuredClone(config);
-    } catch (_) {
-        resolved = JSON.parse(JSON.stringify(config));
-    }
+    // V122-fix: function-preserving clone (structuredClone throws on fns,
+    // JSON fallback dropped them — user customFormatter vanished).
+    const resolved = _deepCloneWithFunctions(config);
 
     // Resolve panels
     if (Array.isArray(resolved.panels)) {
@@ -7437,12 +7599,11 @@ const ChartDefaults = {
  */
 function buildConfig(userConfig = {}) {
     // 1. Deep clone defaults
-    let config;
-    try {
-        config = structuredClone(ChartDefaults);
-    } catch (_) {
-        config = JSON.parse(JSON.stringify(ChartDefaults));
-    }
+    // V122-fix: function-preserving clone (structuredClone throws on fns,
+    // JSON fallback dropped them — see resolveConfig).
+    // V122-fix2: let, not const — config is reassigned at steps 2 and 5 below
+    // (V122 regression: const broke boot with "Assignment to constant variable").
+    let config = _deepCloneWithFunctions(ChartDefaults);
 
     // 2. Deep-merge user config on top (user wins)
     config = _deepMerge(config, userConfig);
@@ -9142,6 +9303,10 @@ function createPercentageFormatter(yScale, dec, fallbackFmt) {
 
 function clampXRange(xMin, xMax, lastDataX, panSettings, firstDataX = 0) {
     if (!isFinite(xMin) || !isFinite(xMax)) return [0, 1];
+    // V123-fix(zoom collapse): inverted input (xMax < xMin) used to fall into
+    //   the epsilon branch below and fabricate a fresh ~1ms window from
+    //   garbage. Swap it first so we anchor on the intended span.
+    if (xMax < xMin) { const t = xMin; xMin = xMax; xMax = t; }
     const rw = xMax - xMin;
     if (rw < RENDER_CONSTANTS.RANGE_EPSILON) { const s = Math.max(firstDataX, isFinite(xMin) ? xMin : firstDataX); return [s, s + 1]; }
 
@@ -12553,7 +12718,13 @@ function _drawCompactTooltip(ctx, candle, x, y, layout) {
 
     const upColor   = UP_COLOR;   // V50: theme-aware
     const downColor = DOWN_COLOR; // V50: theme-aware
-    const labelColor = 'rgba(255,255,255,0.5)';
+    // V122-fix: the compact tooltip was hardcoded to the dark palette — on
+    //   light themes it stayed a dark box with barely readable labels.
+    //   Use the active theme's tooltip colors (same as the legacy tooltip).
+    const _ttTheme = (typeof getTheme === 'function') ? (getTheme() || {}) : {};
+    const tooltipBg   = _ttTheme.tooltipBg || 'rgba(20,23,30,0.95)';
+    const tooltipText = _ttTheme.tooltipText || '#e6edf3';
+    const labelColor = _ttTheme.textSecondary || 'rgba(255,255,255,0.5)';
     const valueColor = isUp ? upColor : downColor;
     const borderColor = isUp ? 'rgba(38,166,154,0.4)' : 'rgba(239,83,80,0.4)';
 
@@ -12617,7 +12788,8 @@ function _drawCompactTooltip(ctx, candle, x, y, layout) {
     by = Math.max(layout.plotTop + 2, Math.min(by, layout.plotBottom - boxH - 2));
 
     // Background + border (color-tinted by up/down)
-    ctx.fillStyle = 'rgba(20,23,30,0.95)';
+    // V122-fix: theme-aware background (was hardcoded dark).
+    ctx.fillStyle = tooltipBg;
     ctx.strokeStyle = borderColor;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -12629,7 +12801,7 @@ function _drawCompactTooltip(ctx, candle, x, y, layout) {
     let curY = by + pad;
     if (time) {
         ctx.font = timeFont;
-        ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        ctx.fillStyle = labelColor;   // V122-fix: theme-aware dim label
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
         ctx.fillText(time, bx + pad, curY);
@@ -13335,7 +13507,7 @@ class DataStore {
         }
         // Linearize each OHLC array from circular buffer — reuse OHLC buffer pool
         if (!this._ohlcBufs || this._ohlcBufs._n !== n) {
-            this._ohlcBufs = { _n: n, open: new Float64Array(n), high: new Float64Array(n), low: new Float64Array(n), close: new Float64Array(n), vol: new Float64Array(n) };
+            this._ohlcBufs = { _n: n, open: new Float64Array(n), high: new Float64Array(n), low: new Float64Array(n), close: new Float64Array(n), vol: new Float64Array(n), x: new Float64Array(n) };
         }
         this._linearizeToArray(cs.openData, this._ohlcBufs.open, n);
         this._linearizeToArray(cs.highData, this._ohlcBufs.high, n);
@@ -13347,13 +13519,20 @@ class DataStore {
         } else {
             this._ohlcBufs.vol.fill(0);
         }
+        // V122-fix: linearize the timestamp array as well. It used to return
+        //   the RAW ring buffer (physical order) while open/high/low/close
+        //   were logical-order — after the ring wrapped (>10000 candles)
+        //   every consumer that paired _x[i] with close[i] got mismatched
+        //   timestamps (anchor-TF mapping, stats modal, VolNorm forming-candle
+        //   detection, pivot alignment).
+        this._linearizeToArray(this.x, this._ohlcBufs.x, n);
         return {
             open:  this._ohlcBufs.open,
             high:  this._ohlcBufs.high,
             low:   this._ohlcBufs.low,
             close: this._ohlcBufs.close,
             vol:   this._ohlcBufs.vol,
-            _x:    this.x,  // V38: expose timestamps for HTF indicator forward-fill mapping
+            _x:    this._ohlcBufs.x,  // V122-fix: logical-order timestamps (linearized)
             // V38-anchor: expose chart interval so _computeAnchor can decide
             // HTF vs LTF path without needing a separate dataStore reference.
             _intervalMs: this.intervalMs || 60000,
@@ -13622,6 +13801,9 @@ class SeriesBackedDataStore extends DataStore {
     clear() {
         super.clear();  // bumps _version
         while (this._ohlcvFrame.length > 0) this._ohlcvFrame.pop(false);
+        // V122-fix: dispose the old Derived — it stays subscribed to the
+        //   frame columns otherwise (one leaked subscription per symbol switch).
+        if (this._developingPOCSeq) { try { this._developingPOCSeq.dispose(); } catch (_) {} }
         this._developingPOCSeq = null;
         // V49n: no extra _version++ needed — super.clear() already bumped,
         // and pushPoint now uses notify=false during batch, so no stale
@@ -13633,6 +13815,7 @@ class SeriesBackedDataStore extends DataStore {
     // The frame is correctly populated WITHOUT firing stale events.
     loadHistory(candles, symbol, tf) {
         super.loadHistory(candles, symbol, tf);  // clear() + pushPoint × N + _version++ + stamp symbol/tf
+        if (this._developingPOCSeq) { try { this._developingPOCSeq.dispose(); } catch (_) {} }  // V122-fix: dispose (was leaked)
         this._developingPOCSeq = null;
         // FIX V49n-perf: after batch push, recompute regularity for all
         // columns. This is O(N) but called once per loadHistory, not per push.
@@ -13687,6 +13870,7 @@ class SeriesBackedDataStore extends DataStore {
         for (const rec of frameExisting) {
             this._ohlcvFrame.push(rec, false);  // rec has {time, open, high, low, close, volume}
         }
+        if (this._developingPOCSeq) { try { this._developingPOCSeq.dispose(); } catch (_) {} }  // V122-fix: dispose (was leaked)
         this._developingPOCSeq = null;
         // FIX V49n-derive-stale: fire rebuild events on all Source columns
         // so that Derived objects (SMA, EMA, MACD, etc.) know to recompute.
@@ -13709,7 +13893,10 @@ class SeriesBackedDataStore extends DataStore {
     getOpenSequence() { return this._ohlcvFrame.col("open"); }
     getVolumeSequence() { return this._ohlcvFrame.col("volume"); }
     // V49f: invalidate developing POC cache (on data version change)
-    invalidateDevelopingPOC() { this._developingPOCSeq = null; }
+    invalidateDevelopingPOC() {
+        if (this._developingPOCSeq) { try { this._developingPOCSeq.dispose(); } catch (_) {} }  // V122-fix: dispose (was leaked)
+        this._developingPOCSeq = null;
+    }
 // V49f: developing POC using SeriesJS.Window + Histogram
     // Returns a rolling histogram of the last N candles' volume by price
     // V49f: developing POC — reactive derive() with Histogram
@@ -16815,6 +17002,18 @@ class EMABufferPool {
      */
     getEMA(sourceId, period, srcData, count, version, mutation) {
         const key = sourceId + ':' + period;
+        // V122-fix: identity-based source keys create a new entry whenever a
+        //   source array is reallocated (appends grow the DataStore buffers).
+        //   Cap the pool and evict the oldest inserted entries (Map keeps
+        //   insertion order) so it can't grow without bound.
+        if (this._pool.size >= 96) {
+            const it = this._pool.keys();
+            for (let e = 0; e < 24; e++) {
+                const k = it.next().value;
+                if (k === undefined) break;
+                this._pool.delete(k);
+            }
+        }
         const entry = this._pool.get(key);
 
         // ── Cache hit: version unchanged → return immediately ──
@@ -17399,6 +17598,13 @@ class MultiTfDataManager {
         //   store will never cover [xMin, xMax] on the left side. But if
         //   we've already tried fetching backward and got empty, there's no
         //   more history — skip to avoid infinite re-fetch.
+        // V122-fix(TDZ): anchorMs was declared ~60 lines BELOW its first use
+        //   within the same function scope — every prefetch with a non-empty
+        //   store threw ReferenceError, which Promise.allSettled silently
+        //   swallowed. That killed gap-fill, left-history loading, forming-
+        //   candle refresh and error/no-data backoff for ALL anchor TFs
+        //   after the first successful fetch.
+        const anchorMs = store.intervalMs;
         if (store.size > 0) {
             const _coversRight = store.lastX >= xMax - anchorMs;
             const _coversLeft = store.firstX <= xMin + anchorMs || store._historyStart != null;
@@ -17459,7 +17665,7 @@ class MultiTfDataManager {
         // produce non-NaN values for the first visible chart bar. Without
         // this, an SMA-20 on 1h anchor with only 18 visible 1h bars would
         // be 100% NaN — the user sees nothing.
-        const anchorMs = store.intervalMs;
+        // (V122-fix: `anchorMs` moved ABOVE — see the TDZ comment.)
         const warmupBars = Math.max(warmup, 5);  // at least 5 bars of padding
         const startTime = Math.max(0, Math.floor(xMin / anchorMs) * anchorMs - anchorMs * (warmupBars + 1));
         const spanMs = xMax - xMin + this._chartIntervalMs + anchorMs * 2;
@@ -21179,8 +21385,21 @@ function _maSMA(src, count, n) {
 }
 
 /** Exponential Moving Average — uses shared pool for dedup when available. */
+// V122-fix: stable per-source key — a WeakMap assigns each src array an id.
+//   The old key ('ma:'+n) ignored WHICH array was smoothed, so nested calls
+//   in DEMA/TEMA/TRIX (EMA of EMA of EMA…) all hit the SAME cache entry
+//   (e1===e2===e3 → the indicator silently degenerated into a plain EMA),
+//   and MACD's signal-EMA collided with any other same-period EMA computed
+//   on a different source.
+const _emaSrcIds = new WeakMap();
+let _emaSrcSeq = 0;
+function _emaSrcKey(src) {
+    let id = _emaSrcIds.get(src);
+    if (id === undefined) { id = 's' + (++_emaSrcSeq); _emaSrcIds.set(src, id); }
+    return id;
+}
 function _maEMA(src, count, n, version, mutation, pool) {
-    if (pool) return pool.getEMA('ma:' + n, n, src, count, version, mutation);
+    if (pool) return pool.getEMA(_emaSrcKey(src) + ':ma', n, src, count, version, mutation);
     const k = 2 / (n + 1);
     const out = new Float64Array(count).fill(NaN);
     let prev = 0, started = false;
@@ -21456,7 +21675,10 @@ const MA_SPECS = [
         tags: ['moving average', 'smooth', 'responsive'], color: '#d29922',
         periodDefault: 21, periodMin: 1, periodMax: 500, periodStep: 1,
         seriesJsSpec: (n) => Indicators.ema(2 / (n + 1)),
-        maFn: (src, count, n, ctx) => ctx.emaPool.getEMA('close', n, src, count, ctx.version, ctx.mutation),
+        // V122-fix: include the src array identity in the pool key — the old
+        //   constant 'close' key made EMA(close) and EMA(hlc3)/EMA(log-price)/
+        //   EMA(chained-output) of the same period share one buffer.
+        maFn: (src, count, n, ctx) => ctx.emaPool.getEMA(_emaSrcKey(src) + ':close', n, src, count, ctx.version, ctx.mutation),
         // V43: emaPool использует строковый ключ 'close' для совместимости с
         // dedup'ом — оригинальный EMABrick передавал this.inputs.source.
     },
@@ -22250,7 +22472,13 @@ class MACDBrick extends IndicatorBrick {
         }
         const emaFast = _maEMA(src, count, this.params.fast, version, mutation, emaPool);
         const emaSlow = _maEMA(src, count, this.params.slow, version, mutation, emaPool);
-        const macd = new Float64Array(count).fill(NaN);
+        // V122-fix: REUSE the macd array across computes when count is
+        //   unchanged — a fresh allocation per call gave it a new identity
+        //   every time, so the signal-EMA pool entry could never hit and the
+        //   signal was fully recomputed O(N) on every live tick.
+        const macd = this._computed?.macd && this._computed.count === count
+            ? this._computed.macd : new Float64Array(count);
+        macd.fill(NaN);
         if (useLogMode) {
             // exp() back to price domain, then subtract
             for (let i = 0; i < count; i++) {
@@ -22762,10 +22990,15 @@ class AOBrick extends IndicatorBrick {
     constructor(cfg) { super(cfg); this.needsOHLC = true; }
 
     _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
-        try { devLog('[AO] _computeRaw entry', {
-            hasOhlc: !!ohlc, count, fast: this.params.fast, slow: this.params.slow,
-            maType: this.params.maType, logMode: this.params.logMode, logScale: this.params.logScale,
-        }); } catch(_) {}
+        // V122-fix: the unconditional devLog calls rebuilt the debug panel's
+        //   innerHTML on EVERY compute (AO recomputes on every live tick) —
+        //   gate them behind DevMode like every other brick.
+        if ((typeof isDevMode === 'function') && isDevMode()) {
+            try { devLog('[AO] _computeRaw entry', {
+                hasOhlc: !!ohlc, count, fast: this.params.fast, slow: this.params.slow,
+                maType: this.params.maType, logMode: this.params.logMode, logScale: this.params.logScale,
+            }); } catch(_) {}
+        }
 
         if (!ohlc) { try { devLog('[AO] ABORT: no ohlc'); } catch(_) {} return { line: new Float64Array(0), count, visibleRange }; }
         const fast = Math.max(1, Math.floor(this.params.fast));
@@ -22800,11 +23033,13 @@ class AOBrick extends IndicatorBrick {
             if (isFinite(maFast[i])) fastFinite++;
             if (isFinite(maSlow[i])) slowFinite++;
         }
-        try { devLog('[AO] MA computed', {
-            maType, fastFinite, slowFinite, count,
-            fastFirst: maFast.find(v => isFinite(v)),
-            slowFirst: maSlow.find(v => isFinite(v)),
-        }); } catch(_) {}
+        if ((typeof isDevMode === 'function') && isDevMode()) {
+            try { devLog('[AO] MA computed', {
+                maType, fastFinite, slowFinite, count,
+                fastFirst: maFast.find(v => isFinite(v)),
+                slowFirst: maSlow.find(v => isFinite(v)),
+            }); } catch (_) {}
+        }
 
         const line = new Float64Array(count).fill(NaN);
         for (let i = 0; i < count; i++) {
@@ -22832,10 +23067,12 @@ class AOBrick extends IndicatorBrick {
                 if (line[i] < _aoMin) _aoMin = line[i];
             }
         }
-        try { devLog('[AO] result', {
-            lineFinite: _aoFinite, count, lineMin: isFinite(_aoMin) ? _aoMin : null,
-            lineMax: isFinite(_aoMax) ? _aoMax : null,
-        }); } catch(_) {}
+        if ((typeof isDevMode === 'function') && isDevMode()) {
+            try { devLog('[AO] result', {
+                lineFinite: _aoFinite, count, lineMin: isFinite(_aoMin) ? _aoMin : null,
+                lineMax: isFinite(_aoMax) ? _aoMax : null,
+            }); } catch (_) {}
+        }
 
         this._computed = { line, count, visibleRange };
         return this._computed;
@@ -22866,8 +23103,14 @@ class AOBrick extends IndicatorBrick {
         const zeroY = yScale.valToPix(0);
         const barW = this._histBarWidth(xScale, xData, visibleRange);
         const halfW = barW / 2;
-        const upColor = this.outputStyles.line?.color || '#3fb950';
-        const downColor = '#f85149';
+        // V122-ao-color: the AO histogram hue must follow the SIGN (green
+        //   above zero / red below zero) with V121 momentum shading. Deriving
+        //   the up-hue from outputStyles.line.color made BOTH sides red
+        //   whenever the saved indicator color was red — the sign information
+        //   disappeared completely. Use the theme's candle up/down colors
+        //   (dynamic getters — theme switches apply instantly).
+        const upColor = (typeof UP_COLOR !== 'undefined') ? UP_COLOR : '#3fb950';
+        const downColor = (typeof DOWN_COLOR !== 'undefined') ? DOWN_COLOR : '#f85149';
         // V121-ao-momentum: helper to lighten a hex color by blending with white.
         //   Used for bars where momentum is shifting (fading in the current direction).
         const _lighten = (hex, amount = 0.25) => {
@@ -23072,12 +23315,22 @@ const OSCILLATOR_SPECS = [
             const n = Math.max(2, Math.floor(params.period));
             const shifted = Math.floor(n / 2) + 1;
             const line = new Float64Array(count).fill(NaN);
-            // SMA over period, shifted back by (n/2 + 1)
-            for (let i = n - 1 + shifted; i < count; i++) {
-                let sum = 0;
-                for (let j = 0; j < n; j++) sum += src[i - shifted - j] ?? 0;
-                const sma = sum / n;
-                line[i - shifted] = (src[i - shifted] ?? 0) - sma;
+            // V122-fix: canonical centered DPO — now matches seriesJsSpec:
+            //   line[i - shifted] = src[i - shifted] - SMA(n ending at i).
+            //   The old fallback used an SMA ending at the SAME bar as the
+            //   price (no displacement) — a different indicator on the
+            //   fallback path than on the series.js path.
+            let sum = 0;
+            for (let i = 0; i < count; i++) {
+                sum += isFinite(src[i]) ? src[i] : 0;
+                if (i >= n) sum -= isFinite(src[i - n]) ? src[i - n] : 0;
+                if (i >= n - 1) {
+                    const outIdx = i - shifted;
+                    if (outIdx >= 0) {
+                        const p = src[outIdx];
+                        line[outIdx] = isFinite(p) ? p - sum / n : NaN;
+                    }
+                }
             }
             return line;
         },
@@ -29034,21 +29287,9 @@ class TimeMarkerBrick extends IndicatorBrick {
     }
 
     render(ctx, xScale, yScale, xData, computed, visibleRange, layout) {
-        // V121-debug: log render entry to diagnose "nothing displays"
-        try { console.log('[V121-timemarker-debug] render entry', {
-            hasComputed: !!computed,
-            hasMarkerData: !!computed?.markerData,
-            markerDataLen: computed?.markerData?.length || 0,
-            markerData: computed?.markerData?.map(m => ({ ts: m.timestamp, label: m.label, color: m.color, hasCandle: !!m.candle })),
-            lineWidth: this.params.lineWidth,
-            lineStyle: this.params.lineStyle,
-            paramsMarkers: this.params.markers,
-            visible: this.visible,
-            plotLeft: layout?.plotLeft,
-            plotTop: layout?.plotTop,
-            plotBottom: layout?.plotBottom,
-            plotRight: layout?.plotRight,
-        }); } catch(_) {}
+        // V122-fix: removed the unconditional V121-debug console.log — it ran
+        //   on EVERY rendered frame (spam + per-frame allocations of the
+        //   markerData.map(...) object).
         if (!computed?.markerData || computed.markerData.length === 0) return;
 
         const lw = this.params.lineWidth || 1.5;
@@ -30218,10 +30459,25 @@ class VolNormCandlesBrick extends IndicatorBrick {
             if (!isFinite(o) || !isFinite(h) || !isFinite(l) || !isFinite(c) || !isFinite(v) || v <= 0) {
                 continue;
             }
+            // V122-forming-candle: the LAST bar is usually still forming — its
+            //   volume only covers the ELAPSED fraction of the interval, so
+            //   dividing by the partial volume inflated body/wicks (a huge
+            //   false "anomaly" candle right after the bar opens). Extrapolate
+            //   the volume to a full candle linearly by elapsed time (capped
+            //   at 20× so the first seconds of a bar don't over-correct).
+            //   Closed bars (elapsed >= interval) are untouched.
+            let vEff = v;
+            if (i === count - 1 && ohlc._x && ohlc._intervalMs > 0 && ohlc._x.length > i) {
+                const barOpen = ohlc._x[i];
+                if (isFinite(barOpen)) {
+                    const frac = (Date.now() - barOpen) / ohlc._intervalMs;
+                    if (frac > 0.02 && frac < 1) vEff = v / Math.max(frac, 0.05);
+                }
+            }
             // Volume-normalized body + wicks (scaled for readability)
-            const body = (c - o) / v * scale;
-            const upperWick = (h - Math.max(o, c)) / v * scale;
-            const lowerWick = (Math.min(o, c) - l) / v * scale;
+            const body = (c - o) / vEff * scale;
+            const upperWick = (h - Math.max(o, c)) / vEff * scale;
+            const lowerWick = (Math.min(o, c) - l) / vEff * scale;
             // Gapless chain: open[i] = close[i-1]
             const syn_o = (i === 0 || !isFinite(synClose[i - 1])) ? 0 : synClose[i - 1];
             const syn_c = syn_o + body;
@@ -30891,7 +31147,7 @@ class AuxSeriesBrick extends IndicatorBrick {
         // V50 FIX: fetch only the missing part (older or newer), not the
         //   entire range. This prevents Binance limit=1000 from returning
         //   overlapping data that doesn't extend _auxRaw backward.
-        if (!this._fetching) {
+        if (!this._fetching && (!this._auxFailUntil || Date.now() >= this._auxFailUntil)) {
             this._fetching = true;
             const fetchStart = this._fetchedRange
                 ? Math.max(startBarX - 8 * 3600 * 1000, 0)
@@ -30907,10 +31163,16 @@ class AuxSeriesBrick extends IndicatorBrick {
                 ? fetchEnd
                 : lastX;
             opts.doFetch(actualStart, actualEnd).then(raw => {
-                if (raw) this._mergeAuxRaw(raw, 'timestamp');
+                if (raw && raw.length) {
+                    this._mergeAuxRaw(raw, 'timestamp');
+                    this._auxFails = 0;   // V122-fix: reset backoff counter on success
+                } else {
+                    // V122-fix: empty response — treat as a failure for backoff
+                    this._auxNoteFetchFail();
+                }
                 this._fetching = false;
                 this._triggerRender();
-            }).catch(() => { this._fetching = false; });
+            }).catch(() => { this._fetching = false; this._auxNoteFetchFail(); });
         }
 
         // ── 6. Use stale auxRaw if available (while fetch is in progress) ──
@@ -30928,6 +31190,17 @@ class AuxSeriesBrick extends IndicatorBrick {
     _emptyAuxResult(count, visibleRange) {
         this._computed = { line: new Float64Array(count).fill(NaN), count, visibleRange };
         return this._computed;
+    }
+
+    /** V122-fix: back off after repeated empty/failed fetches. Without this,
+     *  a permanently-empty endpoint (or an IP ban) re-fetched on EVERY render
+     *  frame — a fetch storm against the exchange. 3 strikes → 30s pause. */
+    _auxNoteFetchFail() {
+        this._auxFails = (this._auxFails || 0) + 1;
+        if (this._auxFails >= 3) {
+            this._auxFailUntil = Date.now() + 30000;
+            this._auxFails = 0;
+        }
     }
 
     dispose() {
@@ -31392,6 +31665,29 @@ class RelPerfBrick extends AuxSeriesBrick {
      *     fires them ALL in parallel. Total time = max(fetch) ≈ 1s regardless
      *     of page count, instead of N × 1s sequential.
      *     This fixes "4h всё ещё долго грузит" — 2 pages parallel = 1s, not 2s. */
+    /** V122-fix: dispose the reactive derive() chain (symPct/refPct/diff/
+     *  cumulative) BEFORE dropping the reference. Plain `= null` left all
+     *  four Derived objects subscribed to the frame's column Sources — every
+     *  rebuild (per data-version change = per live tick!) leaked a new
+     *  chain of 4 subscriptions → quadratic CPU/memory growth in a stream. */
+    _disposeRelperfDerived() {
+        const d = this._relperfDerived;
+        this._relperfDerived = null;
+        if (!d) return;
+        try {
+            d.symPct?.dispose?.();
+            d.refPct?.dispose?.();
+            d.diff?.dispose?.();
+            d.cumulative?.dispose?.();
+        } catch (_) {}
+    }
+
+    /** V122-fix: release the derive chain when the brick is removed. */
+    dispose() {
+        this._disposeRelperfDerived();
+        super.dispose();
+    }
+
     _schedulePrefetch() {
         if (this._prefetchScheduled) return;
         this._prefetchScheduled = true;
@@ -31412,7 +31708,7 @@ class RelPerfBrick extends AuxSeriesBrick {
             const syncCached = this._tryLoadRefFromCacheSync(refSymbol, timeframe);
             if (syncCached && syncCached.length > 0) {
                 this._mergeAuxRaw(syncCached, 'x');
-                this._relperfDerived = null;
+                this._disposeRelperfDerived();
                 this._triggerRender();
             }
 
@@ -31420,7 +31716,7 @@ class RelPerfBrick extends AuxSeriesBrick {
             this._tryLoadRefFromCache(refSymbol, timeframe).then(cached => {
                 if (cached && cached.length > 0 && !this._fetching) {
                     this._mergeAuxRaw(cached, 'x');
-                    this._relperfDerived = null;
+                    this._disposeRelperfDerived();
                     this._triggerRender();
                 }
             }).catch(() => {});
@@ -31433,10 +31729,15 @@ class RelPerfBrick extends AuxSeriesBrick {
                 // wasn't loaded at setTimeout(0) time, falling back to _computeRaw
                 // which delayed fetch by one render frame. Retry loop ensures
                 // fetch starts ASAP after chart becomes ready.
+                // V122-fix: cap the retry loop (~10s) — it ran forever when the
+                // chart never became ready (removed brick / failed init).
+                this._prefetchRetries = (this._prefetchRetries || 0) + 1;
+                if (this._prefetchRetries > 200) return;
                 this._prefetchScheduled = true;
                 setTimeout(() => { this._prefetchScheduled = false; this._schedulePrefetch(); }, 50);
                 return;
             }
+            this._prefetchRetries = 0;   // V122-fix: chart ready — reset the retry cap
 
             // Determine visible range from chart's actual data range
             const chart = this._getChartCtx();
@@ -31480,7 +31781,7 @@ class RelPerfBrick extends AuxSeriesBrick {
                 if (anyNew) {
                     this._saveRefToCache(refSymbol, timeframe, this._auxRaw, intervalMs);
                     // Invalidate derive to use new data
-                    this._relperfDerived = null;
+                    this._disposeRelperfDerived();
                 }
             }).catch(() => {}).finally(() => {
                 if (this._auxFetchGen === fetchGen) {
@@ -31645,7 +31946,7 @@ class RelPerfBrick extends AuxSeriesBrick {
                 this._auxFetchRefSymbol = refSymbol;
                 this._auxFetchTimeframe = timeframe;
                 this._fetching = false;  // allow new fetch for the new (symbol, tf)
-                this._relperfDerived = null;
+                this._disposeRelperfDerived();
                 // V49n-SERIESJS-FOUNDATION: schedule IDB prefetch for the NEW
                 // refSymbol — populates _auxRaw from persistent cache before
                 // next render, giving instant render on refSymbol switch.
@@ -31668,7 +31969,7 @@ class RelPerfBrick extends AuxSeriesBrick {
                         // Invalidate if: (a) first time (oldFirst undefined),
                         // (b) aux range extended on either side
                         if (oldFirst === undefined || newFirst < oldFirst || newLast > oldLast) {
-                            this._relperfDerived = null;
+                            this._disposeRelperfDerived();
                         }
                     }
                     // V49n-SERIESJS-FOUNDATION: persist to cache for next session
@@ -31726,7 +32027,7 @@ class RelPerfBrick extends AuxSeriesBrick {
                         // Invalidate if: (a) first time (oldFirst undefined),
                         // (b) aux range extended on either side
                         if (oldFirst === undefined || newFirst < oldFirst || newLast > oldLast) {
-                            this._relperfDerived = null;
+                            this._disposeRelperfDerived();
                         }
                     }
                     this._fetching = false;
@@ -31787,7 +32088,7 @@ class RelPerfBrick extends AuxSeriesBrick {
                         // Persist to cache (async, fire-and-forget)
                         this._saveRefToCache(fetchRefSymbol, fetchTimeframe, this._auxRaw, intervalMs);
                         // Invalidate derive to use new data
-                        this._relperfDerived = null;
+                        this._disposeRelperfDerived();
                     }
                 } catch (e) {
                     /* network fetch failed — keep cached data if any */
@@ -31831,7 +32132,7 @@ class RelPerfBrick extends AuxSeriesBrick {
                 (this._relperfDataVersion !== dataVersion ||
                  this._relperfAuxVersion !== auxVersion ||
                  this._relperfRefSymbol !== refSymbol)) {
-                this._relperfDerived = null;
+                this._disposeRelperfDerived();
             }
             this._relperfDataVersion = dataVersion;
             this._relperfAuxVersion = auxVersion;
@@ -35604,6 +35905,7 @@ class RenderContext {
         this.main    = new MainRenderer(mainCtx, panelLabelRenderer);
         this.overlay = new OverlayRenderer(overlayCtx, config);
         this._scales = null; this._layout = null; this._yColW = 60;  // kept for internal overlay render
+        this._indicatorManager = null;   // V122-fix: latest manager passed with RENDER_FRAME
     }
     process(cmd) {
         if (cmd.type === 'RENDER_FRAME')   return this._frame(cmd.payload);
@@ -35715,12 +36017,22 @@ class RenderContext {
             }
         }
         this._yFormatters = yFormatters;
+        // V122-fix: forward the indicatorManager to the OverlayRenderer.
+        //   It was never passed, so the renderer's `this.indicatorManager`
+        //   was always undefined: indicator snap-points were dead code,
+        //   crosshair tooltips never listed indicator values, and the
+        //   crosshair Y-label color always fell back to accent blue.
+        if (indicatorManager) this._indicatorManager = indicatorManager;
+        this.overlay.indicatorManager = this._indicatorManager;
         this.main.render({ layout: l, slice, xScale, yScales, ticks, intervalMs, config, yColW: this._yColW, yFormatters, indicatorManager });
         // Return scales + yColW for Engine to update ScaleCache & layout
         return { xScale, yScales, layout: l, yColW: this._yColW };
     }
     _over({ inputSnapshot, xAxisUnitSystem, currentPriceData }) {
         if (!this._scales || !this._layout) return;
+        // V122-fix: keep the overlay renderer's manager reference fresh (the
+        //   overlay renders every mouse-move frame).
+        if (this._indicatorManager) this.overlay.indicatorManager = this._indicatorManager;
         this.overlay.render(inputSnapshot, this._layout, this._scales.xScale, this._scales.yScales,
             xAxisUnitSystem, currentPriceData, this._yColW, this._yFormatters);
     }
@@ -40232,6 +40544,14 @@ function createAPIContext({
         _transitionDepth: 0,
         _transitionTimer: null,
 
+        // V122-fix: lifecycle AbortController. Toolbar polling intervals
+        //   (_histInterval / _ovCountInterval) wire their cleanup onto this
+        //   signal — but it was referenced (`api._ctx._abortCtrl`) and NEVER
+        //   assigned, so those 500ms intervals leaked on every chart re-create
+        //   (2 orphan timers with closures over api/container each remount).
+        //   Engine.destroy() aborts it.
+        _abortCtrl: new AbortController(),
+
         // ── Convenience methods ──
 
         /** Centralized dirty flag mutation — single source of truth via DirtyFlags */
@@ -40508,6 +40828,15 @@ class NavigationController {
     // ── Zoom ──
 
     zoomX(factor, anchorX) {
+        // V123-fix(zoom collapse): clamp the factor. A single coalesced touch
+        //   event from a fast axis-drag flick used to pass |factor| >= 1
+        //   (scale <= 0 → inverted range) → clampXRange's epsilon branch
+        //   manufactured a ~1-5ms range centered on the last candle — the
+        //   "instantly zoomed into one candle after TF switch" bug. ±0.95 per
+        //   call still allows fast zooming (wheel passes ±0.1 unaffected).
+        if (!isFinite(factor)) return;
+        if (factor > 0.95) factor = 0.95;
+        else if (factor < -0.95) factor = -0.95;
         const vp = this.getXRange(), scale = 1 - factor;
         let lo = anchorX - (anchorX - vp.min) * scale;
         let hi = anchorX + (vp.max - anchorX) * scale;
@@ -40515,6 +40844,10 @@ class NavigationController {
         this.setXRange(lo, hi);
     }
     zoomY(pId, factor, anchorY) {
+        // V123-fix(zoom collapse): same factor clamp as zoomX — see there.
+        if (!isFinite(factor)) return;
+        if (factor > 0.95) factor = 0.95;
+        else if (factor < -0.95) factor = -0.95;
         // Skip Y zoom if panel range is fixed
         const rangeCfg = this._getPanelRangeConfig(pId);
         if (rangeCfg?.rangeMode === 'fixed') return;
@@ -43665,7 +43998,14 @@ class ToolBase extends Tool {
         const sc = api.scaleCache;
         if (!sc.valid) { api.requestRender(); return; }
         const xScale = sc.xScale;
-        const panelId = api.getActivePanel(px.y) || 'main';
+        // V123-fix(cross-panel draw): a measurement in progress keeps the
+        // panel it started on. Tap 2 in a neighbouring panel must not
+        // re-derive the panel (its yScale differs → p1/p2 values become
+        // incomparable and the measurement is garbage). px is already
+        // clamped into the original panel's band by TrendLineTool._handleTap;
+        // preferring _rulerData.panelId makes it explicit and boundary-proof.
+        const panelId = (this._rulerData && !this._rulerData.complete && this._rulerData.panelId)
+            || api.getActivePanel(px.y) || 'main';
         const yS = sc.yScales[panelId];
         if (!xScale || !yS) { api.requestRender(); return; }
         this._panelId = panelId;
@@ -45105,6 +45445,14 @@ class TrendLineTool extends InteractionTool {
         const px = ctx.inputType === 'touch'
             ? { x: ctx.x + this._offsetX, y: ctx.y + this._offsetY }
             : { x: ctx.x, y: ctx.y };
+        // V123-fix(cross-panel draw): while a multi-tap drawing is in progress
+        // the cursor — and the rubber-band anchor bound to the crosshair — is
+        // clamped to the vertical band of the panel the drawing started on.
+        // The preview can no longer run into a neighbouring panel, and the
+        // committed anchor can never live outside its own panel.
+        const hoverTool = toolRegistry.toolForMode(this._mode, ctx.api.config);
+        const hoverLock = this._drawingLockedPanel(hoverTool);
+        if (hoverLock) this._clampPxToPanel(px, ctx.api, hoverLock);
         ctx.api.setInputLogicalPos(px.x, px.y);
         const panelId = ctx.api.getActivePanel(px.y);
         if (panelId) ctx.api.setInputActivePanel(panelId);
@@ -45137,9 +45485,27 @@ class TrendLineTool extends InteractionTool {
         // some legacy branches, causing TDZ when RulerTool delegation ran
         // before the legacy `const panelId = ...` line below).
         const panelId = ctx.api.getActivePanel(px.y) || 'main';
+
+        // ── V123-fix(cross-panel draw): lock the drawing panel ──
+        // Previously EVERY tap reassigned t._panelId to the panel under the
+        // cursor. A fib/trend/zone/fibexp/gridbot/polygon/ruler started on
+        // panel A and finished over panel B was created ON panel B — with the
+        // earlier anchors' pixels mapped through panel B's yScale (garbage
+        // values), which resolve() then clamped to panel B's edge → the
+        // "unit-size fib on the wrong panel" the user reported. Now the
+        // panel is fixed by the FIRST committed anchor; later taps of the
+        // same drawing keep it, and their Y is clamped into that panel's
+        // pixel band (so the anchor can't be placed outside its panel).
+        const t = toolRegistry.toolForMode(this._mode, ctx.api.config);
+        const lockedPanel = this._drawingLockedPanel(t);
+        if (lockedPanel) this._clampPxToPanel(px, ctx.api, lockedPanel);
+        const drawPanelId = lockedPanel || panelId || 'main';
+
         // V37: publish to crosshair so _cursorPx is consistently mirrored.
         // This is the single tap-time write — _handleHover already covers
         // the move path, and PointerController covers the mouse path.
+        // (The anchor freezes at THIS position — clamped above, so a tap in
+        // a neighbouring panel commits at the drawing panel's edge.)
         ctx.api.crosshair.set(px.x, px.y);
 
         // spanning the visible X range. Only Y is captured from the cursor.
@@ -45152,16 +45518,54 @@ class TrendLineTool extends InteractionTool {
         // Раньше было 14 case + 14 _handleTap_xxx методов. Теперь один вызов
         // через toolRegistry. Инструмент сам решает, нужен ему px или нет
         // (TOOL_SPECS.custom='ruler' или 'polygon' → onCommit(api, px)).
-        const t = toolRegistry.toolForMode(this._mode, ctx.api.config);
         if (!t) {
             debugLog('[TrendLine._handleTap] no tool for mode=' + this._mode);
             return;
         }
-        t._panelId = panelId || 'main';
+        t._panelId = drawPanelId;
         if (toolRegistry.needsPxArg(this._mode)) {
             t.onCommit(ctx.api, px);
         } else {
             t.onCommit(ctx.api);
+        }
+    }
+
+    /**
+     * V123-fix(cross-panel draw): the panel of an in-progress multi-tap
+     * drawing, or null when no drawing is mid-flight. The panel is decided
+     * by the first committed anchor and stays locked until the drawing
+     * completes (fixed-anchor tools), closes (polygon) or finishes (ruler).
+     * Single-tap tools (hline/vline/rays/fibauto) never lock — each tap is
+     * a fresh drawing and legitimately (re)picks its panel.
+     */
+    _drawingLockedPanel(t) {
+        if (!t) return null;
+        // Ruler: mid-measurement → keep the panel the measurement started on.
+        if (t._rulerData && !t._rulerData.complete) {
+            return t._rulerData.panelId || t._panelId || null;
+        }
+        // Polygon (variable anchors): in progress once ≥1 vertex is committed
+        // (the trailing vertex bound to the crosshair doesn't count).
+        if (t._spec && t._spec.anchors === 'variable') {
+            return (t._active && t._vertices && t._vertices.length >= 2)
+                ? (t._panelId || null)
+                : null;
+        }
+        // Fixed-anchor tools (fib/free/ray/zone/fibexp/gridbot): locked while
+        // at least one anchor is committed and the drawing isn't finished.
+        if (Array.isArray(t.anchors) && typeof t.isComplete === 'function') {
+            return (t._commitIdx > 0 && !t.isComplete())
+                ? (t._panelId || null)
+                : null;
+        }
+        return null;
+    }
+
+    /** V123-fix(cross-panel draw): clamp a pixel point into a panel's band. */
+    _clampPxToPanel(px, api, panelId) {
+        const pb = api && api.layout ? api.layout.panels[panelId] : null;
+        if (pb && pb.height > 0 && isFinite(pb.top) && isFinite(pb.bottom)) {
+            px.y = Math.max(pb.top, Math.min(pb.bottom, px.y));
         }
     }
 
@@ -45874,7 +46278,15 @@ function pinchMidpoint(ctx) {
 function pinchZoomFactor(ctx) {
     const cur  = Math.hypot(ctx.x2  - ctx.x1,  ctx.y2  - ctx.y1);
     const prev = Math.hypot(ctx.lx2 - ctx.lx1, ctx.ly2 - ctx.ly1);
-    return prev > 0 ? (cur / prev) - 1 : 0;
+    // V123-fix(zoom collapse): require a sane baseline distance. When fingers
+    //   cross / rotate / one is lifted+re-landed within a frame, `prev` can be
+    //   1-3px while `cur` is 100-200px → factor of 30-200 → inverted range →
+    //   collapsed view (same bug class as the axis-drag flick). A 15px
+    //   baseline kills the explosion; genuine pinches are unaffected.
+    if (prev < 15) return 0;
+    const f = (cur / prev) - 1;
+    // Bound the per-event factor as well (defence in depth).
+    return Math.max(-0.9, Math.min(0.9, f));
 }
 
 
@@ -46057,11 +46469,17 @@ class AxisZoomRecognizer extends GestureRecognizer {
                 const yr = this.api.getYRange(key);
                 const anchorY = computeZoomAnchorY(yr, anchorMode);
                 if (isFinite(anchorY)) {
-                    this.api.zoomY(key, -ctx.dy * 0.005, anchorY);
+                    // V123-fix: bound the per-event factor — a coalesced
+                    //   touchmove from a fast flick carries |dx/dy| of hundreds
+                    //   of px → factor >= 1 → range inversion (see zoomX clamp).
+                    const fy = Math.max(-0.5, Math.min(0.5, -ctx.dy * 0.005));
+                    this.api.zoomY(key, fy, anchorY);
                 }
             }
         } else {
-            this.api.zoomX(-ctx.dx * 0.005, this.api.getXRange().max);
+            // V123-fix: bound the per-event factor (same reason as Y above).
+            const fx = Math.max(-0.5, Math.min(0.5, -ctx.dx * 0.005));
+            this.api.zoomX(fx, this.api.getXRange().max);
         }
     }
     handleEnd(_ctx) { this.targetPanelId = null; this._allowed = false; this._targetAxisId = 'default'; this._targetKey = null; this._anchorY = null; }
@@ -47872,15 +48290,11 @@ function resolveDrawAction(ctx, api, classes) {
     const toolName = api.getToolName();
     const overlay = api.overlay;
 
-    // V111: overlay hit-testing only on the MAIN panel — prevents accidental
-    //   selection of trend lines when the user is swiping/interacting with
-    //   secondary (indicator) panels. Overlay objects are drawn on the main
-    //   chart and their visual extent can overlap secondary panels, but
-    //   interaction should be confined to the main panel's pixel area.
-    const activePanelId = api.getActivePanel(ctx.startY);
-    if (activePanelId && activePanelId !== 'main' && toolName === 'panZoom') {
-        return { action: 'none' };
-    }
+    // V123-fix(sub-panel selection): removed the V111 "main panel only" early
+    //   return (this function is exported but never called — kept in sync
+    //   with DrawRecognizer.isActive above: overlay hit-testing works on ALL
+    //   panels; objects are clipped to their own panel's pixel area, so the
+    //   geometric hit-test is the correct and sufficient gate).
 
     // 1. Action panel hit-test (highest priority)
     if (overlay && overlay.actionPanel && overlay.actionPanel.visible) {
@@ -48040,10 +48454,13 @@ class DrawRecognizer extends GestureRecognizer {
         }
         // Also active in panZoom mode for overlay selection/dragging
         if (toolName === 'panZoom') {
-            // V111: only active on the MAIN panel — prevents accidental trend
-            //   line selection when interacting with secondary panels
-            const startPanelId = this.api.getActivePanel(ctx.startY);
-            if (startPanelId && startPanelId !== 'main') return false;
+            // V123-fix(sub-panel selection): removed the V111 "main panel only"
+            //   gate — it made overlay objects drawn on indicator sub-panels
+            //   IMPOSSIBLE to select / drag / resize on touch (drawing was
+            //   allowed everywhere, selection only on main — the asymmetry the
+            //   user reported: "can draw on sub-panels but never select").
+            //   The hit-test below is the correct gate: taps on empty
+            //   sub-panel space still fall through to PanelSwipe/Pan.
             const overlay = this.api.overlay;
             if (!overlay) return false;
             if (overlay.visibleCount === 0) return false;
@@ -51094,6 +51511,12 @@ class Engine {
         // ── Hooks: destroy ──
         this.hooks.fire('destroy', this.api, {});
 
+        // V122-fix: abort the API-context AbortController — clears the
+        //   toolbar's undo/redo + overlay-count polling intervals.
+        if (this._apiCtx?._abortCtrl) {
+            try { this._apiCtx._abortCtrl.abort(); } catch (_) {}
+        }
+
         // Input controllers (created last, destroyed first)
         this.pointerController.destroy();
 
@@ -52985,6 +53408,17 @@ class WebSocketExchangeAdapter extends DataSourceAdapter {
             //   rethrow immediately so the caller's fallback logic runs.
             if (directErr?._isApiError) {
                 throw directErr;
+            }
+            // V122-fix: rate-limit / IP-ban responses must NOT be retried via
+            //   public CORS proxies — it multiplies the request count (making
+            //   the ban worse), leaks the exchange URL to third parties, and
+            //   adds 3×10s of dead time per attempt. Surface immediately;
+            //   the adapter's error backoff (15s→5min) handles retry timing.
+            const _rl = directErr?.message?.match?.(/HTTP (\d{3})/);
+            if (_rl && (_rl[1] === '429' || _rl[1] === '418' || _rl[1] === '403')) {
+                const rlErr = new Error(`${name}: HTTP ${_rl[1]} (rate limit/ban) — not retrying via proxies: ${url}`);
+                rlErr._isRateLimit = true;
+                throw rlErr;
             }
             // surface the original error immediately instead of leaking the
             // exchange URL to corsproxy.io / allorigins.win / thingproxy.
@@ -56669,6 +57103,12 @@ class CoinListService {
         try {
             return await fetchWithTimeout(url);
         } catch (directErr) {
+            // V122-fix: rate-limit / IP-ban responses must not go through the
+            //   public proxy chain (see WebSocketExchangeAdapter._fetchJson).
+            const _rl = directErr?.message?.match?.(/HTTP (\d{3})/);
+            if (_rl && (_rl[1] === '429' || _rl[1] === '418' || _rl[1] === '403')) {
+                throw new Error(`HTTP ${_rl[1]} (rate limit/ban) — not retrying via proxies`);
+            }
             const PROXIES = [
                 u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
                 u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
@@ -58252,7 +58692,13 @@ class ToolbarController {
             const tzs = getCommonTimezones();
             const menu = document.createElement('div');
             menu.className = 'dropdown-menu tz-menu';
-            menu.style.cssText = 'position:fixed;z-index:10001;min-width:180px;max-height:300px;overflow-y:auto;';
+            // V123-fix: the .dropdown-menu background style is scoped to
+            //   `.controls .dropdown-menu` (CSS ~line 217), but this menu is
+            //   appended straight to <body> — so it rendered FULLY TRANSPARENT.
+            //   Give it the same solid surface inline.
+            menu.style.cssText = 'position:fixed;z-index:10001;min-width:180px;max-height:300px;overflow-y:auto;' +
+                'background:#161b22;border:1px solid #30363d;border-radius:6px;' +
+                'box-shadow:0 8px 24px rgba(0,0,0,.5);padding:4px;';
             const currentTz = getTimezone();
             for (const tz of tzs) {
                 const item = document.createElement('button');
@@ -61186,6 +61632,12 @@ class SourceUIController {
     /** Clean up */
     destroy() {
         this._abortCtrl.abort();  // remove all DOM listeners added via _bindButtons
+        // V122-fix: close the cached CoinPicker — an open picker kept its 15s
+        // ticker-refresh interval and its DOM (window._coinPicker) alive after
+        // the chart instance was destroyed.
+        if (this._cachedPicker && typeof this._cachedPicker.close === 'function') {
+            try { this._cachedPicker.close(); } catch (_) {}
+        }
         if (this._unsubConnected)  this._unsubConnected();
         if (this._unsubTransition) this._unsubTransition();
         if (this._unsubStatus)     this._unsubStatus();
@@ -62741,6 +63193,13 @@ class ChartFactory {
      * orphan rAF loops, resize listeners, and PointerController window listeners.
      */
     static _destroyPrevious(container) {
+        // V122-fix: drop the previous toolbar's document-level listeners
+        //   (TF/settings/quoteFab outside-click + Escape) — they were never
+        //   removed and accumulated on every remount.
+        if (container && container._toolbarDocAbort) {
+            try { container._toolbarDocAbort.abort(); } catch (_) {}
+            container._toolbarDocAbort = null;
+        }
         if (container && container._chartInstance && typeof container._chartInstance.destroy === 'function') {
             try {
                 container._chartInstance.destroy();
@@ -62765,6 +63224,13 @@ class ChartFactory {
         toolbarDiv.className = 'controls';
         const toolbarInner = document.createElement('div');
         toolbarInner.className = 'controls-inner';
+        // V122-fix: one AbortController for all DOCUMENT-level listeners added
+        //   by the toolbar (TF dropdown outside-click, settings dropdown
+        //   outside-click + Escape, quote FAB outside-click). _destroyPrevious
+        //   aborts it — these listeners were never removed, accumulating on
+        //   every chart re-create (HMR/remount).
+        const docAbort = new AbortController();
+        container._toolbarDocAbort = docAbort;
 
         function _mkBtn([id, text, opts = {}]) {
             const btn = document.createElement('button');
@@ -62839,7 +63305,7 @@ class ChartFactory {
                 tfDropdown.classList.remove('open');
                 tfTrigger.setAttribute('aria-expanded', 'false');
             }
-        });
+        }, { signal: docAbort.signal });   // V122-fix: removable
 
         const srcGrp = _mkGrp([
             _mkBtn(['btn-symbol',     'BTCUSDT',  { variant: 'symbol' }]),
@@ -63134,7 +63600,14 @@ class ChartFactory {
             if (isOpen) _positionDropdown(settingsMenu, settingsTrigger, 180);
         });
         settingsMenu.addEventListener('click', (e) => {
-            if (e.target.closest('button')) {
+            // V123-fix: only close for actions that open OTHER UI (export /
+            //   cache stats / clear cache). Toggles (VP Width, TZ, Stream,
+            //   AutoY, themes, …) keep the menu open so several settings can
+            //   be adjusted without the dropdown snapping shut after every
+            //   single tap (the "changing VP width closes the modal" bug).
+            const CLOSE_ROLES = ['btn-export', 'btn-cache-stats', 'btn-cache-clear'];
+            const btn = e.target.closest('button');
+            if (btn && CLOSE_ROLES.includes(btn.dataset.role || '')) {
                 settingsDropdown.classList.remove('open');
                 settingsTrigger.setAttribute('aria-expanded', 'false');
             }
@@ -63144,7 +63617,7 @@ class ChartFactory {
                 settingsDropdown.classList.remove('open');
                 settingsTrigger.setAttribute('aria-expanded', 'false');
             }
-        });
+        }, { signal: docAbort.signal });   // V122-fix: removable
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
                 if (settingsDropdown.classList.contains('open')) {
@@ -63153,7 +63626,7 @@ class ChartFactory {
                     settingsTrigger.focus();
                 }
             }
-        });
+        }, { signal: docAbort.signal });   // V122-fix: removable
 
         toolbarDiv.appendChild(toolbarInner);
         container.appendChild(toolbarDiv);
@@ -63207,7 +63680,7 @@ class ChartFactory {
                 fabTrigger.setAttribute('aria-expanded', 'false');
                 if (typeof window._hideQuoteMenu === 'function') window._hideQuoteMenu(fabMenu);
             }
-        });
+        }, { signal: docAbort.signal });   // V122-fix: removable
         // Item clicks → reuse the picker's applyQuote (set up when the
         // CoinPicker is first opened; we lazily check for it).
         fabMenu.querySelectorAll('button[data-quote]').forEach(btn => {
@@ -63597,7 +64070,14 @@ class ChartFactory {
         // klines live in memory for the session and are dropped on reload.
         // If a caller wants IDB persistence, they pass idb:true at ChartFactory
         // config time — applies uniformly to main + aux data.
-        const dataCache = new DataCache({ session: true, idb: false });
+        const dataCache = new DataCache({ session: true, idb: false,
+            // V122-fix: hard limits for the cache. The eviction machinery
+            //   (enforceMaxSize, LRU by cachedAt) existed but was never given
+            //   any limits (0 = unlimited), so Populate (2y × 50 coins) could
+            //   grow IDB until the quota error — which was swallowed with a
+            //   console.warn and the entry silently lost. 250 MB / 600 entries
+            //   ≈ 150 MB of compressed klines — well under typical IDB quotas.
+            maxSizeBytes: 250 * 1024 * 1024, maxEntries: 600 });
         // V121-cache-persist: restore the user's last cache mode from
         //   localStorage. Without this, F5 always resets to "session" (the
         //   hardcoded default), which the user reported as a bug:
@@ -63960,36 +64440,40 @@ class ChartFactory {
             function renderCard(ind) {
                 const meta = ind.constructor?.META || {};
                 const params = meta.params || [];
+                // V122-fix(XSS): param values can carry user input — Time Markers'
+                //   `markers` param is a JSON string with user-controlled
+                //   label/color fields, importable via a preset file without
+                //   sanitization. Escape every interpolated value.
                 const paramStr = params.filter(p => p.type !== 'bool' && p.name !== 'mode').slice(0, 3)
-                    .map(p => `${p.label}=${ind.params?.[p.name] ?? p.default}`).join(' · ');
+                    .map(p => `${esc(String(p.label))}=${esc(String(ind.params?.[p.name] ?? p.default))}`).join(' · ');
                 const firstOutName = meta.outputs?.[0]?.name;
                 const outColor = ind.outputStyles?.[firstOutName]?.color || meta.outputs?.[0]?.color || '#58a6ff';
-                const bandInfo = ind.bandOverlay ? ` · band:${ind.bandOverlay.type}` : '';
-                const tfInfo = ind.anchorTimeframe && ind.anchorTimeframe !== 'chart' ? ` · TF:${ind.anchorTimeframe}` : '';
+                const bandInfo = ind.bandOverlay ? ` · band:${esc(String(ind.bandOverlay.type))}` : '';
+                const tfInfo = ind.anchorTimeframe && ind.anchorTimeframe !== 'chart' ? ` · TF:${esc(String(ind.anchorTimeframe))}` : '';
                 // V55-source-label: show source in indicator card.
                 //   sourceRef → "src: <indicator> → <output>"
                 //   source ≠ 'close' → "src: <source>"
                 let srcInfo = '';
                 if (ind.sourceRef) {
-                    const [refId, refOut] = ind.sourceRef.split('.');
+                    const [refId, refOut] = String(ind.sourceRef).split('.');
                     const refInd = inds.find(i => i.id === refId);
                     const refLabel = refInd?.constructor?.META?.label || refId;
-                    srcInfo = ` · src:${refLabel}${refOut ? '→' + refOut : ''}`;
+                    srcInfo = ` · src:${esc(String(refLabel))}${refOut ? '→' + esc(String(refOut)) : ''}`;
                 } else if (ind.inputs?.source && ind.inputs.source !== 'close') {
-                    srcInfo = ` · src:${ind.inputs.source}`;
+                    srcInfo = ` · src:${esc(String(ind.inputs.source))}`;
                 }
                 const isHidden = ind.visible === false;
                 const eyeIcon = isHidden ? '👁' : '👁';  // same glyph; CSS .hidden class strikes it out
-                return '<div class="ind-card' + (isHidden ? ' hidden-ind' : '') + '" data-ind-id="' + ind.id + '">' +
-                    '<div class="ind-card-color" style="background:' + outColor + '"></div>' +
+                return '<div class="ind-card' + (isHidden ? ' hidden-ind' : '') + '" data-ind-id="' + esc(String(ind.id)) + '">' +
+                    '<div class="ind-card-color" style="background:' + esc(String(outColor)) + '"></div>' +
                     '<div class="ind-card-info">' +
-                    '<div class="ind-card-name">' + (meta.label || ind.id) + '</div>' +
+                    '<div class="ind-card-name">' + esc(String(meta.label || ind.id)) + '</div>' +
                     '<div class="ind-card-meta">' + paramStr + bandInfo + tfInfo + srcInfo + '</div>' +
                     '</div>' +
                     '<div class="ind-card-actions">' +
-                    '<button class="ind-card-btn ind-vis-btn' + (isHidden ? ' hidden' : '') + '" data-ind-id="' + ind.id + '" title="' + (isHidden ? 'Show' : 'Hide') + '">' + eyeIcon + '</button>' +
-                    '<button class="ind-card-btn ind-cfg-btn" data-ind-id="' + ind.id + '" title="Configure">⚙</button>' +
-                    '<button class="ind-card-btn ind-del-btn" data-ind-id="' + ind.id + '" title="Remove">×</button>' +
+                    '<button class="ind-card-btn ind-vis-btn' + (isHidden ? ' hidden' : '') + '" data-ind-id="' + esc(String(ind.id)) + '" title="' + (isHidden ? 'Show' : 'Hide') + '">' + eyeIcon + '</button>' +
+                    '<button class="ind-card-btn ind-cfg-btn" data-ind-id="' + esc(String(ind.id)) + '" title="Configure">⚙</button>' +
+                    '<button class="ind-card-btn ind-del-btn" data-ind-id="' + esc(String(ind.id)) + '" title="Remove">×</button>' +
                     '</div>' +
                     '</div>';
             }
@@ -64335,15 +64819,17 @@ class ChartFactory {
                 }
                 const val = selectedParams[p.name];
                 if (p.type === 'select' && p.options) {
-                    html += `<div class="s-row"><span class="s-row-label">${p.label}</span><select class="s-select" data-param="${p.name}">`;
+                    html += `<div class="s-row"><span class="s-row-label">${esc(String(p.label))}</span><select class="s-select" data-param="${esc(String(p.name))}">`;
                     for (const opt of p.options) {
-                        html += `<option value="${opt.value}" ${opt.value == val ? 'selected' : ''}>${opt.label}</option>`;
+                        html += `<option value="${esc(String(opt.value))}" ${opt.value == val ? 'selected' : ''}>${esc(String(opt.label))}</option>`;
                     }
                     html += `</select></div>`;
                 } else if (p.type === 'bool') {
-                    html += `<div class="s-check-row"><input type="checkbox" class="s-check" data-param="${p.name}" ${val ? 'checked' : ''}><span class="s-check-label">${p.label}</span></div>`;
+                    html += `<div class="s-check-row"><input type="checkbox" class="s-check" data-param="${esc(String(p.name))}" ${val ? 'checked' : ''}><span class="s-check-label">${esc(String(p.label))}</span></div>`;
                 } else {
-                    html += `<div class="s-row"><span class="s-row-label">${p.label}</span><input type="number" class="s-input" data-param="${p.name}" value="${val}" min="${p.min ?? ''}" max="${p.max ?? ''}" step="${p.step ?? 1}"></div>`;
+                    // V122-fix(XSS): `val` can come from an imported preset — escape
+                    //   it (a crafted value could break out of the attribute).
+                    html += `<div class="s-row"><span class="s-row-label">${esc(String(p.label))}</span><input type="number" class="s-input" data-param="${esc(String(p.name))}" value="${esc(String(val))}" min="${esc(String(p.min ?? ''))}" max="${esc(String(p.max ?? ''))}" step="${esc(String(p.step ?? 1))}"></div>`;
                 }
             }
             // V121-offset: add offset input for all indicators (not in META)
@@ -64354,7 +64840,7 @@ class ChartFactory {
                     openGroup(grp);
                     currentGroup = grp;
                 }
-                html += `<div class="s-row"><span class="s-row-label">Offset (bars)</span><input type="number" class="s-input" data-param="offset" value="${selectedParams.offset ?? 0}" min="-500" max="500" step="1"></div>`;
+                html += `<div class="s-row"><span class="s-row-label">Offset (bars)</span><input type="number" class="s-input" data-param="offset" value="${esc(String(selectedParams.offset ?? 0))}" min="-500" max="500" step="1"></div>`;
             }
             closeGroup();
             // V108: Custom marker editor for TimeMarkerBrick.
@@ -64383,10 +64869,12 @@ class ChartFactory {
                         .toISOString().slice(0, 16);
                     const label = m.label || '';
                     const color = m.color || selectedParams.defaultColor || '#f85149';
+                    // V122-fix(XSS): marker fields come from the editable JSON —
+                    //   escape color (attribute breakout) like label already was.
                     html += `<div class="s-row" data-marker-idx="${i}" style="align-items:center;gap:6px;flex-wrap:wrap;">`;
-                    html += `<input type="datetime-local" class="s-input" data-marker-ts="${i}" value="${localStr}" style="flex:1;min-width:160px;">`;
-                    html += `<input type="text" class="s-input" data-marker-label="${i}" value="${esc(label)}" placeholder="label" style="width:90px;">`;
-                    html += `<input type="color" class="s-input" data-marker-color="${i}" value="${color}" style="width:32px;padding:1px;height:28px;">`;
+                    html += `<input type="datetime-local" class="s-input" data-marker-ts="${i}" value="${esc(String(localStr))}" style="flex:1;min-width:160px;">`;
+                    html += `<input type="text" class="s-input" data-marker-label="${i}" value="${esc(String(label))}" placeholder="label" style="width:90px;">`;
+                    html += `<input type="color" class="s-input" data-marker-color="${i}" value="${esc(String(color))}" style="width:32px;padding:1px;height:28px;">`;
                     html += `<button class="ind-btn" data-marker-now="${i}" style="padding:4px 8px;font-size:10px;">now</button>`;
                     html += `<button class="ind-btn" data-marker-del="${i}" style="padding:4px 8px;font-size:10px;color:#f85149;">✕</button>`;
                     html += `</div>`;
@@ -65720,10 +66208,15 @@ class ChartFactory {
         backdrop.className = 'ind-modal-backdrop';
         backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100000;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:10px;';
 
-        const close = () => backdrop.remove();
+        const close = () => {
+            backdrop.remove();
+            // V122-fix: the Escape listener was only removed when closing VIA
+            //   Escape — the × button and backdrop click leaked it forever.
+            document.removeEventListener('keydown', escHandler);
+        };
         backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
 
-        const escHandler = (e) => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', escHandler); } };
+        const escHandler = (e) => { if (e.key === 'Escape') { close(); } };
         document.addEventListener('keydown', escHandler);
 
         const rerender = () => {
@@ -67472,6 +67965,8 @@ class CoinPicker {
         this._abortCtrl = null;
         this._refreshTimer = null;  // 5s live-price refresh interval
         this._sparkPrefetchInflight = null;  // guard against concurrent _prefetchSparklines
+        this._sparkPrefetchQueued = false;   // V123: re-run requests that arrived mid-flight
+        this._sparkRefetch = null;           // V123: Set of stale keys to refresh in background
         this._lastRenderedWindow = null;  // scroll jitter guard — see _renderVisible
 
         // Persisted state
@@ -67495,7 +67990,13 @@ class CoinPicker {
         this._chartTf = opts.chartTf || '';
         this._chartXRange = newChartXRange;
         if ((xRangeChanged || tfChanged) && this._sparklines) {
-            this._sparklines.clear();
+            // V123-fix(minichart persistence): do NOT wipe the cache — live
+            //   ticks / panning change chartXRange between EVERY two opens, so
+            //   the old V121 hard-clear left all minicharts blank on each
+            //   reopen. Instead keep rendering the cached data instantly and
+            //   mark existing keys stale: _prefetchSparklines re-fetches them
+            //   in the background and swaps in fresh data when it arrives.
+            this._sparkRefetch = new Set(this._sparklines.keys());
             this._quoteSparkCache = null;
             this._quoteSparkCacheKey = null;
             this._lastRenderedWindow = null;
@@ -67550,6 +68051,10 @@ class CoinPicker {
         // perp sparklines caused the chart to take 15s+ to load BTC initially
         // (network contention + CORS proxy fallback chain). 15s is a good
         // balance: prices stay reasonably fresh without starving the chart.
+        // V122-fix: clear any previous timer FIRST — a double-open (fast taps
+        // on the symbol button) used to overwrite the reference and leak the
+        // old 15s interval forever.
+        if (this._refreshTimer) { clearInterval(this._refreshTimer); this._refreshTimer = null; }
         this._refreshTimer = setInterval(() => this._refreshTickers(), 15000);
     }
 
@@ -67636,8 +68141,18 @@ class CoinPicker {
                 <button class="cp-btn cp-sort-btn"><span class="cp-sort-label">Vol</span><span class="cp-sort-dir">↓</span></button>
                 <button class="cp-btn cp-options-btn">⋯</button>
             </div>
-            <div class="cp-count-bar" style="padding:4px 12px; font-size:11px; color:#8b949e; border-bottom:1px solid rgba(255,255,255,0.04); font-variant-numeric:tabular-nums;">
-                <span class="cp-count-filtered">0</span><span class="cp-count-total" style="color:#21262d;"> / …</span>
+            <div class="cp-count-bar" style="padding:3px 12px; font-size:11px; color:#8b949e; border-bottom:1px solid rgba(255,255,255,0.04); font-variant-numeric:tabular-nums; display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:22px;">
+                <div style="min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"><span class="cp-count-filtered">0</span><span class="cp-count-total" style="color:#21262d;"> / …</span></div>
+                <!-- V123: per-KIND fav toggles (★ / L / S / W — the same types as
+                     the Filters panel's Favs row), multi-selectable, plus a ✕ to
+                     clear all fav filters. Height-matched (16px) so the bar does NOT grow. -->
+                <div class="cp-count-actions" style="display:flex; gap:3px; flex-shrink:0;">
+                    <button class="cp-count-btn cp-count-favtype" data-fav-type="default" title="Favorites: default (★)" aria-pressed="false">★</button>
+                    <button class="cp-count-btn cp-count-favtype" data-fav-type="long" title="Favorites: long (L)" aria-pressed="false">L</button>
+                    <button class="cp-count-btn cp-count-favtype" data-fav-type="short" title="Favorites: short (S)" aria-pressed="false">S</button>
+                    <button class="cp-count-btn cp-count-favtype" data-fav-type="watch" title="Favorites: watchlist (W)" aria-pressed="false">W</button>
+                    <button class="cp-count-btn cp-count-clear" data-role="cp-fav-clear" title="Clear favorite filters" aria-pressed="false">✕</button>
+                </div>
             </div>
             <div class="cp-filters-bar" style="display:none;"></div>
             <div class="cp-options-bar" style="display:none;"></div>
@@ -67655,6 +68170,32 @@ class CoinPicker {
         this._filterCountEl = sheet.querySelector('.cp-filter-count');
         this._countFilteredEl = sheet.querySelector('.cp-count-filtered');
         this._countTotalEl = sheet.querySelector('.cp-count-total');
+        // V123: count-bar per-kind fav toggles (★/L/S/W — mirror of the Filters
+        // panel's favTypes chips, multi-select) + ✕ to clear ALL fav filters.
+        this._favTypeBtns = Array.from(sheet.querySelectorAll('.cp-count-favtype'));
+        for (const btn of this._favTypeBtns) {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const ft = btn.dataset.favType;
+                if (!ft) return;
+                this._filters.favTypes = this._filters.favTypes.includes(ft)
+                    ? this._filters.favTypes.filter(t => t !== ft)
+                    : [...this._filters.favTypes, ft];
+                _cpSaveState('cp.filters', this._filters);
+                // preserveScroll: the user is quick-toggling filters in place —
+                // don't yank the list back to the top on every tap.
+                this._applyFilters(true);
+            });
+        }
+        this._favClearBtn = sheet.querySelector('[data-role="cp-fav-clear"]');
+        if (this._favClearBtn) this._favClearBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._filters.favTypes = [];
+            this._filters.onlyFavs = false;
+            _cpSaveState('cp.filters', this._filters);
+            this._applyFilters(true);
+        });
+        this._syncCountBarBtns();
         this._filtersBar = sheet.querySelector('.cp-filters-bar');
         this._optionsBar = sheet.querySelector('.cp-options-bar');
         this._topBtn = sheet.querySelector('.cp-top-btn');
@@ -68453,6 +68994,9 @@ class CoinPicker {
         if (this._countTotalEl) this._countTotalEl.textContent = ' / ' + (this._coins ? this._coins.length : '…');
         // Update the active-filter badge on the Filters button.
         this._updateFilterBadge();
+        // V122: keep the count-bar fav toggles in sync with the filter state
+        // (the Filters panel can change onlyFavs too).
+        this._syncCountBarBtns();
         if (!preserveScroll) {
             this._scrollTop = 0;
             if (this._listEl) this._listEl.scrollTop = 0;
@@ -68475,6 +69019,36 @@ class CoinPicker {
             this._filterCountEl.textContent = String(n);
         } else {
             this._filterCountEl.style.display = 'none';
+        }
+    }
+
+    /** V123: sync the count-bar's per-kind fav toggles (★/L/S/W) with the
+     *  actual `_filters.favTypes` state (single source of truth — the Filters
+     *  panel's Favs chips and these buttons write to the same array). Active
+     *  buttons are tinted with their type color. */
+    _syncCountBarBtns() {
+        const favTypes = this._filters?.favTypes || [];
+        if (this._favTypeBtns) {
+            for (const btn of this._favTypeBtns) {
+                const ft = btn.dataset.favType;
+                const spec = COIN_FAV_TYPES.find(t => t.id === ft);
+                const on = favTypes.includes(ft);
+                btn.classList.toggle('active', on);
+                btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+                // Tint with the type's color when active; reset when off.
+                if (on && spec) {
+                    btn.style.color = spec.color;
+                    btn.style.borderColor = spec.color;
+                } else {
+                    btn.style.color = '';
+                    btn.style.borderColor = '';
+                }
+            }
+        }
+        if (this._favClearBtn) {
+            const anyFavFilter = favTypes.length > 0 || !!this._filters?.onlyFavs;
+            this._favClearBtn.classList.toggle('active', anyFavFilter);
+            this._favClearBtn.setAttribute('aria-pressed', anyFavFilter ? 'true' : 'false');
         }
     }
 
@@ -68884,11 +69458,23 @@ class CoinPicker {
         // all trigger this method in quick succession. Without the guard, two
         // parallel invocations each spawn their own 4-worker pool → 8 parallel
         // kline requests → Binance 418 IP ban (which is the bug we're fixing).
-        if (this._sparkPrefetchInflight) return this._sparkPrefetchInflight;
+        if (this._sparkPrefetchInflight) {
+            // V123-fix: don't DROP the request — the window may have changed
+            //   (e.g. _centerActiveRow scrolled the list right after open, or
+            //   the user kept scrolling). Re-run once the current pass settles.
+            this._sparkPrefetchQueued = true;
+            return this._sparkPrefetchInflight;
+        }
         const done = (async () => {
             const listH = this._listEl?.clientHeight || 400;
-            const startIdx = Math.max(0, Math.floor(this._scrollTop / CP_ROW_HEIGHT) - CP_OVERSCAN);
-            const endIdx = Math.min(this._filtered.length, Math.ceil((this._scrollTop + listH) / CP_ROW_HEIGHT) + CP_OVERSCAN + 12);
+            // V123-fix(miniChart window): use the ACTUAL row height — miniChart
+            //   rows are 3.5× taller, so the old CP_ROW_HEIGHT window was
+            //   shifted far below the visible rows and they never entered the
+            //   fetch queue (minicharts "refused to load" while standing still
+            //   or scrolling down, only loading on scroll-up).
+            const rowH = this._options.miniChart ? Math.round(CP_ROW_HEIGHT * 3.5) : CP_ROW_HEIGHT;
+            const startIdx = Math.max(0, Math.floor(this._scrollTop / rowH) - CP_OVERSCAN);
+            const endIdx = Math.min(this._filtered.length, Math.ceil((this._scrollTop + listH) / rowH) + CP_OVERSCAN + 12);
 
             // Build the list of (coin, key, market) to fetch. Key is isPerp-aware
             // (base:quote:isPerp) so switching Spot↔Perp filters re-fetches with
@@ -68919,9 +69505,27 @@ class CoinPicker {
                 const market = this._displayMarket(coin);
                 if (!market) continue;
                 const key = coin.base + ':' + coin.quote + ':' + (market.isPerp ? 'perp' : 'spot') + ':' + (savedQuote || 'USDT') + ':' + (this._options.miniChart ? 'mc' + (this._options.chartInterval || '') : 'sp');
-                if (this._sparklines.has(key)) continue;
-                this._sparklines.set(key, null);
-                pending.push({ coin, key, market });
+                if (this._sparklines.has(key)) {
+                    // Cached. If the key is stale (chart range changed since it
+                    // was fetched — see open()), re-fetch it in the background
+                    // but KEEP the old data rendered until fresh data lands.
+                    if (!this._sparkRefetch || !this._sparkRefetch.has(key)) continue;
+                    this._sparkRefetch.delete(key);
+                    pending.push({ coin, key, market, keepOld: true });
+                } else {
+                    this._sparklines.set(key, null);
+                    pending.push({ coin, key, market, keepOld: false });
+                }
+            }
+            // V123-fix: cap the spark cache (Map keeps insertion order → evict
+            //   oldest first) so long browsing sessions don't grow it forever.
+            if (this._sparklines.size > 900) {
+                let drop = this._sparklines.size - 700;
+                for (const k of this._sparklines.keys()) {
+                    if (drop-- <= 0) break;
+                    this._sparklines.delete(k);
+                    this._sparkRefetch?.delete(k);
+                }
             }
             if (!pending.length) return;
 
@@ -68979,7 +69583,7 @@ class CoinPicker {
             const processNext = async () => {
                 while (queue.length) {
                     const item = queue.shift();
-                    const { coin, key, market } = item;
+                    const { coin, key, market, keepOld } = item;
                     try {
                         // V121-fix: TF priority for miniChart mode:
                         //   chartInterval from picker settings controls mini candles.
@@ -69031,7 +69635,8 @@ class CoinPicker {
                         } else if (savedQuote && savedQuote !== 'USDT') {
                             // quoteSpark not available — don't cache, skip row
                             // so it retries on next scroll/prefetch
-                            this._sparklines.delete(key);
+                            // V123-fix: keep stale data rendered if we have it.
+                            if (!keepOld) this._sparklines.delete(key);
                             continue;
                         }
                         if (!data || data.length < 2) {
@@ -69040,7 +69645,8 @@ class CoinPicker {
                             // (after scroll or refresh) can retry — otherwise the
                             // null would stick in cache forever and the user would
                             // never see the sparkline.
-                            this._sparklines.delete(key);
+                            // V123-fix: keep stale data rendered if we have it.
+                            if (!keepOld) this._sparklines.delete(key);
                             continue;
                         }
                         this._sparklines.set(key, data);
@@ -69058,7 +69664,8 @@ class CoinPicker {
                             }
                         }
                     } catch (e) {
-                        this._sparklines.delete(key);
+                        // V123-fix: keep stale data rendered if we have it.
+                        if (!keepOld) this._sparklines.delete(key);
                     }
                 }
             };
@@ -69080,6 +69687,12 @@ class CoinPicker {
             await done;
         } finally {
             this._sparkPrefetchInflight = null;
+            // V123-fix: run the queued pass (its window differs from the one
+            //   that just finished) instead of silently dropping it.
+            if (this._sparkPrefetchQueued) {
+                this._sparkPrefetchQueued = false;
+                setTimeout(() => { if (this._el) this._prefetchSparklines(); }, 0);
+            }
         }
     }
 
