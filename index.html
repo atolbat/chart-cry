@@ -660,6 +660,14 @@
         .ind-empty-state { color: #8b949e; font-size: 11px; text-align: center; padding: 30px 0; }
         .ind-group { margin-bottom: 8px; display: flex; flex-direction: column; gap: 3px; }
         .ind-group-label { font-size: 9px; font-weight: 600; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; padding: 4px 8px 2px; border-bottom: 1px solid rgba(255,255,255,0.05); margin-bottom: 4px; }
+        /* V131: section header = generating indicator NAME + raw id hash
+         *   (smaller font, dimmer color, ellipsized) + indicator count pinned
+         *   to the right. The old header was the bare panel id — i.e. a long
+         *   timestamp hash like "rsi-1758991234567 (1)". */
+        .ind-group-label { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+        .ind-gl-name { color: #c9d1d9; flex-shrink: 0; }
+        .ind-gl-id { font-size: 8px; font-weight: 400; color: #6e7681; text-transform: none; letter-spacing: 0; min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ind-gl-cnt { margin-left: auto; flex-shrink: 0; font-size: 9px; font-weight: 700; color: #8b949e; background: rgba(255,255,255,0.05); border-radius: 3px; padding: 0 5px; line-height: 13px; }
         .ind-card { display: flex; align-items: center; gap: 6px; padding: 4px 8px; background: rgba(255,255,255,0.03); border-radius: 4px; transition: background .12s; }
         .ind-card:hover { background: rgba(255,255,255,0.07); }
         .ind-card-color { width: 3px; height: 16px; border-radius: 1.5px; flex-shrink: 0; }
@@ -677,6 +685,27 @@
         .ind-card.hidden-ind .ind-card-name { text-decoration: line-through; color: #8b949e; }
         .ind-vis-btn.hidden { color: #8b949e; }
         .ind-vis-btn:hover { background: rgba(88,166,255,0.18); color: #58a6ff; }
+
+        /* V128: eternal Main Candles system entry — own section, locked,
+         *   non-removable. Distinct dashed accent border + "system" badge +
+         *   padlock hint that this card cannot be deleted like regular
+         *   indicators. The card itself is clickable (opens its settings). */
+        .ind-group-system { margin: 0 0 10px 0; display: flex; flex-direction: column; gap: 3px; border: 1px solid rgba(88,166,255,0.28); background: rgba(88,166,255,0.05); border-radius: 6px; padding: 4px 4px 5px 4px; }
+        .ind-group-system .ind-group-label { color: #58a6ff; border-bottom-color: rgba(88,166,255,0.2); display: flex; align-items: center; justify-content: space-between; gap: 5px; }
+        .ind-sys-badge { font-size: 8px; font-weight: 700; color: #58a6ff; background: rgba(88,166,255,0.12); border: 1px solid rgba(88,166,255,0.35); border-radius: 3px; padding: 0 4px; line-height: 14px; letter-spacing: 0.5px; text-transform: uppercase; flex-shrink: 0; }
+        .ind-card-system { border: 1px dashed rgba(88,166,255,0.45); background: rgba(88,166,255,0.04); cursor: pointer; }
+        .ind-card-system:hover { background: rgba(88,166,255,0.1); }
+        .ind-sys-lock { display: inline-flex; align-items: center; color: #d29922; margin-left: 5px; vertical-align: -1px; }
+        .ind-sys-lock svg { display: block; }
+        /* V130: main-chart overlays live in the SAME system section as the
+         *   base Main Candles card. Tiny sub-label separates base from the
+         *   user's overlay lines; cards get a slightly stronger background
+         *   so they read clearly on the blue-tinted section. */
+        .ind-sys-overlays-label { font-size: 8px; font-weight: 600; color: #58a6ff; opacity: .55; text-transform: uppercase; letter-spacing: .5px; padding: 2px 6px 1px; }
+        .ind-group-system .ind-card:not(.ind-card-system) { background: rgba(255,255,255,0.05); }
+        /* V128: Main Candles settings rows (color input + inline reset). */
+        .s-mc-colorwrap { display: flex; align-items: center; gap: 4px; flex: 1; justify-content: flex-end; }
+        .s-mc-reset { padding: 2px 7px; font-size: 11px; line-height: 1.4; flex-shrink: 0; }
 
         /* V50: Presets section embedded inside the indicator manager modal
          *   (above the Add button). Keeps preset management one click away
@@ -775,6 +804,29 @@
         .s-row-label { font-size: 10px; color: #e6edf3; min-width: 70px; flex-shrink: 0; }
         .s-input { background: #0d1117; border: 1px solid #30363d; color: #e6edf3; border-radius: 3px; padding: 3px 5px; font-size: 11px; font-family: monospace; flex: 1; min-width: 0; }
         .s-select { background: #0d1117; border: 1px solid #30363d; color: #e6edf3; border-radius: 3px; padding: 3px 5px; font-size: 11px; font-family: monospace; flex: 1; min-width: 0; }
+
+        /* ══ V125/V126: custom dropdowns (replaces native <select>) ══ */
+        /* .s-srcdd = Source row; .s-dd = every other dropdown row (V126).
+           Both share the trigger/popup CSS; roots are DIVs whose .value is
+           set by _initCDropdown and read by the save handlers. */
+        .s-srcdd, .s-dd { flex: 1; min-width: 0; display: flex; }
+        .s-srcdd-btn { display: flex; align-items: center; gap: 6px; width: 100%; background: #0d1117; border: 1px solid #30363d; color: #e6edf3; border-radius: 3px; padding: 4px 6px; font-size: 11px; font-family: monospace; cursor: pointer; min-height: 26px; text-align: left; }
+        .s-srcdd-btn:hover, .s-srcdd-btn:focus-visible { border-color: #58a6ff; outline: none; }
+        .s-srcdd-btn-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .s-srcdd-caret { color: #8b949e; font-size: 9px; flex-shrink: 0; }
+        /* Floating panel is appended to <body> (escapes .s-area overflow clip);
+           its position/z-index are set inline by _initSourceDropdown. */
+        .s-srcdd-panel { display: flex; flex-direction: column; }
+        .s-srcdd-group { padding: 6px 10px 3px; font-size: 9px; font-weight: 600; color: #58a6ff; text-transform: uppercase; letter-spacing: .5px; border-top: 1px solid rgba(48,54,61,.6); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .s-srcdd-group:first-child { border-top: none; margin-top: 0; }
+        .s-srcdd-item { display: flex; align-items: center; gap: 6px; padding: 6px 10px; cursor: pointer; min-height: 30px; }
+        .s-srcdd-item:hover, .s-srcdd-item.active { background: rgba(88,166,255,.12); }
+        .s-srcdd-item.sel { background: rgba(88,166,255,.18); }
+        .s-srcdd-item-name { flex: 1; min-width: 0; font-size: 12px; color: #e6edf3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .s-srcdd-item-tag { font-size: 8px; font-weight: 600; padding: 1px 5px; border-radius: 3px; background: rgba(255,255,255,.06); color: #8b949e; flex-shrink: 0; text-transform: uppercase; letter-spacing: .3px; }
+        .s-srcdd-item-tag.candle { background: rgba(210,153,34,.15); color: #d29922; }
+        .s-srcdd-check { color: #58a6ff; font-size: 11px; flex-shrink: 0; }
+        .s-srcdd-empty { padding: 14px; text-align: center; color: #8b949e; font-size: 11px; }
         .s-check-row { display: flex; align-items: center; gap: 5px; padding: 2px 0; }
         .s-check { width: 14px; height: 14px; cursor: pointer; accent-color: #58a6ff; flex-shrink: 0; }
         .s-check-label { font-size: 10px; color: #e6edf3; }
@@ -5202,6 +5254,17 @@ class SeriesAdapter {
         const seriesSlices = this._sliceResult.seriesSlices;
         this._sliceResult.count = count;
 
+        // ── V128-main-candles (same contract as DataStore.buildRenderSlice):
+        //   apply the CE_MAIN_CANDLES hub to the drawn price series' config
+        //   and swap in the Heikin-Ashi transform when enabled. The raw
+        //   open/high/low/close series below stay RAW — indicators and
+        //   exports must see real OHLCV.
+        let haCache = null;
+        if (typeof CE_MAIN_CANDLES !== 'undefined') {
+            applyMainCandlesToConfig(seriesSlices['price']?.config);
+            if (CE_MAIN_CANDLES.heikinAshi === true) haCache = this._getHaFrameCache();
+        }
+
         // Copy data — direct _val access, no .get() calls
         const timeCol = this._frame.col('time');
         const openCol = this._frame.col('open');
@@ -5236,10 +5299,19 @@ class SeriesAdapter {
             const l = lowVal[phys];
             const c = closeVal[phys];
             const v = volVal[phys];
-            priceData[idx] = c;
-            priceOpen[idx] = o;
-            priceHigh[idx] = h;
-            priceLow[idx] = l;
+            // V128: the DRAWN price series carries the (optional) HA
+            //   transform; the raw open/high/low/close series stay raw.
+            if (haCache) {
+                priceData[idx] = haCache.c[li];
+                priceOpen[idx] = haCache.o[li];
+                priceHigh[idx] = haCache.h[li];
+                priceLow[idx]  = haCache.l[li];
+            } else {
+                priceData[idx] = c;
+                priceOpen[idx] = o;
+                priceHigh[idx] = h;
+                priceLow[idx] = l;
+            }
             openData[idx] = o;
             highData[idx] = h;
             lowData[idx] = l;
@@ -5248,6 +5320,48 @@ class SeriesAdapter {
         }
 
         return this._sliceResult;
+    }
+
+    // ── V128-main-candles: Heikin-Ashi transform of the frame's OHLC columns
+    //   (logical order), cached by (mutation version, length) — recompute only
+    //   when data changed, exactly like DataStore._getHaCache. Ring-mode frames
+    //   are walked through timeCol._phys().
+    _getHaFrameCache() {
+        const n = this._frame.length;
+        if (n <= 0) return null;
+        if (this._haCache && this._haCache._v === this._version && this._haCache._n === n) return this._haCache;
+        const timeCol  = this._frame.col('time');
+        const openCol  = this._frame.col('open');
+        const highCol  = this._frame.col('high');
+        const lowCol   = this._frame.col('low');
+        const closeCol = this._frame.col('close');
+        if (!openCol || !highCol || !lowCol || !closeCol) return null;
+        const isLinear = timeCol._mode !== 'ring';
+        const physOf = (li) => isLinear ? li : timeCol._phys(li);
+        if (!this._haBufs || this._haBufs._n !== n) {
+            this._haBufs = { _n: n,
+                o: new Float64Array(n), h: new Float64Array(n),
+                l: new Float64Array(n), c: new Float64Array(n) };
+        }
+        const b = this._haBufs;
+        let pO = NaN, pC = NaN;
+        for (let i = 0; i < n; i++) {
+            const p = physOf(i);
+            const o = openCol._val[p], h = highCol._val[p], l = lowCol._val[p], c = closeCol._val[p];
+            if (!isFinite(o) || !isFinite(h) || !isFinite(l) || !isFinite(c)) {
+                b.o[i] = NaN; b.h[i] = NaN; b.l[i] = NaN; b.c[i] = NaN;
+                pO = NaN; pC = NaN;
+                continue;
+            }
+            const haC = (o + h + l + c) / 4;
+            const haO = (isFinite(pO) && isFinite(pC)) ? (pO + pC) / 2 : (o + c) / 2;
+            b.o[i] = haO; b.c[i] = haC;
+            b.h[i] = Math.max(h, haO, haC);
+            b.l[i] = Math.min(l, haO, haC);
+            pO = haO; pC = haC;
+        }
+        this._haCache = { _v: this._version, _n: n, o: b.o, h: b.h, l: b.l, c: b.c };
+        return this._haCache;
     }
 
     /**
@@ -5631,6 +5745,137 @@ Object.defineProperty(globalThis, 'DOWN_COLOR', {
     set: () => {},  // no-op
     configurable: true,
 });
+
+// ─── V128: Main Candles settings — the "eternal indicator" hub ────────────
+// The base price candles of the main panel are NOT a removable indicator,
+// but the user wants first-class settings for them (a locked, always-on
+// entry in the indicator manager). This hub is the single source of truth:
+//   • chartType — glyph family: 'candles' | 'bars' (OHLC) | 'line';
+//   • heikinAshi — classic HA transform of the main chart's OHLC
+//     (computed in DataStore/SeriesAdapter.buildRenderSlice, cached by the
+//     store's mutation version — O(n) only when data actually changes);
+//   • up/down/wick colors ('' = theme default), hollow mode (off/up/down/
+//     both + border width + wick-through-body), body/wick geometry, gap
+//     connectors, line color/width/style.
+// The data layer applies it to the candle series' config on every
+// buildRenderSlice call (applyMainCandlesToConfig), so settings changes
+// take effect on the next render without any per-chart plumbing. Persisted
+// in localStorage (like the theme) — app-level preference, shared by all
+// chart instances, restored on boot. V129: also serialized into preset
+// snapshots (PresetManager export/import) via sanitizeMainCandlesState /
+// applyMainCandlesState — the single deserialization entry point for
+// untrusted JSON (file import), shared with the localStorage restore path.
+const CE_MAIN_CANDLES_DEFAULTS = {
+    chartType: 'candles',        // 'candles' | 'bars' | 'line'
+    heikinAshi: false,
+    upColor: '',                 // '' → theme up
+    downColor: '',               // '' → theme down
+    wickUpColor: '',             // '' → same as up body
+    wickDownColor: '',           // '' → same as down body
+    hollowMode: 'off',           // 'off' | 'up' | 'down' | 'both' — stroke bodies instead of filling
+    hollowBorderWidth: 1,        // px — outline width for hollow bodies
+    wickThroughBody: false,      // true → classic look: full wick visible inside the hollow body
+    candleWidthRatio: 0.65,      // body width / interval px (RENDER_CONSTANTS.CANDLE_WIDTH_RATIO default)
+    wickWidthRatio: 0.1,         // wick width / body width   (RENDER_CONSTANTS.WICK_WIDTH_RATIO default)
+    gapConnectors: true,         // dashed close→open connector lines on price gaps
+    lineColor: '',               // 'line' chartType
+    lineWidth: 1.5,
+    lineStyle: 'solid',          // 'line' chartType: 'solid' | 'dashed' | 'dotted'
+};
+const CE_MAIN_CANDLES = { ...CE_MAIN_CANDLES_DEFAULTS };
+(function _restoreMainCandlesCfg() {
+    try {
+        const raw = _safeStorage.getItem('ce-main-candles-v1');
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') {
+                Object.assign(CE_MAIN_CANDLES, sanitizeMainCandlesState(parsed));
+                // V129 legacy migration: v128 stored a `hollowUp` boolean.
+                //   If the new hollowMode is absent but hollowUp was on, map it.
+                if (parsed.hollowMode == null && parsed.hollowUp === true) CE_MAIN_CANDLES.hollowMode = 'up';
+            }
+        }
+    } catch (e) { /* corrupted storage — keep defaults */ }
+})();
+// V129: sanitize an arbitrary (possibly untrusted) object into a clean
+//   Main Candles state — only known keys, only valid values, colors matched
+//   against a strict #hex pattern (they end up in HTML attrs / canvas styles).
+//   Unknown keys are dropped, out-of-range numbers are dropped (defaults
+//   apply). Shared by the localStorage restore, preset import and
+//   applyMainCandlesState — ONE deserialization path, no drift.
+function sanitizeMainCandlesState(obj) {
+    const out = {};
+    if (!obj || typeof obj !== 'object') return out;
+    if (obj.chartType === 'candles' || obj.chartType === 'bars' || obj.chartType === 'line') out.chartType = obj.chartType;
+    if (obj.heikinAshi === true || obj.heikinAshi === false) out.heikinAshi = obj.heikinAshi;
+    for (const k of ['upColor', 'downColor', 'wickUpColor', 'wickDownColor', 'lineColor']) {
+        if (typeof obj[k] === 'string' && (obj[k] === '' || /^#[0-9a-fA-F]{3,8}$/.test(obj[k]))) out[k] = obj[k];
+    }
+    if (obj.hollowMode === 'off' || obj.hollowMode === 'up' || obj.hollowMode === 'down' || obj.hollowMode === 'both') out.hollowMode = obj.hollowMode;
+    else if (obj.hollowUp === true) out.hollowMode = 'up';   // v128 legacy
+    if (isFinite(+obj.hollowBorderWidth) && +obj.hollowBorderWidth >= 0.5 && +obj.hollowBorderWidth <= 4) out.hollowBorderWidth = +obj.hollowBorderWidth;
+    if (obj.wickThroughBody === true || obj.wickThroughBody === false) out.wickThroughBody = obj.wickThroughBody;
+    if (isFinite(+obj.candleWidthRatio) && +obj.candleWidthRatio >= 0.2 && +obj.candleWidthRatio <= 0.98) out.candleWidthRatio = +obj.candleWidthRatio;
+    if (isFinite(+obj.wickWidthRatio) && +obj.wickWidthRatio >= 0.02 && +obj.wickWidthRatio <= 0.5) out.wickWidthRatio = +obj.wickWidthRatio;
+    if (isFinite(+obj.lineWidth) && +obj.lineWidth > 0 && +obj.lineWidth <= 12) out.lineWidth = +obj.lineWidth;
+    if (obj.lineStyle === 'solid' || obj.lineStyle === 'dashed' || obj.lineStyle === 'dotted') out.lineStyle = obj.lineStyle;
+    if (obj.gapConnectors === true || obj.gapConnectors === false) out.gapConnectors = obj.gapConnectors;
+    return out;
+}
+// V129: full-replace deserialization (preset import semantics — the snapshot
+//   defines the whole Main Candles state). Defaults + sanitized input.
+function applyMainCandlesState(obj) {
+    Object.assign(CE_MAIN_CANDLES, CE_MAIN_CANDLES_DEFAULTS, sanitizeMainCandlesState(obj));
+    saveMainCandlesCfg();
+}
+function saveMainCandlesCfg() {
+    try { _safeStorage.setItem('ce-main-candles-v1', JSON.stringify(CE_MAIN_CANDLES)); } catch (e) {}
+}
+function resetMainCandlesCfg() {
+    Object.assign(CE_MAIN_CANDLES, CE_MAIN_CANDLES_DEFAULTS);
+    saveMainCandlesCfg();
+}
+// Apply the hub to a candle series' config object. Called from
+// buildRenderSlice on the (shared-by-reference) config — allocation-free.
+// NOTE 'bars' keeps type='candlestick' + priceStyle='bars' so every
+// existing type-consumer (autofit H/L, POC, legends, OHLC tooltip) keeps
+// working; only the glyph changes (CandlestickRenderer delegates to
+// OhlcBarRenderer). 'line' switches the type for real — line-appropriate
+// consumers (autofit on close, decimation) then engage.
+function applyMainCandlesToConfig(cfg) {
+    if (!cfg) return;
+    const mc = CE_MAIN_CANDLES;
+    if (mc.chartType === 'line') {
+        cfg.type = 'line';
+        cfg.priceStyle = undefined;
+        cfg.color = mc.lineColor || '#58a6ff';
+        cfg.width = (isFinite(+mc.lineWidth) && +mc.lineWidth > 0) ? +mc.lineWidth : 1.5;
+        // V129: line style (dash pattern) — applied by LineRenderer; absent/
+        //   'solid' keeps the renderer's plain stroke (bit-parity with v128).
+        cfg.lineStyle = (mc.lineStyle === 'dashed' || mc.lineStyle === 'dotted') ? mc.lineStyle : undefined;
+    } else {
+        cfg.type = 'candlestick';
+        cfg.priceStyle = (mc.chartType === 'bars') ? 'bars' : undefined;
+        cfg.lineStyle = undefined;
+    }
+    cfg.userUpColor      = mc.upColor    || undefined;   // '' → theme
+    cfg.userDownColor    = mc.downColor  || undefined;
+    cfg.userWickUpColor  = mc.wickUpColor   || undefined;
+    cfg.userWickDownColor = mc.wickDownColor || undefined;
+    // V129: hollow is a MODE now — 'up' / 'down' / 'both' (v128 hollowUp ≡ 'up').
+    cfg.hollowUp         = (mc.hollowMode === 'up'     || mc.hollowMode === 'both') ? true : undefined;
+    cfg.hollowDown       = (mc.hollowMode === 'down'   || mc.hollowMode === 'both') ? true : undefined;
+    cfg.hollowBorderWidth = (isFinite(+mc.hollowBorderWidth) && +mc.hollowBorderWidth >= 0.5 && +mc.hollowBorderWidth <= 4)
+        ? +mc.hollowBorderWidth : undefined;
+    // V129: false → clean hollow (wick clipped to the body exterior); true →
+    //   classic full wick visible through the hollow body (v128 behavior).
+    cfg.wickThroughBody  = (mc.wickThroughBody === true) ? true : undefined;
+    cfg.gapConnectors    = (mc.gapConnectors === false) ? false : undefined;
+    cfg.candleWidthRatio = (isFinite(+mc.candleWidthRatio) && +mc.candleWidthRatio >= 0.2 && +mc.candleWidthRatio <= 0.98)
+        ? +mc.candleWidthRatio : undefined;
+    cfg.wickWidthRatio   = (isFinite(+mc.wickWidthRatio) && +mc.wickWidthRatio >= 0.02 && +mc.wickWidthRatio <= 0.5)
+        ? +mc.wickWidthRatio : undefined;
+}
 
 // ─── Debug flags ──────────────────────────────────────────────────────────
 // Set DEBUG_YRANGE = true in the console to log significant Y-range changes.
@@ -6085,7 +6330,7 @@ function devLog(...args) {
 // reads window.__devMode (e.g. console inspection, eval'd snippets) sees
 // the live value. devLog() already uses the closure directly, so it works
 // correctly regardless.
-Object.assign(window, { _safeStorage, CHART_ENGINE_VERSION, UP_COLOR, DOWN_COLOR, DEBUG_YRANGE, scopedEl, _el, esc, _numAttr, _deepCloneWithFunctions, mergeCandlesByX, TIMEFRAME_MS_MAP, tfToMs, detectHorizontalSwipe, OVERLAY_TOOL_KEYS, _deselectOverlayTools, _endAllOverlayDrags, panelBounds, showToast, _debugLogLines, debugLog, _renderDebugLog, _initDebugLogPanel, toggleDebugLogPanel, toggleDevMode, isDevMode, devLog });
+Object.assign(window, { _safeStorage, CHART_ENGINE_VERSION, UP_COLOR, DOWN_COLOR, CE_MAIN_CANDLES_DEFAULTS, CE_MAIN_CANDLES, applyMainCandlesToConfig, saveMainCandlesCfg, resetMainCandlesCfg, sanitizeMainCandlesState, applyMainCandlesState, DEBUG_YRANGE, scopedEl, _el, esc, _numAttr, _deepCloneWithFunctions, mergeCandlesByX, TIMEFRAME_MS_MAP, tfToMs, detectHorizontalSwipe, OVERLAY_TOOL_KEYS, _deselectOverlayTools, _endAllOverlayDrags, panelBounds, showToast, _debugLogLines, debugLog, _renderDebugLog, _initDebugLogPanel, toggleDebugLogPanel, toggleDevMode, isDevMode, devLog });
 // FIX: __lastGlobalErrorTs is a `let` binding scoped to this IIFE — exporting
 //   it via Object.assign(window, {__lastGlobalErrorTs}) only copies the value
 //   ONCE (at init time = 0). Subsequent updates (when an error fires) never
@@ -6117,7 +6362,7 @@ Object.defineProperty(window, '__devMode', {
 });
 
 // ── V39: регистрация в реестре модулей ──
-CE.registerModule('ce-preamble', [], ['_safeStorage', 'CHART_ENGINE_VERSION', 'UP_COLOR', 'DOWN_COLOR', 'DEBUG_YRANGE', '__lastGlobalErrorTs', 'scopedEl', '_el', 'esc', '_numAttr', '_deepCloneWithFunctions', 'mergeCandlesByX', 'TIMEFRAME_MS_MAP', 'tfToMs', 'detectHorizontalSwipe', 'OVERLAY_TOOL_KEYS', '_deselectOverlayTools', '_endAllOverlayDrags', 'panelBounds', 'showToast', '_debugLogLines', 'debugLog', '_renderDebugLog', '_initDebugLogPanel', 'toggleDebugLogPanel', '__devMode', 'toggleDevMode', 'isDevMode', 'devLog'], 'MAIN-THREAD ONLY');
+CE.registerModule('ce-preamble', [], ['_safeStorage', 'CHART_ENGINE_VERSION', 'UP_COLOR', 'DOWN_COLOR', 'CE_MAIN_CANDLES_DEFAULTS', 'CE_MAIN_CANDLES', 'applyMainCandlesToConfig', 'saveMainCandlesCfg', 'resetMainCandlesCfg', 'sanitizeMainCandlesState', 'applyMainCandlesState', 'DEBUG_YRANGE', '__lastGlobalErrorTs', 'scopedEl', '_el', 'esc', '_numAttr', '_deepCloneWithFunctions', 'mergeCandlesByX', 'TIMEFRAME_MS_MAP', 'tfToMs', 'detectHorizontalSwipe', 'OVERLAY_TOOL_KEYS', '_deselectOverlayTools', '_endAllOverlayDrags', 'panelBounds', 'showToast', '_debugLogLines', 'debugLog', '_renderDebugLog', '_initDebugLogPanel', 'toggleDebugLogPanel', '__devMode', 'toggleDevMode', 'isDevMode', 'devLog'], 'MAIN-THREAD ONLY');
 })(window.CE, window);
 
 (function CE$module$ce$infra(CE, window) {
@@ -12018,6 +12263,30 @@ class PanelLabelRenderer {
         }
     }
 
+    /**
+     * V131: pick the ONE parameter shown in the compact panel badge — the
+     * indicator's "window" (period / length). Rules:
+     *   1. exact param-name match on period/window/length/len/bars;
+     *   2. loose substring match over name + label (incl. lookback);
+     *   3. fallback: the first numeric param.
+     * Bool / select / mode params never qualify (a mode value is not a
+     * window). Returns a short display string, or null when the indicator
+     * has no numeric param at all.
+     */
+    _windowParamLabel(params, values) {
+        const numeric = (params || []).filter(p => p && p.type !== 'bool' && p.type !== 'select' && p.name !== 'mode');
+        if (numeric.length === 0) return null;
+        const p = numeric.find(x => /^(period|window|length|len|bars)$/i.test(String(x.name || '')))
+            || numeric.find(x => /period|window|length|lookback|bars/i.test(String(x.name || '') + ' ' + String(x.label || '')))
+            || numeric[0];
+        const v = values?.[p.name];
+        if (v === undefined || v === null || v === '') return null;
+        if (typeof v === 'number') {
+            return Number.isInteger(v) ? String(v) : String(+v.toFixed(2));
+        }
+        return String(v);
+    }
+
     /** Auto-generate label from series/indicators/mode. */
     _autoLabel(pId, { slice, modeMgr, api }) {
         let title = '';
@@ -12130,26 +12399,32 @@ class PanelLabelRenderer {
                     const meta = ind.constructor?.META;
                     if (!meta) continue;
                     // V110: use shortLabel if available, otherwise fall back to label
+                    // V131: shortLabel is now the norm — long-named bricks
+                    //   ship a small alias, so badges read "GEX(7)" instead
+                    //   of "Gamma Exposure (Deribit)(7,20,1)".
                     const lbl = meta.shortLabel || meta.label || meta.type || ind.id;
-                    // Append the first numeric param in shorthand form, e.g. "RSI(14)"
-                    // or "MACD(12,26,9)" — helps distinguish multiple instances.
-                    const params = meta.params || [];
-                    const numericParams = params.filter(p => p.type !== 'bool' && p.type !== 'select' && p.name !== 'mode');
-                    if (numericParams.length > 0) {
-                        const vals = numericParams.map(p => ind.params?.[p.name]);
-                        if (vals.every(v => v !== undefined && v !== null)) {
-                            // V110: append "log" suffix if logScale is enabled
-                            const logSuffix = ind.params?.logScale === true ? ' log' : '';
-                            names.push(`${lbl}(${vals.join(',')})${logSuffix}`);
-                            continue;
-                        }
-                    }
-                    // V110: append "log" suffix even without params
+                    // V131: compact params — show ONLY the window number.
+                    //   The old badge glued EVERY numeric param on
+                    //   ("MACD(12,26,9)", "JMA(9,0,2)", "Kalman Filter(1,0.01,0.1)"),
+                    //   drowning the panel in digits; one window number is
+                    //   enough to tell instances apart at a glance.
+                    const win = this._windowParamLabel(meta.params, ind.params);
+                    // V110: append "log" suffix if logScale is enabled
                     const logSuffix = ind.params?.logScale === true ? ' log' : '';
-                    names.push(lbl + logSuffix);
+                    if (win !== null) {
+                        names.push(`${lbl}(${win})${logSuffix}`);
+                    } else {
+                        names.push(lbl + logSuffix);
+                    }
                 }
                 if (names.length > 0) {
-                    title = names.join(' · ');
+                    // V131: cap the badge at 3 compact names + "+N" — panels
+                    //   hosting several chained indicators used to produce a
+                    //   title wider than the plot area.
+                    const MAX_BADGE_NAMES = 3;
+                    title = names.length > MAX_BADGE_NAMES
+                        ? names.slice(0, MAX_BADGE_NAMES).join(' · ') + ' · +' + (names.length - MAX_BADGE_NAMES)
+                        : names.join(' · ');
                     subtitle = '';
                 }
             }
@@ -13100,7 +13375,7 @@ class DataStore {
             const s = this.seriesMap[id];
             let val = dataObj[id];
 
-            if (val === undefined && s.config.type === 'candlestick' && dataObj.close !== undefined) {
+            if (val === undefined && (s.config.type === 'candlestick' || s.config.id === 'price') && dataObj.close !== undefined) {
                 val = dataObj.close;
             }
 
@@ -13146,7 +13421,7 @@ class DataStore {
             const s = this.seriesMap[id];
             let val = dataObj[id];
 
-            if (val === undefined && s.config.type === 'candlestick' && dataObj.close !== undefined) {
+            if (val === undefined && (s.config.type === 'candlestick' || s.config.id === 'price') && dataObj.close !== undefined) {
                 val = dataObj.close;
             }
             if (val !== undefined) s.data[wI] = val;
@@ -13387,6 +13662,25 @@ class DataStore {
         }
         const xSlice = this._sliceBuf.x;
         const seriesSlices = {};
+        // ── V128-main-candles: the "eternal" Main Candles pseudo-indicator ──
+        //   The user's main-chart candle settings (glyph family, colors,
+        //   widths, Heikin-Ashi) live in the global CE_MAIN_CANDLES hub and
+        //   are applied HERE — to the candle series' config object (shared by
+        //   reference with seriesSlices) — so every render frame reflects
+        //   them without extra plumbing. Heikin-Ashi additionally swaps the
+        //   copied OHLC values for the transformed series (_getHaCache —
+        //   keyed by the store's mutation version, recomputed only when the
+        //   data actually changes). Guarded by typeof so worker-safe code
+        //   paths without the hub fall back to plain candle behavior.
+        let haCache = null;
+        if (typeof CE_MAIN_CANDLES !== 'undefined') {
+            let candleId0 = null;
+            for (const id in this.seriesMap) { if (this.seriesMap[id].openData !== null) { candleId0 = id; break; } }
+            if (candleId0) {
+                applyMainCandlesToConfig(this.seriesMap[candleId0].config);
+                if (CE_MAIN_CANDLES.heikinAshi === true) haCache = this._getHaCache(candleId0);
+            }
+        }
         for (let li = iMin; li <= iMax; li++) {
             const pi = this.getPhysicalIndex(li);
             xSlice[li - iMin] = this.x[pi];
@@ -13420,6 +13714,19 @@ class DataStore {
                 }
                 const ss = seriesSlices[id];
                 const idx = li - iMin;
+                // V128-main-candles: the candle series carries the (optional)
+                //   Heikin-Ashi transform — the DRAWN values are HA, while the
+                //   store's raw arrays (used by indicators, exports, cache
+                //   saves) stay untouched.
+                if (haCache && id === haCache.id) {
+                    ss.data[idx] = haCache.c[li];
+                    if (ss.openData)  ss.openData[idx]  = haCache.o[li];
+                    if (ss.highData)  ss.highData[idx] = haCache.h[li];
+                    if (ss.lowData)   ss.lowData[idx]  = haCache.l[li];
+                    if (ss.pocData)   ss.pocData[idx]   = s.pocData[pi];
+                    if (ss.styleData) ss.styleData[idx] = s.styleData[pi];
+                    continue;
+                }
                 ss.data[idx] = s.data[pi];
                 if (ss.openData)  ss.openData[idx]  = s.openData[pi];
                 if (ss.highData)  ss.highData[idx]  = s.highData[pi];
@@ -13429,6 +13736,48 @@ class DataStore {
             }
         }
         return { xSlice, seriesSlices, count };
+    }
+
+    // ── V128-main-candles: Heikin-Ashi transform of the candle series ──
+    //   Logical-order HA OHLC, cached against the store's mutation version
+    //   (_version bumps on every pushPoint/updateLastPoint/bulk op), so the
+    //   O(n) recompute happens only when the data actually changed — not on
+    //   every rendered frame. Linearization reuses the ring-aware
+    //   _linearizeToArray memcpys. A NaN bar resets the recursive-open seed
+    //   (same convention as the VolNorm heikinAshi post-transform).
+    _getHaCache(candleId) {
+        const n = this.size;
+        if (n <= 0) return null;
+        if (this._haCache && this._haCache._v === this._version && this._haCache._n === n) return this._haCache;
+        const s = this.seriesMap[candleId];
+        if (!s || s.openData === null) return null;
+        if (!this._haBufs || this._haBufs._n !== n) {
+            this._haBufs = { _n: n,
+                linO: new Float64Array(n), linH: new Float64Array(n), linL: new Float64Array(n), linC: new Float64Array(n),
+                haO:  new Float64Array(n), haH:  new Float64Array(n), haL:  new Float64Array(n), haC:  new Float64Array(n) };
+        }
+        const b = this._haBufs;
+        this._linearizeToArray(s.openData,  b.linO, n);
+        this._linearizeToArray(s.highData, b.linH, n);
+        this._linearizeToArray(s.lowData,  b.linL, n);
+        this._linearizeToArray(s.data,     b.linC, n);
+        let pO = NaN, pC = NaN;
+        for (let i = 0; i < n; i++) {
+            const o = b.linO[i], h = b.linH[i], l = b.linL[i], c = b.linC[i];
+            if (!isFinite(o) || !isFinite(h) || !isFinite(l) || !isFinite(c)) {
+                b.haO[i] = NaN; b.haH[i] = NaN; b.haL[i] = NaN; b.haC[i] = NaN;
+                pO = NaN; pC = NaN;
+                continue;
+            }
+            const haC = (o + h + l + c) / 4;
+            const haO = (isFinite(pO) && isFinite(pC)) ? (pO + pC) / 2 : (o + c) / 2;
+            b.haO[i] = haO; b.haC[i] = haC;
+            b.haH[i] = Math.max(h, haO, haC);
+            b.haL[i] = Math.min(l, haO, haC);
+            pO = haO; pC = haC;
+        }
+        this._haCache = { _v: this._version, _n: n, id: candleId, o: b.haO, h: b.haH, l: b.haL, c: b.haC };
+        return this._haCache;
     }
 
     findNearestIndex(dataX) {
@@ -16154,7 +16503,17 @@ class LineRenderer {
             lastPx = px;
         }
         if (started && segments) segments.push([segStartPx, lastPx]);
+        // V129-main-candles: line style for the main price line — 'dashed' /
+        //   'dotted' set a dash pattern (scaled with the line width so thick
+        //   lines get proportionally longer dashes), then reset. Absent /
+        //   'solid' (every other line series) → plain stroke, bit-parity with
+        //   the pre-V129 renderer.
+        const ls = ss.config.lineStyle;
+        const dash = ls === 'dashed' ? [6 * Math.max(1, lw), 4 * Math.max(1, lw)]
+                  : ls === 'dotted' ? [2, 3] : null;
+        if (dash) ctx.setLineDash(dash);
         ctx.stroke();
+        if (dash) ctx.setLineDash([]);
 
         // ── Draw fill (if configured) — using tracked segments ─────────────
         // No second data iteration needed — we already know where each
@@ -16309,10 +16668,110 @@ function computeBarWidth(xScale, xData, visibleRange, opts = {}) {
     return Math.max(minPx, Math.min(maxPx, w));
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// V128: OhlcBarRenderer — classic OHLC bar glyphs for the main price series.
+// ═══════════════════════════════════════════════════════════════════════════
+// Engaged via config.priceStyle === 'bars' on a candlestick-typed series (the
+// Main Candles "eternal indicator" → chart type 'Bars (OHLC)'). Keeping the
+// series typed as candlestick means every existing type-consumer (autofit
+// H/L, POC marks, OHLC tooltip, legends) keeps working — only the glyph
+// changes. Batching discipline matches CandlestickRenderer: 2 strokes per
+// frame (up/down), each path carrying verticals + open ticks + close ticks;
+// thin mode (barW ≤ 1.5px) draws 1px verticals in data order to preserve
+// z-order when bars overlap.
+class OhlcBarRenderer {
+    draw(ctx, ss, xScale, yScale, xData, visibleRange, intervalMs) {
+        const { iMin, iMax } = barPreamble(xScale, xData, visibleRange, intervalMs);
+        const rc = RENDER_CONSTANTS;
+        // Per-series geometry overrides (Main Candles settings; fall back to
+        // the shared constants when absent — identical to default candles).
+        const cwRatio = (isFinite(ss.config.candleWidthRatio) && ss.config.candleWidthRatio >= 0.2 && ss.config.candleWidthRatio <= 0.98)
+            ? ss.config.candleWidthRatio : rc.CANDLE_WIDTH_RATIO;
+        const barW = computeBarWidth(xScale, xData, visibleRange, { ratio: cwRatio });
+        const upColor   = ss.config.userUpColor   || UP_COLOR;
+        const downColor = ss.config.userDownColor || DOWN_COLOR;
+        const strokeW   = Math.max(1, barW * ((isFinite(ss.config.wickWidthRatio) && ss.config.wickWidthRatio > 0 && ss.config.wickWidthRatio <= 1)
+            ? ss.config.wickWidthRatio : rc.WICK_WIDTH_RATIO));
+        const tickLen   = Math.max(rc.MIN_DRAW_PX, barW / 2);
+        const thin      = barW <= 1.5;
+
+        const openData  = ss.openData;
+        const closeData = ss.data;
+        const highData  = ss.highData;
+        const lowData   = ss.lowData;
+        const xToPix = (v) => xScale.valToPix(v);
+        const yToPix = (v) => yScale.valToPix(v);
+
+        if (thin) {
+            // 1px verticals in data order (z-order parity with thin candles)
+            ctx.lineWidth = 1;
+            let curColor = null;
+            ctx.beginPath();
+            for (let i = iMin; i <= iMax; i++) {
+                const open  = openData ? openData[i] : closeData[i];
+                const close = closeData[i];
+                if (!isFinite(open) || !isFinite(close)) continue;
+                const high = highData ? highData[i] : Math.max(open, close);
+                const low  = lowData  ? lowData[i]  : Math.min(open, close);
+                const color = close >= open ? upColor : downColor;
+                if (color !== curColor) {
+                    if (curColor !== null) ctx.stroke();
+                    ctx.strokeStyle = color;
+                    ctx.beginPath();
+                    curColor = color;
+                }
+                const px = xToPix(xData[i]);
+                ctx.moveTo(px, yToPix(isFinite(high) ? high : Math.max(open, close)));
+                ctx.lineTo(px, yToPix(isFinite(low) ? low : Math.min(open, close)));
+            }
+            if (curColor !== null) ctx.stroke();
+            return;
+        }
+
+        // Normal mode: one path per direction — vertical H−L line, open tick
+        // (left), close tick (right). All segments share the same stroke.
+        for (const isUp of [false, true]) {
+            ctx.strokeStyle = isUp ? upColor : downColor;
+            ctx.lineWidth = strokeW;
+            ctx.beginPath();
+            let any = false;
+            for (let i = iMin; i <= iMax; i++) {
+                const open  = openData ? openData[i] : closeData[i];
+                const close = closeData[i];
+                if (!isFinite(open) || !isFinite(close)) continue;
+                if ((close >= open) !== isUp) continue;
+                const high = highData ? highData[i] : Math.max(open, close);
+                const low  = lowData  ? lowData[i]  : Math.min(open, close);
+                const px = xToPix(xData[i]);
+                ctx.moveTo(px, yToPix(isFinite(high) ? high : Math.max(open, close)));
+                ctx.lineTo(px, yToPix(isFinite(low) ? low : Math.min(open, close)));
+                const pyO = yToPix(open), pyC = yToPix(close);
+                ctx.moveTo(px - tickLen, pyO);
+                ctx.lineTo(px, pyO);
+                ctx.moveTo(px, pyC);
+                ctx.lineTo(px + tickLen, pyC);
+                any = true;
+            }
+            if (any) ctx.stroke();
+        }
+    }
+}
+
 class CandlestickRenderer {
     draw(ctx, ss, xScale, yScale, xData, visibleRange, intervalMs) {
+        // V128-main-candles: 'priceStyle: bars' — delegate the whole draw to
+        //   the classic OHLC-bar glyph renderer (see OhlcBarRenderer). The
+        //   series stays typed as candlestick, so this is purely a glyph swap.
+        if (ss.config && ss.config.priceStyle === 'bars' && typeof RENDERERS !== 'undefined' && RENDERERS.ohlcbar) {
+            return RENDERERS.ohlcbar.draw(ctx, ss, xScale, yScale, xData, visibleRange, intervalMs);
+        }
         const { iMin, iMax, dataInterval, pixelPerUnit } = barPreamble(xScale, xData, visibleRange, intervalMs);
-        const candleW = computeBarWidth(xScale, xData, visibleRange, { ratio: RENDER_CONSTANTS.CANDLE_WIDTH_RATIO });
+        // V128-main-candles: per-series body-width override (Main Candles
+        //   settings) — defaults to the shared constant, so regular candles
+        //   (indicator panels etc.) are bit-identical to before.
+        const cwRatio = (isFinite(ss.config.candleWidthRatio) && ss.config.candleWidthRatio >= 0.2 && ss.config.candleWidthRatio <= 0.98)
+            ? ss.config.candleWidthRatio : RENDER_CONSTANTS.CANDLE_WIDTH_RATIO;
+        const candleW = computeBarWidth(xScale, xData, visibleRange, { ratio: cwRatio });
 
         // V50: read UP_COLOR / DOWN_COLOR dynamically (they are global getters
         //   that return theme.up / theme.down). This makes candle colors react
@@ -16320,7 +16779,28 @@ class CandlestickRenderer {
         //   override if explicitly set (non-default).
         const upColor   = ss.config.userUpColor   || UP_COLOR;
         const downColor = ss.config.userDownColor || DOWN_COLOR;
-        const wickW     = Math.max(RENDER_CONSTANTS.MIN_DRAW_PX, candleW * RENDER_CONSTANTS.WICK_WIDTH_RATIO);
+        // V128-main-candles: per-series wick colors + wick-width override.
+        //   Absent/empty → same color as the body / shared constant — regular
+        //   candlesticks (indicator panels) are bit-identical to before.
+        const wickUp     = ss.config.userWickUpColor   || upColor;
+        const wickDown   = ss.config.userWickDownColor || downColor;
+        // V129-main-candles: hollow is a MODE — 'up' / 'down' / 'both'. Clean
+        //   hollow by default: the wick is CLIPPED to the body exterior (two
+        //   segments — above bodyTop and below bodyBot), so nothing is drawn
+        //   inside the outlined body. ss.config.wickThroughBody === true opts
+        //   back into the classic look (full high→low wick visible through
+        //   the empty body — v128 behavior).
+        const hollowUp   = ss.config.hollowUp   === true;
+        const hollowDown = ss.config.hollowDown === true;
+        const wickThrough = ss.config.wickThroughBody === true;
+        const hollowBorder = (isFinite(ss.config.hollowBorderWidth) && ss.config.hollowBorderWidth >= 0.5 && ss.config.hollowBorderWidth <= 4)
+            ? ss.config.hollowBorderWidth : 1;
+        // V129: gap connector lines can be turned off from Main Candles.
+        //   Absent → on (indicator-panel candles stay bit-identical).
+        const gapConnectors = ss.config.gapConnectors !== false;
+        const wwr        = (isFinite(ss.config.wickWidthRatio) && ss.config.wickWidthRatio > 0 && ss.config.wickWidthRatio <= 1)
+            ? ss.config.wickWidthRatio : RENDER_CONSTANTS.WICK_WIDTH_RATIO;
+        const wickW      = Math.max(RENDER_CONSTANTS.MIN_DRAW_PX, candleW * wwr);
 
         // FIX V49n-perf-render2: inline candleOHLC + precompute valToPix
         // functions. Avoids object creation per candle + function call overhead.
@@ -16342,13 +16822,18 @@ class CandlestickRenderer {
         // ── Single pass: collect wick coords + body draw commands ──
         // Use pre-allocated Float64Array buffers instead of regular arrays
         // to avoid dynamic resizing + reduce GC pressure.
+        // V129: wick buffers carry 5 slots per candle — [px, highY, lowY,
+        //   bodyTop, bodyBot] — so a hollow candle's wick can be drawn as two
+        //   segments OUTSIDE the body (clean hollow). bodyTop/bodyBot are also
+        //   written for filled candles (unused there — the body covers the
+        //   wick anyway, keeping the hot loop branch-free).
         const maxCount = iMax - iMin + 1;
         // V51-render-opt: cache typed arrays on the renderer instance to avoid
         //   per-frame allocations. With 3000 candles, each frame allocated
         //   4 × Float64Array(3000*N) = ~300KB → GC pressure → stutter.
-        if (!this._upWicks || this._upWicks.length < maxCount * 3) {
-            this._upWicks = new Float64Array(maxCount * 3);
-            this._downWicks = new Float64Array(maxCount * 3);
+        if (!this._upWicks || this._upWicks.length < maxCount * 5) {
+            this._upWicks = new Float64Array(maxCount * 5);
+            this._downWicks = new Float64Array(maxCount * 5);
             this._bodies = new Float64Array(maxCount * 4);
         }
         const upWicks = this._upWicks;
@@ -16369,11 +16854,11 @@ class CandlestickRenderer {
             const highY  = yToPix(isFinite(high) ? high : Math.max(open, close));
             const lowY   = yToPix(isFinite(low) ? low : Math.min(open, close));
 
-            if (isUp) { upWicks[upWickN++] = px; upWicks[upWickN++] = highY; upWicks[upWickN++] = lowY; }
-            else      { downWicks[downWickN++] = px; downWicks[downWickN++] = highY; downWicks[downWickN++] = lowY; }
-
             const bodyTop = yToPix(Math.max(open, close));
             const bodyBot = yToPix(Math.min(open, close));
+            if (isUp) { upWicks[upWickN++] = px; upWicks[upWickN++] = highY; upWicks[upWickN++] = lowY; upWicks[upWickN++] = bodyTop; upWicks[upWickN++] = bodyBot; }
+            else      { downWicks[downWickN++] = px; downWicks[downWickN++] = highY; downWicks[downWickN++] = lowY; downWicks[downWickN++] = bodyTop; downWicks[downWickN++] = bodyBot; }
+
             bodies[bodyN++] = px;
             bodies[bodyN++] = bodyTop;
             bodies[bodyN++] = bodyBot - bodyTop;
@@ -16388,26 +16873,35 @@ class CandlestickRenderer {
         }
 
         // ── Batched wick strokes ──
-        if (upWickN > 0) {
-            ctx.strokeStyle = upColor;
+        // V129: `clean hollow` — for a hollow direction the wick is drawn as
+        //   two segments OUTSIDE the body (high→bodyTop and bodyBot→low), so
+        //   the outlined body stays empty (no wick line smeared through it).
+        //   Non-hollow directions keep the single full high→low segment (the
+        //   body is filled on top and covers it — bit-identical to v128).
+        //   wickThroughBody === true restores the classic full-through wick.
+        //   Doji / sub-pixel bodies (bodyBot - bodyTop ≤ 0.5px) degenerate to
+        //   the full segment — the two clipped halves join back seamlessly.
+        const drawWicks = (buf, n, color, clip) => {
+            if (n <= 0) return;
+            ctx.strokeStyle = color;
             ctx.lineWidth   = wickW;
             ctx.beginPath();
-            for (let j = 0; j < upWickN; j += 3) {
-                ctx.moveTo(upWicks[j], upWicks[j + 1]);
-                ctx.lineTo(upWicks[j], upWicks[j + 2]);
+            for (let j = 0; j < n; j += 5) {
+                const px = buf[j], highY = buf[j + 1], lowY = buf[j + 2], bTop = buf[j + 3], bBot = buf[j + 4];
+                if (clip && (bBot - bTop) > 0.5) {
+                    if (highY < bTop) { ctx.moveTo(px, highY); ctx.lineTo(px, bTop); }
+                    if (bBot < lowY)  { ctx.moveTo(px, bBot);  ctx.lineTo(px, lowY); }
+                } else {
+                    ctx.moveTo(px, highY);
+                    ctx.lineTo(px, lowY);
+                }
             }
             ctx.stroke();
-        }
-        if (downWickN > 0) {
-            ctx.strokeStyle = downColor;
-            ctx.lineWidth   = wickW;
-            ctx.beginPath();
-            for (let j = 0; j < downWickN; j += 3) {
-                ctx.moveTo(downWicks[j], downWicks[j + 1]);
-                ctx.lineTo(downWicks[j], downWicks[j + 2]);
-            }
-            ctx.stroke();
-        }
+        };
+        // clip only when the direction is hollow AND the user did not opt
+        //   into the classic full-through wick.
+        if (upWickN > 0)   drawWicks(upWicks,   upWickN,   wickUp,   hollowUp   && !wickThrough);
+        if (downWickN > 0) drawWicks(downWicks, downWickN, wickDown, hollowDown && !wickThrough);
 
         // ── V51-render-opt: batch candle bodies ──
         //   Normal mode (candleW > 1.5px): 2 batched Path2D fills (up/down).
@@ -16439,7 +16933,9 @@ class CandlestickRenderer {
                 }
                 if (curColor !== null) ctx.stroke();
             } else {
-                // Normal mode: 2 batched fills. Down first, up on top.
+                // Normal mode: 2 batched paths. Down first, up on top.
+                // V129: hollow bodies are STROKED, not filled — per direction
+                //   ('up' / 'down' / 'both'), with a configurable border width.
                 ctx.fillStyle = downColor;
                 ctx.beginPath();
                 for (let j = 0; j < bodyN; j += 4) {
@@ -16447,7 +16943,8 @@ class CandlestickRenderer {
                         ctx.rect(bodies[j] - halfCandle, bodies[j + 1], candleW, Math.max(minDrawPx, bodies[j + 2]));
                     }
                 }
-                ctx.fill();
+                if (hollowDown) { ctx.strokeStyle = downColor; ctx.lineWidth = hollowBorder; ctx.stroke(); }
+                else { ctx.fill(); }
                 ctx.fillStyle = upColor;
                 ctx.beginPath();
                 for (let j = 0; j < bodyN; j += 4) {
@@ -16455,7 +16952,11 @@ class CandlestickRenderer {
                         ctx.rect(bodies[j] - halfCandle, bodies[j + 1], candleW, Math.max(minDrawPx, bodies[j + 2]));
                     }
                 }
-                ctx.fill();
+                // V128-main-candles → V129: hollow candles — stroke the outline
+                //   instead of filling (classic hollow style; thin mode above
+                //   already strokes, so this only affects the normal mode).
+                if (hollowUp) { ctx.strokeStyle = upColor; ctx.lineWidth = hollowBorder; ctx.stroke(); }
+                else { ctx.fill(); }
             }
         }
 
@@ -16473,8 +16974,10 @@ class CandlestickRenderer {
         }
 
         // ── Gap connector lines ──
+        // V129: can be disabled from Main Candles (gapConnectors === false);
+        //   absent → on (default, v128 parity for indicator-panel candles).
         const visibleCount = iMax - iMin + 1;
-        if (ss.openData && visibleCount >= 2) {
+        if (ss.openData && visibleCount >= 2 && gapConnectors) {
             ctx.strokeStyle = UI_COLORS.gapConnector;
             ctx.lineWidth = Math.max(RENDER_CONSTANTS.MIN_DRAW_PX, wickW * RENDER_CONSTANTS.GAP_CONNECTOR_RATIO);
             ctx.setLineDash([2, 3]);
@@ -16503,7 +17006,8 @@ class CandlestickRenderer {
 const RENDERERS = {
     line: new LineRenderer(),
     bar: new BarRenderer(),
-    candlestick: new CandlestickRenderer()
+    candlestick: new CandlestickRenderer(),
+    ohlcbar: new OhlcBarRenderer()
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -16524,10 +17028,10 @@ const RENDERERS = {
 
 
 // ── V39: явный экспорт в window (обратная совместимость) ──
-Object.assign(window, { _diCache, computeDataInterval, computeBarWidth, RENDER_CONSTANTS, UI_COLORS, LineRenderer, BarRenderer, barPreamble, candleOHLC, CandlestickRenderer, RENDERERS });
+Object.assign(window, { _diCache, computeDataInterval, computeBarWidth, RENDER_CONSTANTS, UI_COLORS, LineRenderer, BarRenderer, barPreamble, candleOHLC, CandlestickRenderer, OhlcBarRenderer, RENDERERS });
 
 // ── V39: регистрация в реестре модулей ──
-CE.registerModule('ce-renderers', ['ce-data-layer', 'ce-axis-system'], ['_diCache', 'computeDataInterval', 'RENDER_CONSTANTS', 'UI_COLORS', 'LineRenderer', 'BarRenderer', 'barPreamble', 'candleOHLC', 'CandlestickRenderer', 'RENDERERS'], 'MAIN-THREAD ONLY');
+CE.registerModule('ce-renderers', ['ce-data-layer', 'ce-axis-system'], ['_diCache', 'computeDataInterval', 'RENDER_CONSTANTS', 'UI_COLORS', 'LineRenderer', 'BarRenderer', 'barPreamble', 'candleOHLC', 'CandlestickRenderer', 'OhlcBarRenderer', 'RENDERERS'], 'MAIN-THREAD ONLY');
 })(window.CE, window);
 
 (function CE$module$ce$indicators(CE, window) {
@@ -21957,7 +22461,7 @@ const MA_SPECS = [
         maFn: (src, count, n, ctx) => _maVAMA(src, count, n, ctx.ohlc),
     },
     {
-        type: 'mf', label: 'MF (Median)', description: 'Median Filter — robust to outliers, returns middle value',
+        type: 'mf', label: 'MF (Median)', shortLabel: 'MF', description: 'Median Filter — robust to outliers, returns middle value',
         tags: ['moving average', 'median', 'robust'], color: '#3fb950',
         periodDefault: 5, periodMin: 3, periodMax: 99, periodStep: 2,
         seriesJsSpec: (n) => {
@@ -22002,7 +22506,7 @@ const MA_SPECS = [
         maFn: (src, count, n) => _maEDSMA(src, count, n),
     },
     {
-        type: 'kijun', label: 'Kijun v2', description: 'Kijun-sen — midpoint of period high/low, optional smoothing',
+        type: 'kijun', label: 'Kijun v2', shortLabel: 'Kijun', description: 'Kijun-sen — midpoint of period high/low, optional smoothing',
         tags: ['moving average', 'ichimoku', 'kijun', 'midpoint'], color: '#58a6ff',
         periodDefault: 26, periodMin: 1, periodMax: 500, periodStep: 1,
         seriesJsSpec: (n, params) => {
@@ -22113,7 +22617,7 @@ const MA_SPECS = [
         ],
     },
     {
-        type: 'kalman', label: 'Kalman Filter', description: 'Adaptive Kalman filter — smooths price, adapts to volatility',
+        type: 'kalman', label: 'Kalman Filter', shortLabel: 'Kalman', description: 'Adaptive Kalman filter — smooths price, adapts to volatility',
         tags: ['filter', 'smooth', 'adaptive', 'noise reduction'], color: '#00bcd4',
         periodDefault: 1, periodMin: 1, periodMax: 1, periodStep: 1,  // Kalman не использует period
         // V44: Kalman использует processNoise/measurementNoise вместо period
@@ -22168,6 +22672,9 @@ function createMABrick(spec) {
         static META = {
             type: spec.type,
             label: spec.label,
+            // V131: small alias name for panel badges / section headers —
+            //   "Kalman(1)" instead of "Kalman Filter(1,0.01,0.1)".
+            shortLabel: spec.shortLabel || spec.label,
             description: spec.description,
             category: spec.category || 'trend',
             tags: spec.tags,
@@ -23074,7 +23581,11 @@ class AOBrick extends IndicatorBrick {
             new BrickParam({ name: 'logMode', label: 'Log Mode (geometric)', type: 'bool', default: false, group: 'Advanced',
                 tooltip: 'Compute MA on log(median price) → geometric. On log-scale charts, AO stays proportional to price movement.' }),
         ],
-        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        // V126-source: default 'hl2' (= median price, the classic Bill Williams
+        //   AO definition). The Source row now actually drives computation —
+        //   see _computeRaw. Before V126 the selector existed but AO always
+        //   computed on (high+low)/2 regardless of the chosen source.
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'hl2' }) ],
         outputs: [ new BrickOutput({ name: 'line', label: 'AO', type: 'histogram', color: '#3fb950' }) ],
         // V37: zero line. Same rationale as MACD — bullish/bearish is read
         // from the zero crossing of the histogram.
@@ -23095,35 +23606,57 @@ class AOBrick extends IndicatorBrick {
             try { devLog('[AO] _computeRaw entry', {
                 hasOhlc: !!ohlc, count, fast: this.params.fast, slow: this.params.slow,
                 maType: this.params.maType, logMode: this.params.logMode, logScale: this.params.logScale,
+                source: this.inputs?.source, sourceRef: this.sourceRef || null,
             }); } catch(_) {}
         }
 
-        if (!ohlc) { try { devLog('[AO] ABORT: no ohlc'); } catch(_) {} return { line: new Float64Array(0), count, visibleRange }; }
+        // V126-source: respect the Source selector. Previously the median
+        //   (high+low)/2 was hardcoded — the Source row in settings had no
+        //   effect on AO. Now:
+        //   • sourceRef set → sourceData is the chained indicator's output;
+        //   • 'close'/'open'/'high'/'low'/'hl2'/'hlc3'/'ohlc4'/'volume' →
+        //     resolved from the ohlc frame via _resolveSrc (same as MAs);
+        //   • default 'hl2' = classic median AO (see META.inputs).
+        const wantsOhlcSrc = !this.sourceRef
+            && ['open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'volume'].includes(this.inputs?.source);
+        const srcIn = this.sourceRef
+            ? sourceData
+            : _resolveSrc(sourceData, ohlc, this.inputs?.source || 'hl2');
+        if (wantsOhlcSrc && !ohlc) {
+            if ((typeof isDevMode === 'function') && isDevMode()) { try { devLog('[AO] ABORT: no ohlc for source ' + this.inputs?.source); } catch(_) {} }
+            return { line: new Float64Array(0), count, visibleRange };
+        }
+        if (!srcIn || srcIn.length === 0) {
+            if ((typeof isDevMode === 'function') && isDevMode()) { try { devLog('[AO] ABORT: no source data'); } catch(_) {} }
+            return { line: new Float64Array(0), count, visibleRange };
+        }
         const fast = Math.max(1, Math.floor(this.params.fast));
         const slow = Math.max(1, Math.floor(this.params.slow));
         const useLogMode = this.params.logMode === true;
         const maType = this.params.maType || 'sma';
-        // Compute median price = (high + low) / 2
-        const median = new Float64Array(count);
+        // V126: working source array — the selected series (log-transformed
+        //   in Log Mode, V114 pattern). Length-padded with NaN when a chained
+        //   ref is shorter than count.
+        const src = new Float64Array(count);
         for (let i = 0; i < count; i++) {
-            const m = ((ohlc.high[i] ?? 0) + (ohlc.low[i] ?? 0)) / 2;
-            median[i] = useLogMode && m > 0 ? Math.log(m) : m;
+            const v = i < srcIn.length ? srcIn[i] : NaN;
+            src[i] = (useLogMode && isFinite(v) && v > 0) ? Math.log(v) : v;
         }
         // V115: compute MA using selected type (SMA, EMA, WMA, TEMA)
-        // V115b: pass null for emaPool — AO uses its own median array, not the
+        // V115b: pass null for emaPool — AO uses its own source array, not the
         //   shared close-price EMA pool. Passing the pool causes cache key
-        //   collisions (pool keys by 'ma:' + n, but AO's median ≠ close),
+        //   collisions (pool keys by 'ma:' + n, but AO's source ≠ close),
         //   returning wrong EMA values → empty panel.
-        const computeMA = (src, n) => {
+        const computeMA = (arr, n) => {
             switch (maType) {
-                case 'ema':  return _maEMA(src, count, n, version, mutation, null);
-                case 'wma':  return _maWMA(src, count, n);
-                case 'tema': return _maTEMA(src, count, n, version, mutation, null);
-                default:     return _maSMA(src, count, n);
+                case 'ema':  return _maEMA(arr, count, n, version, mutation, null);
+                case 'wma':  return _maWMA(arr, count, n);
+                case 'tema': return _maTEMA(arr, count, n, version, mutation, null);
+                default:     return _maSMA(arr, count, n);
             }
         };
-        const maFast = computeMA(median, fast);
-        const maSlow = computeMA(median, slow);
+        const maFast = computeMA(src, fast);
+        const maSlow = computeMA(src, slow);
 
         // V118: log MA results for debugging
         let fastFinite = 0, slowFinite = 0;
@@ -23447,6 +23980,8 @@ function createOscillatorBrick(spec) {
         static META = {
             type: spec.type,
             label: spec.label,
+            // V131: small alias name for panel badges / section headers.
+            shortLabel: spec.shortLabel || spec.label,
             description: spec.description,
             category: 'momentum',
             tags: spec.tags,
@@ -25404,6 +25939,7 @@ class VolRevFractalsBrick extends IndicatorBrick {
     static META = {
         type: 'volrevfractals',
         label: 'Vol-Reversal Fractals',
+        shortLabel: 'VRF',
         description: 'Reversal fractals confirmed by volume spike — draws forward-projecting rectangles',
         category: 'momentum',
         tags: ['momentum', 'reversal', 'fractal', 'volume', 'support', 'resistance', 'overlay'],
@@ -26964,6 +27500,7 @@ class HistoricalPocBrick extends IndicatorBrick {
     static META = {
         type: 'hpoc',
         label: 'Historical POC S/R',
+        shortLabel: 'HPOC',
         description: 'Rolling-window POC scan. Finds Point of Control at each window position, clusters nearby POCs into support/resistance zones, draws rectangles to the right of the last candle.',
         category: 'composite',
         tags: ['poc', 'support', 'resistance', 'volume', 'profile', 'cluster'],
@@ -30170,6 +30707,181 @@ class PVTBrick extends IndicatorBrick {
 }
 brickRegistry.register('pvt', PVTBrick);
 
+// ─── V130: CVD (Cumulative Volume Delta, approx) ───────────────────────────
+// Williams-proxy approximation of order-flow CVD without tape data:
+//   buy  = V · (C − L) / (H − L)
+//   sell = V · (H − C) / (H − L)
+//   delta = buy − sell = V · (2C − H − L) / (H − L)   (flat bar H==L → 0,
+//   the 50/50 split cancels itself)
+//   CVD[i] = Σ delta[k], k ≤ i   (with optional daily/weekly UTC reset)
+// Rising CVD = buyers in control, falling = sellers; divergence vs price =
+// absorption / trend weakness. Without aggressor-side tape data this is an
+// approximation of true CVD — the same proxy the removed V127 Delta Candles
+// used, resurrected as a regular line indicator.
+class CVDBrick extends IndicatorBrick {
+    static META = {
+        type: 'cvd',
+        label: 'CVD (Cumulative Volume Delta, approx)',
+        shortLabel: 'CVD',
+        description: 'Approximate Cumulative Volume Delta — splits each bar\'s volume between buyers and sellers by the close position inside the bar range (Williams proxy: buy=V·(C−L)/(H−L), sell=V·(H−C)/(H−L)), then accumulates the difference. Rising = buyers in control, falling = sellers. Without order-flow/tape data this is an approximation of true CVD.',
+        category: 'momentum',
+        tags: ['volume', 'delta', 'orderflow', 'cumulative', 'cvd', 'divergence'],
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'mode', label: 'Mode', type: 'select', default: 'cumulative',
+                options: [
+                    { value: 'cumulative', label: 'Cumulative (CVD)' },
+                    { value: 'perbar', label: 'Per-bar delta' },
+                ],
+                tooltip: 'Cumulative = running sum (classic CVD line). Per-bar = each bar\'s delta as a sign-colored histogram.' }),
+            new BrickParam({ name: 'reset', label: 'Reset', type: 'select', default: 'none',
+                options: [
+                    { value: 'none', label: 'None (full history)' },
+                    { value: 'daily', label: 'Daily (00:00 UTC)' },
+                    { value: 'weekly', label: 'Weekly (Mon 00:00 UTC)' },
+                ],
+                tooltip: 'Restart the running sum at each period start (session CVD). Cumulative mode only.' }),
+            new BrickParam({ name: 'signalPeriod', label: 'Signal SMA Period', default: 20, min: 1, max: 200, step: 1, group: 'Display',
+                tooltip: 'SMA period for the signal line. Set to 1 to hide.' }),
+            new BrickParam({ name: 'logScale', label: 'Log Scale', type: 'bool', default: false, group: 'Display',
+                tooltip: 'Compress large cumulative values using asinh transform. Cumulative mode only.' }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'line', label: 'CVD', type: 'line', color: '#58a6ff' }),
+            new BrickOutput({ name: 'signal', label: 'Signal', type: 'line', color: '#f85149', lineWidth: 1.5, alpha: 0.8, optional: true, defaultVisible: true }),
+        ],
+        levels: [
+            new BrickLevel({ value: 0, label: '0', color: 'rgba(255,255,255,0.2)',
+                             lineWidth: 1, dash: [2, 4],
+                             optional: true, name: 'zero', defaultVisible: true }),
+        ],
+    };
+
+    constructor(cfg) { super(cfg); this.needsOHLC = true; }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        if (!ohlc?.vol || !ohlc?.high || !ohlc?.low || count === 0) {
+            return { line: new Float64Array(0), signal: new Float64Array(0), count, visibleRange };
+        }
+        const H = ohlc.high, L = ohlc.low, V = ohlc.vol, X = ohlc._x;
+        const perbar = this.params.mode === 'perbar';
+        // Reset is meaningless for per-bar view — force 'none' so cacheKey
+        //   differences (mode+reset both live in _cacheKey via params) can't
+        //   produce "reset" behavior in perbar mode.
+        const reset = perbar ? 'none' : (this.params.reset || 'none');
+        const line = new Float64Array(count);
+        let cum = 0;
+        let prevKey = null;
+        for (let i = 0; i < count; i++) {
+            const h = H[i], l = L[i], c = sourceData[i], v = V[i] || 0;
+            let d = 0;
+            if (isFinite(h) && isFinite(l) && isFinite(c) && isFinite(v)) {
+                const range = h - l;
+                // Flat bar (H==L): buy=sell=V/2 → delta cancels to 0.
+                if (range > 1e-12) d = v * (2 * c - h - l) / range;
+            }
+            // Reset at UTC day / week (Monday) boundary. X is the chart's
+            //   time column; on exotic data paths without it the reset
+            //   silently degrades to 'none'.
+            if (reset !== 'none' && X && isFinite(X[i])) {
+                let key;
+                if (reset === 'daily') {
+                    key = Math.floor(X[i] / 86400000);
+                } else {
+                    const dt = new Date(X[i]);
+                    const day = (dt.getUTCDay() + 6) % 7;  // Mon=0..Sun=6
+                    key = Math.floor(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate() - day) / 86400000);
+                }
+                if (prevKey !== null && key !== prevKey) cum = 0;
+                prevKey = key;
+            }
+            cum += d;
+            line[i] = perbar ? d : cum;
+        }
+        // asinh compression — cumulative mode only (per-bar deltas are small)
+        if (!perbar && this.params.logScale === true) {
+            for (let i = 0; i < count; i++) {
+                if (isFinite(line[i])) line[i] = Math.asinh(line[i]);
+            }
+        }
+        const sigN = Math.max(1, Math.floor(this.params.signalPeriod || 20));
+        const signal = _maSMA(line, count, sigN);
+        this._computed = { line, signal, count, visibleRange };
+        return this._computed;
+    }
+
+    render(ctx, xScale, yScale, xData, computed, visibleRange, layout) {
+        if (!computed?.line) return;
+        const [iMin, iMax] = visibleRange;
+        this._drawLevels(ctx, yScale, layout);
+        if (this.params.mode === 'perbar') {
+            // Sign-colored histogram — AO batch pattern (2 fills per frame).
+            const vxRange = Math.max(1, xScale.max - xScale.min);
+            const dataInterval = computeDataInterval(xData, iMin, iMax, null);
+            const pixelPerUnit = (xScale.pixelMax - xScale.pixelMin) / vxRange;
+            const barW = Math.max(RENDER_CONSTANTS.MIN_DRAW_PX, pixelPerUnit * dataInterval * RENDER_CONSTANTS.BAR_WIDTH_RATIO);
+            const zeroY = yScale.valToPix(0);
+            const upBars = [], downBars = [];
+            for (let i = iMin; i <= iMax; i++) {
+                const val = computed.line[i];
+                if (!isFinite(val)) continue;
+                const px = xScale.valToPix(xData[i - iMin]);
+                const valY = yScale.valToPix(val);
+                const h = zeroY - valY;
+                if (Math.abs(h) < RENDER_CONSTANTS.MIN_DRAW_PX) continue;
+                (val >= 0 ? upBars : downBars).push({ px, valY, h });
+            }
+            const drawBars = (bars, color) => {
+                if (!bars.length) return;
+                ctx.fillStyle = color;
+                ctx.beginPath();
+                for (const b of bars) {
+                    ctx.rect(b.px - barW / 2, b.h > 0 ? b.valY : zeroY, barW, Math.abs(b.h));
+                }
+                ctx.fill();
+            };
+            drawBars(upBars, this.upColor || UP_COLOR);
+            drawBars(downBars, this.downColor || DOWN_COLOR);
+        } else {
+            const lineColor = this.outputStyles.line?.color || '#58a6ff';
+            const lineWidth = this.outputStyles.line?.lineWidth || 1.5;
+            this._drawLine(ctx, computed.line, lineColor, lineWidth, 0.85,
+                xScale, yScale, xData, iMin, iMax, 'line');
+        }
+        if (this.params.signalPeriod > 1 && computed.signal) {
+            const sigColor = this.outputStyles.signal?.color || '#f85149';
+            const sigWidth = this.outputStyles.signal?.lineWidth || 1.5;
+            this._drawLine(ctx, computed.signal, sigColor, sigWidth, 0.8,
+                xScale, yScale, xData, iMin, iMax, 'signal');
+        }
+    }
+
+    getAutoFitRange(computed, count, visibleRange) {
+        if (!computed?.line) return null;
+        const [iMin, iMax] = visibleRange || computed.visibleRange || [0, computed.count - 1];
+        let yMin = Infinity, yMax = -Infinity;
+        for (let i = iMin; i <= iMax; i++) {
+            if (isFinite(computed.line[i])) {
+                yMin = Math.min(yMin, computed.line[i]);
+                yMax = Math.max(yMax, computed.line[i]);
+            }
+            if (computed.signal && isFinite(computed.signal[i])) {
+                yMin = Math.min(yMin, computed.signal[i]);
+                yMax = Math.max(yMax, computed.signal[i]);
+            }
+        }
+        if (!isFinite(yMin)) return null;
+        // Always include zero so the baseline (and per-bar histogram base)
+        // stays visible.
+        yMin = Math.min(yMin, 0);
+        yMax = Math.max(yMax, 0);
+        const pad = (yMax - yMin) * 0.1 || 1;
+        return { yMin: yMin - pad, yMax: yMax + pad };
+    }
+}
+brickRegistry.register('cvd', CVDBrick);
+
 // ─── BTC Realized Price (on-chain overlay) ────────────────────────────────
 // Fetches realized price data from bitcoin-data.com API and overlays it on
 // the chart. Only works for BTCUSDT — for other symbols, returns empty.
@@ -30195,6 +30907,7 @@ class BTCRealizedPriceBrick extends IndicatorBrick {
     static META = {
         type: 'btc_realized',
         label: 'BTC Realized Price',
+        shortLabel: 'BTC RP',
         description: 'On-chain realized price overlay (bitcoin-data.com). Shows overall, STH (<155d), and LTH (>155d) realized prices. BTC only — invisible on other symbols. Daily data, forward-filled to chart bars.',
         category: 'composite',
         tags: ['bitcoin', 'onchain', 'realized', 'sth', 'lth', 'fundamental', 'overlay'],
@@ -30471,9 +31184,10 @@ class VolNormCandlesBrick extends IndicatorBrick {
     static META = {
         type: 'volnormcandles',
         label: 'VolNorm Candles',
-        description: 'Volume-normalized gapless candlestick chart with Z-score bands. Body=(C-O)/V, Wick=(H-L)/V, chained gaplessly (open[i]=close[i-1]). Candle outside ±kσ band = volume-weighted anomaly.',
+        shortLabel: 'VolNorm',
+        description: 'Volume-normalized gapless candlestick chart with Z-score bands. Body=(C−O)/V^λ, Wick=(H−L)/V^λ, chained gaplessly (open[i]=close[i−1]); λ<1 softens volume pressure, Dollar unit (V×C) makes it cross-asset. Candle outside ±kσ band = volume-weighted anomaly. Optional Heikin-Ashi smoothing (post-transform) damps alternation noise — long same-color runs mean persistent volume-weighted drift.',
         category: 'composite',
-        tags: ['anomaly', 'volume', 'candles', 'normalized', 'zscore', 'gapless', 'volatility'],
+        tags: ['anomaly', 'volume', 'candles', 'normalized', 'zscore', 'gapless', 'volatility', 'lambda', 'dollar', 'heikin-ashi'],
         panelMode: 'separate',
         // V51-volnorm-hide-yaxis: hide Y-axis labels for this panel. The
         //   values are volume-normalized (~1e-7) and the Y labels just waste
@@ -30484,12 +31198,54 @@ class VolNormCandlesBrick extends IndicatorBrick {
             new BrickParam({ name: 'period', label: 'Z-Score Period', default: 50, min: 10, max: 500, step: 1 }),
             new BrickParam({ name: 'mult', label: 'Band σ Multiplier', default: 2.0, min: 0.5, max: 5, step: 0.1 }),
             new BrickParam({ name: 'scale', label: 'Volume Scale', default: 1, min: 0.0001, max: 10000, step: 0.0001 }),
+            // V127-lambda: elasticity of the volume normalization. The
+            //   denominator becomes V^λ, turning VolNorm from a binary mode
+            //   into a continuous regulator between price and volume-
+            //   weighted price:
+            //   • λ=1   → classic VolNorm (move per unit volume);
+            //   • λ=0   → raw price candles (division off, gaps still removed);
+            //   • 0<λ<1 → softens the effect where LINEAR division makes
+            //             high-volume moves nearly invisible (√V at 0.5).
+            new BrickParam({ name: 'lambda', label: 'Volume Power λ', default: 1, min: 0, max: 1, step: 0.05,
+                tooltip: 'Elasticity of volume normalization: body = (C−O)/V^λ. λ=1 → classic VolNorm; λ=0 → raw price candles (no volume division); λ=0.5 → √V pressure — softens the "big volume shrinks the move" effect.' }),
+            // V127-dollar: normalize by dollar volume (V×C) instead of
+            //   contracts — the walk becomes a relative move per dollar
+            //   traded, comparable across assets (BTC vs a $0.05 alt).
+            new BrickParam({ name: 'volUnit', label: 'Volume Unit', type: 'select', default: 'contracts',
+                options: [
+                    { value: 'contracts', label: 'Contracts (V)' },
+                    { value: 'dollar', label: 'Dollar (V×C)' },
+                ],
+                tooltip: 'Denominator unit. Contracts: raw base-asset volume. Dollar: V×close — the normalized move becomes cross-asset comparable.' }),
+            // V128-heikin-ashi: classic HA smoothing applied ON TOP of the
+            //   synthesized volume-normalized candles (post-transform): the
+            //   walk is built exactly as before, then smoothed with
+            //   HAC=(O+H+L+C)/4 and the recursive HAO=(prevHAO+prevHAC)/2.
+            //   Long same-color HA runs = persistent volume-weighted drift;
+            //   the ±kσ bands then run on the smoothed close, so a halo = a
+            //   smoothed move outside the regime. (Classic price-unit
+            //   Heikin-Ashi for the MAIN chart lives in the Main Candles
+            //   system indicator — see CE_MAIN_CANDLES.)
+            new BrickParam({ name: 'heikinAshi', label: 'Heikin-Ashi', type: 'bool', default: false }),
         ],
         inputs: [new BrickInput({ name: 'source', label: 'Source', default: 'close' })],
         outputs: [
             new BrickOutput({ name: 'mean', label: 'Mean', type: 'line', color: '#58a6ff', lineWidth: 1.2, alpha: 0.7 }),
             new BrickOutput({ name: 'upper', label: 'Upper Band', type: 'line', color: 'rgba(244,67,54,0.5)', lineWidth: 1, alpha: 0.5 }),
             new BrickOutput({ name: 'lower', label: 'Lower Band', type: 'line', color: 'rgba(51,238,136,0.5)', lineWidth: 1, alpha: 0.5 }),
+            // V125-source-candles: the synthesized gapless OHLC of the
+            //   volume-normalized candles is now exposed as outputs, so OTHER
+            //   indicators can use the candle values themselves as a source
+            //   (sourceRef = 'volnormcandles-<id>.synClose' etc.). Previously
+            //   only the mean/band lines were selectable — the candles were
+            //   drawn but unreachable from the Source dropdown.
+            //   type 'candles' = data-only output: render() paints these with
+            //   up/down colors, so the settings UI skips style editors for
+            //   them (Colors / Dynamic colors loops filter this type).
+            new BrickOutput({ name: 'synOpen',  label: 'Candle Open',  type: 'candles' }),
+            new BrickOutput({ name: 'synHigh',  label: 'Candle High',  type: 'candles' }),
+            new BrickOutput({ name: 'synLow',   label: 'Candle Low',   type: 'candles' }),
+            new BrickOutput({ name: 'synClose', label: 'Candle Close', type: 'candles' }),
         ],
         levels: [
             new BrickLevel({ value: 0, label: '0', color: 'rgba(255,255,255,0.15)',
@@ -30511,10 +31267,15 @@ class VolNormCandlesBrick extends IndicatorBrick {
         const period = Math.max(10, Math.floor(this.params.period || 50));
         const mult = this.params.mult || 2.0;
         const scale = this.params.scale || 1;
+        // V127-lambda/dollar — see META.params tooltips.
+        const lambda = Math.min(1, Math.max(0, isFinite(+this.params.lambda) ? +this.params.lambda : 1));
+        const volUnit = (this.params.volUnit === 'dollar') ? 'dollar' : 'contracts';
+        // V128-heikin-ashi — see the META.params comment above.
+        const heikinAshi = this.params.heikinAshi === true;
 
         // Cache by (version, count, params) — re-compute only when data
         // or params change. Panning without lazy-load = cache hit (fast).
-        const cacheKey = `${version}:${count}:${period}:${mult}:${scale}`;
+        const cacheKey = `${version}:${count}:${period}:${mult}:${scale}:${lambda}:${volUnit}:${heikinAshi ? 1 : 0}`;
         if (this._vncCacheKey === cacheKey && this._vncCache) {
             this._computed = { ...this._vncCache, count, visibleRange };
             return this._computed;
@@ -30526,31 +31287,26 @@ class VolNormCandlesBrick extends IndicatorBrick {
         const closeArr = ohlc?.close || sourceData;
         const volArr = ohlc?.vol || ohlc?.volume;
 
-        const mean = new Float64Array(count).fill(NaN);
-        const upper = new Float64Array(count).fill(NaN);
-        const lower = new Float64Array(count).fill(NaN);
         // Synthesized gapless OHLC for rendering
         const synOpen = new Float64Array(count).fill(NaN);
         const synHigh = new Float64Array(count).fill(NaN);
         const synLow = new Float64Array(count).fill(NaN);
         const synClose = new Float64Array(count).fill(NaN);
-        // Z-score of synthesized close
-        const zscore = new Float64Array(count).fill(NaN);
 
         if (!openArr || !highArr || !lowArr || !volArr) {
             // No OHLCV — can't compute. Return all-NaN.
-            const result = { mean, upper, lower, synOpen, synHigh, synLow, synClose, zscore, count, visibleRange, _ohlcClose: sourceData };
+            const empty = this._rollingZ(synClose, count, period, mult);
+            const result = { ...empty, synOpen, synHigh, synLow, synClose, count, visibleRange, _ohlcClose: sourceData };
             this._vncCache = result;
             this._vncCacheKey = cacheKey;
             this._computed = result;
             return result;
         }
 
-        // Single pass: build gapless chain + rolling Z-score
-        let prevClose = 0;
-        const buf = new RingBuffer(period, { bounded: true });
-        let sum = 0, sumSq = 0;
-
+        // Single pass: build the gapless chain. (V127: the rolling Z-score
+        // part was extracted verbatim into _rollingZ(); V128: the
+        // Delta/ATRNorm/Heikin-Ashi subclasses were removed — the helper
+        // stays, it is reused by the heikinAshi post-transform below.)
         for (let i = 0; i < count; i++) {
             const o = openArr[i], h = highArr[i], l = lowArr[i], c = closeArr[i], v = volArr[i];
             // Skip invalid bars (NaN, zero volume) — leave their outputs NaN
@@ -30572,10 +31328,18 @@ class VolNormCandlesBrick extends IndicatorBrick {
                     if (frac > 0.02 && frac < 1) vEff = v / Math.max(frac, 0.05);
                 }
             }
+            // V127: denominator with elasticity + unit.
+            //   contracts: (C−O)/V^λ     dollar: (C−O)/(V·C)^λ
+            //   λ=0 → denom=1 → raw price walk (gaps still removed by the
+            //   chain). λ=1 skips Math.pow — bit-identical to the classic
+            //   VolNorm path for default params.
+            let denom = vEff;
+            if (volUnit === 'dollar') denom = vEff * Math.abs(c);
+            if (lambda !== 1 && denom > 0) denom = Math.pow(denom, lambda);
             // Volume-normalized body + wicks (scaled for readability)
-            const body = (c - o) / vEff * scale;
-            const upperWick = (h - Math.max(o, c)) / vEff * scale;
-            const lowerWick = (Math.min(o, c) - l) / vEff * scale;
+            const body = (c - o) / denom * scale;
+            const upperWick = (h - Math.max(o, c)) / denom * scale;
+            const lowerWick = (Math.min(o, c) - l) / denom * scale;
             // Gapless chain: open[i] = close[i-1]
             const syn_o = (i === 0 || !isFinite(synClose[i - 1])) ? 0 : synClose[i - 1];
             const syn_c = syn_o + body;
@@ -30585,27 +31349,35 @@ class VolNormCandlesBrick extends IndicatorBrick {
             synHigh[i] = syn_h;
             synLow[i] = syn_l;
             synClose[i] = syn_c;
+        }
 
-            // Rolling mean + std of syn_close for Z-score
-            if (buf.length >= period) {
-                const old = buf.at(0);
-                sum -= old;
-                sumSq -= old * old;
-            }
-            buf.push(syn_c);
-            sum += syn_c;
-            sumSq += syn_c * syn_c;
-            const cnt = buf.length;
-            if (cnt >= 5) {
-                const m = sum / cnt;
-                const variance = Math.max(0, sumSq / cnt - m * m);
-                const std = Math.sqrt(variance);
-                mean[i] = m;
-                upper[i] = m + mult * std;
-                lower[i] = m - mult * std;
-                zscore[i] = std > 1e-10 ? (syn_c - m) / std : 0;
+        // ── V128-heikin-ashi: POST-transform — smooth the synthesized candles
+        //   with the classic HA recursion, in place. A NaN predecessor (invalid
+        //   bar in between) resets the recursive-open seed, exactly like the
+        //   old standalone HeikinAshiBrick did. The z-score/bands below then
+        //   run on the SMOOTHED close: a halo = a smoothed move outside the
+        //   regime's ±kσ. The exposed synOpen..synClose outputs become the HA
+        //   values (Source chaining follows the setting).
+        if (heikinAshi) {
+            let pO = NaN, pC = NaN;
+            for (let i = 0; i < count; i++) {
+                const o = synOpen[i], h = synHigh[i], l = synLow[i], c = synClose[i];
+                if (!isFinite(o) || !isFinite(h) || !isFinite(l) || !isFinite(c)) {
+                    pO = NaN; pC = NaN;   // outputs stay NaN — invalid bar
+                    continue;
+                }
+                const haC = (o + h + l + c) / 4;
+                const haO = (isFinite(pO) && isFinite(pC)) ? (pO + pC) / 2 : (o + c) / 2;
+                synOpen[i]  = haO;
+                synClose[i] = haC;
+                synHigh[i]  = Math.max(h, haO, haC);
+                synLow[i]   = Math.min(l, haO, haC);
+                pO = haO; pC = haC;
             }
         }
+
+        // Rolling mean/σ/Z of the synthesized close (V127 helper).
+        const { mean, upper, lower, zscore } = this._rollingZ(synClose, count, period, mult);
 
         const result = { mean, upper, lower, synOpen, synHigh, synLow, synClose, zscore, count, visibleRange, _ohlcClose: sourceData };
         this._vncCache = result;
@@ -30614,19 +31386,98 @@ class VolNormCandlesBrick extends IndicatorBrick {
         return result;
     }
 
+    // V127: rolling mean/±kσ/Z of a synthesized close series. Extracted
+    //   verbatim from the old fused VolNorm loop: non-finite bars are
+    //   skipped exactly as invalid bars were skipped there, so the output
+    //   is bit-identical to the pre-refactor computation. (V128: the
+    //   Delta/ATRNorm/Heikin-Ashi subclass bricks were removed; the helper
+    //   remains — the HA post-transform feeds it the smoothed walk.)
+    _rollingZ(synClose, count, period, mult) {
+        const mean = new Float64Array(count).fill(NaN);
+        const upper = new Float64Array(count).fill(NaN);
+        const lower = new Float64Array(count).fill(NaN);
+        const zscore = new Float64Array(count).fill(NaN);
+        const buf = new RingBuffer(period, { bounded: true });
+        let sum = 0, sumSq = 0;
+        for (let i = 0; i < count; i++) {
+            const v = synClose[i];
+            if (!isFinite(v)) continue;
+            if (buf.length >= period) {
+                const old = buf.at(0);
+                sum -= old;
+                sumSq -= old * old;
+            }
+            buf.push(v);
+            sum += v;
+            sumSq += v * v;
+            const cnt = buf.length;
+            if (cnt >= 5) {
+                const m = sum / cnt;
+                const variance = Math.max(0, sumSq / cnt - m * m);
+                const std = Math.sqrt(variance);
+                mean[i] = m;
+                upper[i] = m + mult * std;
+                lower[i] = m - mult * std;
+                zscore[i] = std > 1e-10 ? (v - m) / std : 0;
+            }
+        }
+        return { mean, upper, lower, zscore };
+    }
+
     render(ctx, xScale, yScale, xData, computed, visibleRange, layout) {
         if (!computed?.synClose) return;
         const [iMin, iMax] = visibleRange;
         if (iMax <= iMin) return;
 
-        // Determine candle width based on bar spacing
-        const xStep = xData.length > 1
-            ? Math.abs(xScale.valToPix(xData[1]) - xScale.valToPix(xData[0]))
-            : 4;
-        const candleWidth = Math.max(1, Math.min(10, xStep * 0.7));
+        // ── V125-candle-parity: use the EXACT same width math as the main
+        // chart CandlestickRenderer (computeBarWidth + RENDER_CONSTANTS are
+        // exported on window by ce-renderers). Previously this brick used
+        // its own formula — candleW = clamp(xStep*0.7, 1, 10) and a wick
+        // lineWidth hardcoded to 1px. Result: zoomed out, the wicks stayed
+        // 1px while main-chart wicks shrank to candleW*0.1 (0.3px floor) —
+        // volnorm candles visibly "fatter-wicked" than equally thin main
+        // candles; zoomed in, bodies capped at 10px while main candles kept
+        // growing. Now both charts agree at every zoom level.
+        const RC = (typeof RENDER_CONSTANTS !== 'undefined') ? RENDER_CONSTANTS : null;
+        let candleW, wickW, minDrawPx;
+        if (RC && typeof computeBarWidth === 'function') {
+            candleW = computeBarWidth(xScale, xData, visibleRange, { ratio: RC.CANDLE_WIDTH_RATIO });
+            wickW = Math.max(RC.MIN_DRAW_PX, candleW * RC.WICK_WIDTH_RATIO);
+            minDrawPx = RC.MIN_DRAW_PX;
+        } else {
+            // Fallback (defensive — module load order): legacy formula.
+            const xStep = xData.length > 1
+                ? Math.abs(xScale.valToPix(xData[1]) - xScale.valToPix(xData[0]))
+                : 4;
+            candleW = Math.max(1, Math.min(10, xStep * 0.7));
+            wickW = 1;
+            minDrawPx = 0.3;
+        }
+        // V125-anomaly-threshold: a candle is an anomaly when it lies OUTSIDE
+        //   the ±mult·σ band (|z| beyond mult) — exactly what this brick's
+        //   description promises. The old code hardcoded 2, so with mult=3
+        //   candles beyond ±2σ were painted as anomalies while the bands sat
+        //   at ±3σ (and with mult<2 real anomalies were missed).
+        const anomThresh = isFinite(this.params.mult) ? Math.max(0.5, this.params.mult) : 2;
+        const halfCandle = candleW / 2;
+        // Thin mode (candleW ≤ 1.5px): bodies become 1px strokes in data
+        // order — mirrors the main CandlestickRenderer's thin branch (z-order
+        // when candles overlap + no sub-pixel fillRect antialiasing).
+        const thin = candleW <= 1.5;
+        const xToPix = (v) => xScale.valToPix(v);
+        const yToPix = (v) => yScale.valToPix(v);
 
-        // ── Draw candlesticks ──
-        ctx.save();
+        // ── Single pass: bucket wick segments + body rects into 4 color
+        // classes (up / down / anomaly-high / anomaly-low). Anomaly colors
+        // override up/down so anomalies pop out (unchanged rule, now tied to
+        // `mult`). Layer order matches the main chart: ALL wicks first, then
+        // ALL bodies on top, halos last. Batching per class = ≤4 strokes +
+        // ≤4 fills per frame instead of 3+ path ops per candle.
+        const wicks = { up: [], down: [], ah: [], al: [] };
+        const bodies = { up: [], down: [], ah: [], al: [] };
+        const thinCmds = [];   // [px, yTop, yBot, cls] in data order
+        const halos = [];      // anomaly outline rects: [x, y, w, h, cls]
+
         for (let i = iMin; i <= iMax; i++) {
             const o = computed.synOpen[i];
             const h = computed.synHigh[i];
@@ -30634,68 +31485,97 @@ class VolNormCandlesBrick extends IndicatorBrick {
             const c = computed.synClose[i];
             if (!isFinite(o) || !isFinite(c) || !isFinite(h) || !isFinite(l)) continue;
 
-            const px = xScale.valToPix(xData[i - iMin]);
-            const po = yScale.valToPix(o);
-            const ph = yScale.valToPix(h);
-            const pl = yScale.valToPix(l);
-            const pc = yScale.valToPix(c);
+            const px = xToPix(xData[i - iMin]);
+            const po = yToPix(o);
+            const ph = yToPix(h);
+            const pl = yToPix(l);
+            const pc = yToPix(c);
 
             const isUp = c >= o;
             const bodyTop = Math.min(po, pc);
             const bodyBot = Math.max(po, pc);
-            const bodyH = Math.max(0.5, bodyBot - bodyTop);
+            const bodyH = Math.max(minDrawPx, bodyBot - bodyTop);
             const z = computed.zscore[i];
+            const cls = (isFinite(z) && z > anomThresh) ? 'ah'
+                      : (isFinite(z) && z < -anomThresh) ? 'al'
+                      : (isUp ? 'up' : 'down');
 
-            // Color logic:
-            //   - Normal candle: green (up) / red (down) with semi-transparent body
-            //   - High anomaly (z > mult): saturated red
-            //   - Low anomaly (z < -mult): saturated green
-            //   - The "anomaly" coloring OVERRIDES the up/down color so the
-            //     user can spot anomalies at a glance.
-            let strokeColor, fillColor;
-            if (isFinite(z) && z > 2) {
-                strokeColor = '#ff6b6b';
-                fillColor = '#f85149';
-            } else if (isFinite(z) && z < -2) {
-                strokeColor = '#51cf66';
-                fillColor = '#3fb950';
-            } else if (isUp) {
-                strokeColor = '#3fb950';
-                fillColor = 'rgba(63,185,80,0.55)';
+            wicks[cls].push(px, ph, pl);
+            if (thin) {
+                thinCmds.push(px, bodyTop, bodyBot, cls);
             } else {
-                strokeColor = '#f85149';
-                fillColor = 'rgba(248,81,73,0.55)';
+                bodies[cls].push(px - halfCandle, bodyTop, candleW, bodyH);
             }
+            // Halo on anomalies (|z| > mult) — drawn last, over everything.
+            if (cls === 'ah' || cls === 'al') {
+                halos.push(px - halfCandle - 2, bodyTop - 2, candleW + 4, bodyH + 4, cls);
+            }
+        }
 
-            // Wick (vertical line high → low)
-            ctx.strokeStyle = strokeColor;
-            ctx.lineWidth = 1;
+        // Color palette — identical values to the previous implementation.
+        const WICK_STROKE = { up: '#3fb950', down: '#f85149', ah: '#ff6b6b', al: '#51cf66' };
+        const BODY_FILL   = { up: 'rgba(63,185,80,0.55)', down: 'rgba(248,81,73,0.55)', ah: '#f85149', al: '#3fb950' };
+
+        ctx.save();
+        // ── Wicks first (underneath bodies) — main-chart layer order. ──
+        for (const cls of ['down', 'up', 'al', 'ah']) {
+            const seg = wicks[cls];
+            if (!seg.length) continue;
+            ctx.strokeStyle = WICK_STROKE[cls];
+            ctx.lineWidth = wickW;
             ctx.beginPath();
-            ctx.moveTo(px, ph);
-            ctx.lineTo(px, pl);
+            for (let j = 0; j < seg.length; j += 3) {
+                ctx.moveTo(seg[j], seg[j + 1]);
+                ctx.lineTo(seg[j], seg[j + 2]);
+            }
             ctx.stroke();
-
-            // Body (rectangle open → close)
-            ctx.fillStyle = fillColor;
+        }
+        // ── Bodies ──
+        if (thin) {
+            ctx.lineWidth = 1;
+            let curCls = null;
+            for (let j = 0; j < thinCmds.length; j += 4) {
+                const cls = thinCmds[j + 3];
+                if (cls !== curCls) {
+                    if (curCls !== null) ctx.stroke();
+                    ctx.strokeStyle = WICK_STROKE[cls];
+                    ctx.beginPath();
+                    curCls = cls;
+                }
+                ctx.moveTo(thinCmds[j], thinCmds[j + 1]);
+                ctx.lineTo(thinCmds[j], Math.max(thinCmds[j + 1] + minDrawPx, thinCmds[j + 2]));
+            }
+            if (curCls !== null) ctx.stroke();
+        } else {
+            // Normal mode: batched Path2D fills per class; anomaly bodies last
+            // so they stay readable above the normal ones.
             ctx.globalAlpha = 0.9;
-            ctx.fillRect(px - candleWidth / 2, bodyTop, candleWidth, bodyH);
-
-            // Halo on anomalies (|z| > mult)
-            if (isFinite(z) && Math.abs(z) > 2) {
-                ctx.globalAlpha = 0.35;
-                ctx.strokeStyle = z > 0 ? '#ff6b6b' : '#51cf66';
-                ctx.lineWidth = 2;
-                // FIX V51-volnorm-strokerect: ctx here is a CtxStateCache
-                //   wrapper (see initRendererCtx) which exposes a limited
-                //   set of canvas methods. It has fillRect but NOT strokeRect.
-                //   Use beginPath + rect + stroke instead — same visual result.
+            for (const cls of ['down', 'up', 'al', 'ah']) {
+                const r = bodies[cls];
+                if (!r.length) continue;
+                ctx.fillStyle = BODY_FILL[cls];
                 ctx.beginPath();
-                ctx.rect(px - candleWidth / 2 - 2, bodyTop - 2,
-                         candleWidth + 4, bodyH + 4);
+                for (let j = 0; j < r.length; j += 4) {
+                    ctx.rect(r[j], r[j + 1], r[j + 2], r[j + 3]);
+                }
+                ctx.fill();
+            }
+        }
+        // ── Anomaly halos (over bodies) ──
+        if (halos.length > 0) {
+            ctx.globalAlpha = 0.35;
+            ctx.lineWidth = 2;
+            // FIX V51-volnorm-strokerect (kept): ctx here is a CtxStateCache
+            //   wrapper — it has fillRect but NOT strokeRect, so use
+            //   beginPath + rect + stroke.
+            for (let j = 0; j < halos.length; j += 5) {
+                ctx.strokeStyle = halos[j + 4] === 'ah' ? '#ff6b6b' : '#51cf66';
+                ctx.beginPath();
+                ctx.rect(halos[j], halos[j + 1], halos[j + 2], halos[j + 3]);
                 ctx.stroke();
             }
-            ctx.globalAlpha = 1;
         }
+        ctx.globalAlpha = 1;
         ctx.restore();
 
         // ── Draw mean + bands on top of candles ──
@@ -30727,6 +31607,8 @@ class VolNormCandlesBrick extends IndicatorBrick {
 }
 
 brickRegistry.register('volnormcandles', VolNormCandlesBrick);
+
+
 
 // ─── AuxDataManager — centralized lazy-load coordinator ────────────────────
 // V38: Solves the "lazy-load doesn't trigger for aux data" problem once for
@@ -31521,6 +32403,7 @@ const AUX_DATA_SPECS = [
     {
         type: 'fundingrate',
         label: 'Funding Rate',
+        shortLabel: 'FR',
         description: 'Historical funding rate from Binance Futures. Forward-filled to chart bars. Works for any USDT-quoted symbol that has a perp market; otherwise renders empty.',
         category: 'composite',
         tags: ['funding', 'perp', 'binance', 'derivatives', 'sentiment'],
@@ -31577,6 +32460,7 @@ const AUX_DATA_SPECS = [
     {
         type: 'openinterest',
         label: 'Open Interest',
+        shortLabel: 'OI',
         description: 'Historical open interest (USDT value) from Binance Futures. Period auto-matches chart timeframe. Works for any USDT-quoted symbol that has a perp market; otherwise renders empty.',
         category: 'composite',
         tags: ['open interest', 'perp', 'binance', 'derivatives', 'positioning'],
@@ -31632,6 +32516,9 @@ function createAuxBrick(spec) {
         static META = {
             type: spec.type,
             label: spec.label,
+            // V131: small alias name for panel badges / section headers —
+            //   "FR" / "OI" instead of "Funding Rate" / "Open Interest".
+            shortLabel: spec.shortLabel || spec.label,
             description: spec.description,
             category: spec.category || 'composite',
             tags: spec.tags || [],
@@ -31699,6 +32586,7 @@ class RelPerfBrick extends AuxSeriesBrick {
     static META = {
         type: 'relperf',
         label: 'Relative Performance',
+        shortLabel: 'RelPerf',
         description: 'Cumulative per-bar performance difference vs a reference symbol (default ETH). Each bar = (symbol candle % change) - (ref candle % change). Cumulative sum shown as line. Positive = symbol outperforming ref.',
         category: 'composite',
         tags: ['relative', 'performance', 'ratio', 'comparative', 'eth', 'btc', 'cumulative'],
@@ -32499,6 +33387,7 @@ class GammaExposureBrick extends AuxSeriesBrick {
     static META = {
         type: 'gammaexposure',
         label: 'Gamma Exposure (Deribit)',
+        shortLabel: 'GEX',
         description: 'Heatmap of dealer gamma exposure by expiry × price, drawn as projection to the right of the last candle on the main panel. Green = stable, red = volatile. Data from Deribit options.',
         category: 'composite',
         tags: ['gamma', 'options', 'deribit', 'gex', 'heatmap', 'derivatives', 'dealer', 'projection'],
@@ -33142,6 +34031,7 @@ class EconEventsBrick extends IndicatorBrick {
     static META = {
         type: 'econevents',
         label: 'Econ Events',
+        shortLabel: 'Econ',
         description: 'Vertical lines at scheduled high-impact USD economic events (FOMC, CPI, NFP, PCE, etc.). Data fetched from Forex Factory calendar. Events in the future are visible when you scroll right.',
         category: 'composite',
         tags: ['economic', 'events', 'fomc', 'cpi', 'nfp', 'pce', 'calendar', 'overlay'],
@@ -34152,10 +35042,10 @@ class VolumeProfileRenderer {
 
 
 // ── V39: явный экспорт в window (обратная совместимость) ──
-Object.assign(window, { MA_SPECS, createMABrick, OSCILLATOR_SPECS, createOscillatorBrick, AUX_DATA_SPECS, createAuxBrick, IndicatorBase, EMACloudIndicator, AOIndicator, EMABufferPool, INDICATOR_TYPES, IndicatorManager, BrickParam, BrickOutput, ColorScheme, _darkenHex, BrickInput, BrickLevel, BrickBand, IndicatorBrick, BrickRegistry, brickRegistry, _maSMA, _maEMA, _maWMA, _maLSMA, _maHMA, _maJMA, _maTEMA, _maDEMA, _maTMA, _maVAMA, _maMF, _maEDSMA, _maKijun, _resolveSrc, MACDBrick, StochasticBrick, BandsBrick, AOBrick, ZigZagBrick, SupportResistanceBrick, OrderBlockBrick, GapDetectorBrick, VolRevFractalsBrick, ZScoreBrick, ZScoreEnsembleBrick, OUBandsBrick, HistoricalPocBrick, HPResidualBrick, KNNAnomalyBrick, VolNormCandlesBrick, AuxDataManager, AuxSeriesBrick, FundingRateBrick, OpenInterestBrick, RelPerfBrick, GammaExposureBrick, EconEventsBrick, DivergenceDetector, VolumeProfileRenderer, OBVBrick, CMFBrick, WilliamsRBrick, CCIBrick, TRIXBrick, EldersRayBrick, AccumDistBrick, PVTBrick });
+Object.assign(window, { MA_SPECS, createMABrick, OSCILLATOR_SPECS, createOscillatorBrick, AUX_DATA_SPECS, createAuxBrick, IndicatorBase, EMACloudIndicator, AOIndicator, EMABufferPool, INDICATOR_TYPES, IndicatorManager, BrickParam, BrickOutput, ColorScheme, _darkenHex, BrickInput, BrickLevel, BrickBand, IndicatorBrick, BrickRegistry, brickRegistry, _maSMA, _maEMA, _maWMA, _maLSMA, _maHMA, _maJMA, _maTEMA, _maDEMA, _maTMA, _maVAMA, _maMF, _maEDSMA, _maKijun, _resolveSrc, MACDBrick, StochasticBrick, BandsBrick, AOBrick, ZigZagBrick, SupportResistanceBrick, OrderBlockBrick, GapDetectorBrick, VolRevFractalsBrick, ZScoreBrick, ZScoreEnsembleBrick, OUBandsBrick, HistoricalPocBrick, HPResidualBrick, KNNAnomalyBrick, VolNormCandlesBrick, AuxDataManager, AuxSeriesBrick, FundingRateBrick, OpenInterestBrick, RelPerfBrick, GammaExposureBrick, EconEventsBrick, DivergenceDetector, VolumeProfileRenderer, OBVBrick, CMFBrick, WilliamsRBrick, CCIBrick, TRIXBrick, EldersRayBrick, AccumDistBrick, PVTBrick, CVDBrick });
 
 // ── V39: регистрация в реестре модулей ──
-CE.registerModule('ce-indicators', ['ce-data-layer', 'ce-math-utils', 'ce-renderers'], ['MA_SPECS', 'createMABrick', 'IndicatorBase', 'EMACloudIndicator', 'AOIndicator', 'EMABufferPool', 'INDICATOR_TYPES', 'IndicatorManager', 'BrickParam', 'BrickOutput', 'ColorScheme', '_darkenHex', 'BrickInput', 'BrickLevel', 'BrickBand', 'IndicatorBrick', 'BrickRegistry', 'brickRegistry', '_maSMA', '_maEMA', '_maWMA', '_maLSMA', '_maHMA', '_maJMA', '_maTEMA', '_maDEMA', '_maTMA', '_maVAMA', '_maMF', '_maEDSMA', '_maKijun', 'SMABrick', 'EMABrick', '_resolveSrc', 'WMABrick', 'DEMABrick', 'TEMABrick', 'TMABrick', 'LSMABrick', 'HMABrick', 'JMABrick', 'VAMABrick', 'MFBrick', 'EDSMABrick', 'KijunBrick', 'RSIBrick', 'BollingerBrick', 'MACDBrick', 'ATRBrick', 'StochasticBrick', 'BandsBrick', 'AOBrick', 'ALMABrick', 'KalmanBrick', 'ZigZagBrick', 'SupportResistanceBrick', 'OrderBlockBrick', 'GapDetectorBrick', 'MFIBrick', 'DPOBrick', 'VolRevFractalsBrick', 'ZScoreBrick', 'ZScoreEnsembleBrick', 'OUBandsBrick', 'HistoricalPocBrick', 'HPResidualBrick', 'KNNAnomalyBrick', 'VolNormCandlesBrick', 'AuxDataManager', 'AuxSeriesBrick', 'AUX_DATA_SPECS', 'createAuxBrick', 'FundingRateBrick', 'OpenInterestBrick', 'RelPerfBrick', 'GammaExposureBrick', 'EconEventsBrick', 'DivergenceDetector', 'VolumeProfileRenderer', 'OBVBrick', 'CMFBrick', 'WilliamsRBrick', 'CCIBrick', 'TRIXBrick', 'EldersRayBrick', 'AccumDistBrick', 'PVTBrick'], 'WORKER-SAFE');
+CE.registerModule('ce-indicators', ['ce-data-layer', 'ce-math-utils', 'ce-renderers'], ['MA_SPECS', 'createMABrick', 'IndicatorBase', 'EMACloudIndicator', 'AOIndicator', 'EMABufferPool', 'INDICATOR_TYPES', 'IndicatorManager', 'BrickParam', 'BrickOutput', 'ColorScheme', '_darkenHex', 'BrickInput', 'BrickLevel', 'BrickBand', 'IndicatorBrick', 'BrickRegistry', 'brickRegistry', '_maSMA', '_maEMA', '_maWMA', '_maLSMA', '_maHMA', '_maJMA', '_maTEMA', '_maDEMA', '_maTMA', '_maVAMA', '_maMF', '_maEDSMA', '_maKijun', 'SMABrick', 'EMABrick', '_resolveSrc', 'WMABrick', 'DEMABrick', 'TEMABrick', 'TMABrick', 'LSMABrick', 'HMABrick', 'JMABrick', 'VAMABrick', 'MFBrick', 'EDSMABrick', 'KijunBrick', 'RSIBrick', 'BollingerBrick', 'MACDBrick', 'ATRBrick', 'StochasticBrick', 'BandsBrick', 'AOBrick', 'ALMABrick', 'KalmanBrick', 'ZigZagBrick', 'SupportResistanceBrick', 'OrderBlockBrick', 'GapDetectorBrick', 'MFIBrick', 'DPOBrick', 'VolRevFractalsBrick', 'ZScoreBrick', 'ZScoreEnsembleBrick', 'OUBandsBrick', 'HistoricalPocBrick', 'HPResidualBrick', 'KNNAnomalyBrick', 'VolNormCandlesBrick', 'AuxDataManager', 'AuxSeriesBrick', 'AUX_DATA_SPECS', 'createAuxBrick', 'FundingRateBrick', 'OpenInterestBrick', 'RelPerfBrick', 'GammaExposureBrick', 'EconEventsBrick', 'DivergenceDetector', 'VolumeProfileRenderer', 'OBVBrick', 'CMFBrick', 'WilliamsRBrick', 'CCIBrick', 'TRIXBrick', 'EldersRayBrick', 'AccumDistBrick', 'PVTBrick', 'CVDBrick'], 'WORKER-SAFE');
 })(window.CE, window);
 
 (function CE$module$ce$main$overlay$renderer(CE, window) {
@@ -62753,6 +63643,19 @@ class PresetManager {
             }
         }
 
+        // ── V129: Main Candles hub state ──
+        //   Chart type / HA / colors / hollow mode / geometry / line style —
+        //   the "eternal" Main Candles pseudo-indicator must survive the
+        //   preset round-trip too (user request). Snapshot holds a plain
+        //   shallow copy; deserialization goes through
+        //   sanitizeMainCandlesState (via applyMainCandlesState) on import,
+        //   so untrusted file JSON never reaches the hub unsanitized.
+        let mainCandles = null;
+        try {
+            const hub = (typeof CE_MAIN_CANDLES !== 'undefined') ? CE_MAIN_CANDLES : (window.CE_MAIN_CANDLES || null);
+            if (hub) mainCandles = { ...hub };
+        } catch (e) { /* hub not available — snapshot without it */ }
+
         return {
             panels,
             indicators: indicatorSnapshots,
@@ -62760,6 +63663,7 @@ class PresetManager {
             panelRatios,
             panelConfigs,
             swipeGroups,
+            mainCandles,
         };
     }
 
@@ -63060,6 +63964,22 @@ class PresetManager {
                     }
                 }
                 cm._save();
+            }
+        }
+
+        // ── V129: Main Candles hub — DESERIALIZATION ──
+        //   A snapshot captured since V129 carries `mainCandles`; applying it
+        //   does a full replace (defaults + sanitized snapshot values) via
+        //   applyMainCandlesState, which also persists to localStorage. Legacy
+        //   snapshots (V128 and earlier) have no key — the current Main
+        //   Candles look is intentionally KEPT, so old presets don't wipe the
+        //   user's chart style. The render below picks the hub up through
+        //   buildRenderSlice → applyMainCandlesToConfig — no extra plumbing.
+        if (snapshot.mainCandles && typeof window.applyMainCandlesState === 'function') {
+            try {
+                window.applyMainCandlesState(snapshot.mainCandles);
+            } catch (e) {
+                console.warn('[PresetManager] mainCandles restore failed:', e?.message || e);
             }
         }
 
@@ -64620,7 +65540,12 @@ class ChartFactory {
 
             const closeModal = () => backdrop.remove();
             const presetMgr = engine?.presetManager || null;
-            const _renderMgr = () => _renderIndicatorManager(backdrop, api, engine, closeModal, _renderMgr, _openPicker, _openSettings, presetMgr);
+            // V128: the eternal Main Candles pseudo-indicator — its settings
+            //   view (chart type / colors / Heikin-Ashi / geometry) lives in
+            //   the same modal flow as regular indicators, in its own locked
+            //   section at the top of the list.
+            const _openMainCandles = () => { _renderMainCandlesSettings(backdrop, api, engine, _renderMgr); };
+            const _renderMgr = () => _renderIndicatorManager(backdrop, api, engine, closeModal, _renderMgr, _openPicker, _openSettings, presetMgr, _openMainCandles);
 
             // Picker modal (select new indicator type)
             const _openPicker = () => {
@@ -64641,7 +65566,7 @@ class ChartFactory {
             backdrop.classList.add('open');
         }
 
-        function _renderIndicatorManager(backdrop, api, engine, closeModal, rerender, openPicker, openSettings, presetMgr) {
+        function _renderIndicatorManager(backdrop, api, engine, closeModal, rerender, openPicker, openSettings, presetMgr, openMainCandles) {
             const inds = api.getIndicator() || [];
 
             // V38: Build indicator card HTML for a single indicator.
@@ -64689,6 +65614,37 @@ class ChartFactory {
                     '</div>';
             }
 
+            // ── V128: the eternal Main Candles system entry ──
+            //   The base chart candles get a permanent, non-removable card in
+            //   their own section: dashed accent border + padlock + "system"
+            //   badge hint at non-removability; the only action is Configure.
+            const mcHub = (typeof CE_MAIN_CANDLES !== 'undefined') ? CE_MAIN_CANDLES : null;
+            const mcTypeName = mcHub ? ({ candles: 'Candles', bars: 'Bars (OHLC)', line: 'Line' })[mcHub.chartType] || 'Candles' : 'Candles';
+            const mcMetaBits = [mcTypeName];
+            if (mcHub && mcHub.heikinAshi) mcMetaBits.push('Heikin-Ashi');
+            if (mcHub && (mcHub.upColor || mcHub.downColor)) mcMetaBits.push('custom colors');
+            // V129: hollow is a mode now — show it as its own meta bit.
+            if (mcHub && mcHub.hollowMode && mcHub.hollowMode !== 'off') mcMetaBits.push('hollow: ' + mcHub.hollowMode);
+            if (mcHub && ((isFinite(+mcHub.candleWidthRatio) && Math.abs(+mcHub.candleWidthRatio - 0.65) > 1e-9)
+                || (isFinite(+mcHub.wickWidthRatio) && Math.abs(+mcHub.wickWidthRatio - 0.1) > 1e-9)
+                || mcHub.wickThroughBody === true)) mcMetaBits.push('custom geometry');
+            const themeNow = (typeof getTheme === 'function') ? (getTheme() || {}) : {};
+            const mcUp = (mcHub && mcHub.upColor) || themeNow.up || '#3fb950';
+            const mcDown = (mcHub && mcHub.downColor) || themeNow.down || '#f85149';
+            const sysStripe = 'linear-gradient(180deg,' + mcUp + ' 50%,' + mcDown + ' 50%)';
+            const LOCK_SVG = '<span class="ind-sys-lock" title="System element — cannot be removed"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 1 1 6 0v3H9z"/></svg></span>';
+            const sysCardHtml =
+                '<div class="ind-card ind-card-system" data-sys="maincandles" title="Base chart candles — always present, cannot be removed">' +
+                    '<div class="ind-card-color" style="background:' + sysStripe + '"></div>' +
+                    '<div class="ind-card-info">' +
+                        '<div class="ind-card-name">Main Candles ' + LOCK_SVG + '</div>' +
+                        '<div class="ind-card-meta">' + esc(mcMetaBits.join(' · ')) + ' · always on chart · not removable</div>' +
+                    '</div>' +
+                    '<div class="ind-card-actions">' +
+                        '<button class="ind-card-btn ind-cfg-btn" data-sys-cfg="maincandles" title="Configure">⚙</button>' +
+                    '</div>' +
+                '</div>';
+
             // V38: Group indicators by panel. Build HTML as explicit string
             // concatenation (not template literals with nested .map) to avoid
             // any nesting issues.
@@ -64699,19 +65655,94 @@ class ChartFactory {
                 groups.get(pid).push(ind);
             }
 
-            let listHtml = '';
-            if (inds.length === 0) {
-                listHtml = '<div class="ind-empty-state">No indicators yet</div>';
-            } else {
-                for (const [panelId, groupInds] of groups) {
-                    const label = panelId === 'main' ? 'Main Chart' : panelId.replace(/_panel$/, '');
-                    listHtml += '<div class="ind-group">';
-                    listHtml += '<div class="ind-group-label">' + label + ' (' + groupInds.length + ')</div>';
-                    for (const ind of groupInds) {
-                        listHtml += renderCard(ind);
-                    }
-                    listHtml += '</div>';
+            // V130: ONE section for the main chart. Main-panel overlays
+            //   (MAs, bands, lines the user adds to the main chart) merge
+            //   into the SAME section as the base Main Candles system card —
+            //   previously they spawned a duplicate "Main Chart" group below
+            //   the system section. The section keeps its system identity:
+            //   blue tint, "system" badge; the base card keeps its dashed
+            //   border + padlock; overlays render below it under a tiny
+            //   "overlays" sub-label so base vs user lines stay visually
+            //   separable inside the single section.
+            const mainInds = groups.get('main') || [];
+            groups.delete('main');
+
+            const sysSectionHtml =
+                '<div class="ind-group-system">' +
+                    '<div class="ind-group-label"><span>Main Chart' + (mainInds.length ? ' (' + (mainInds.length + 1) + ')' : '') + '</span><span class="ind-sys-badge">system</span></div>' +
+                    sysCardHtml +
+                    (mainInds.length
+                        ? '<div class="ind-sys-overlays-label">overlays</div>' +
+                          mainInds.map(renderCard).join('')
+                        : '') +
+                '</div>';
+
+            // V131: section header = the NAME of the indicator that SPAWNED
+            //   the panel (a separate panel's id is '<indId>_panel'), then
+            //   the raw id hash in a smaller / dimmer style, then the count
+            //   of indicators on that panel. Previously the whole timestamp
+            //   id ("rsi-1758991234567") WAS the section title; if the
+            //   generating indicator itself moved away, the name falls back
+            //   to the first indicator that lives on the panel now.
+            function renderGroupSection(panelId, groupInds) {
+                const genId = String(panelId).replace(/_panel$/, '');
+                const gen = groupInds.find(i => String(i.id) === genId) || groupInds[0];
+                const gMeta = (gen && gen.constructor && gen.constructor.META) || {};
+                const gName = String(gMeta.shortLabel || gMeta.label || gMeta.type || genId);
+                let sec = '<div class="ind-group">';
+                sec += '<div class="ind-group-label">' +
+                    '<span class="ind-gl-name">' + esc(gName) + '</span>' +
+                    '<span class="ind-gl-id" title="' + esc(String(panelId)) + '">' + esc(genId) + '</span>' +
+                    '<span class="ind-gl-cnt">' + groupInds.length + '</span>' +
+                    '</div>';
+                for (const ind of groupInds) {
+                    sec += renderCard(ind);
                 }
+                sec += '</div>';
+                return sec;
+            }
+
+            // V131: sections follow the CHART's panel order (top → bottom).
+            //   Dragging a panel on the chart (long-press its label → drop at
+            //   a new gap) rewrites layout._panelOrder; the manager reads that
+            //   LIVE order on every (re)render, so its sections mirror the
+            //   chart — "Main Chart" included: it renders at the main panel's
+            //   slot (first by default, but it follows if the main panel was
+            //   dragged elsewhere).
+            let panelOrder = [];
+            try {
+                const layout = api && api.layout;
+                if (layout && Array.isArray(layout._panelOrder) && layout._panelOrder.length) {
+                    panelOrder = (typeof layout.getPanelOrder === 'function')
+                        ? layout.getPanelOrder() : [...layout._panelOrder];
+                }
+            } catch (_) { panelOrder = []; }
+
+            let listHtml = '';
+            const emitted = new Set();
+            if (panelOrder.length) {
+                for (const pId of panelOrder) {
+                    if (emitted.has(pId)) continue;
+                    emitted.add(pId);
+                    if (pId === 'main') { listHtml += sysSectionHtml; continue; }
+                    if (groups.has(pId)) {
+                        listHtml += renderGroupSection(pId, groups.get(pId));
+                        groups.delete(pId);
+                    }
+                }
+            }
+            // Panels missing from the order (restored presets / panel-creation
+            //   race) keep insertion order at the bottom; if the order was
+            //   unavailable at all, the Main Chart section stays first.
+            if (!emitted.has('main')) {
+                listHtml = sysSectionHtml + listHtml;
+                emitted.add('main');
+            }
+            for (const [pId, groupInds] of groups) {
+                listHtml += renderGroupSection(pId, groupInds);
+            }
+            if (inds.length === 0) {
+                listHtml += '<div class="ind-empty-state">No indicators yet</div>';
             }
 
             // V50: Presets section — embedded above the Add button.
@@ -64777,6 +65808,15 @@ class ChartFactory {
                 '</div>';
             backdrop.querySelector('.ind-modal-close').onclick = closeModal;
             backdrop.querySelector('.ind-add-fullwidth').onclick = openPicker;
+
+            // V128: system card → Main Candles settings. The whole card is
+            //   clickable (same as its gear button); there is deliberately NO
+            //   delete and NO hide button — this element is part of the chart
+            //   itself and cannot be removed.
+            const sysCard = backdrop.querySelector('.ind-card-system');
+            if (sysCard) sysCard.onclick = () => { if (openMainCandles) openMainCandles(); };
+            const sysCfgBtn = backdrop.querySelector('[data-sys-cfg]');
+            if (sysCfgBtn) sysCfgBtn.onclick = (ev) => { ev.stopPropagation(); if (openMainCandles) openMainCandles(); };
 
             // V50: wire eye-toggle (visibility) buttons.
             backdrop.querySelectorAll('.ind-vis-btn').forEach(b => {
@@ -64912,6 +65952,182 @@ class ChartFactory {
             backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
         }
 
+        // ─────────────────────────────────────────────────────────────────────
+        // V128/V129: Main Candles — the "eternal" system pseudo-indicator
+        // settings. The base price candles of the main panel are NOT a
+        // removable indicator, but they get first-class settings like one:
+        // chart type (Candles / OHLC bars / Line), the Heikin-Ashi transform,
+        // up/down/wick colors, hollow mode (off/up/down/both, clean-hollow
+        // wick clipping, border width), body/wick geometry, gap connectors
+        // and line color/width/style. Changes are
+        // LIVE — written to the CE_MAIN_CANDLES hub, persisted to localStorage
+        // (like the theme), and picked up by buildRenderSlice on the next
+        // render, so no per-chart plumbing is needed here.
+        // ─────────────────────────────────────────────────────────────────────
+        function _renderMainCandlesSettings(backdrop, api, engine, backToMgr) {
+            const mc = (typeof CE_MAIN_CANDLES !== 'undefined') ? CE_MAIN_CANDLES : null;
+            if (!mc) { if (backToMgr) backToMgr(); return; }
+            const theme = (typeof getTheme === 'function') ? (getTheme() || {}) : {};
+            const isLine = mc.chartType === 'line';
+            const isCandles = !isLine && mc.chartType !== 'bars';   // wick colors / hollow are candle-only glyph props
+            // Sanitize persisted color strings before they touch HTML attrs.
+            const col = (v, fb) => (typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v)) ? v : (fb || '#58a6ff');
+            const apply = () => {
+                if (typeof saveMainCandlesCfg === 'function') saveMainCandlesCfg();
+                try { api.markAllDirtyAndRender(); }
+                catch (e) { try { api.requestRender(); } catch (_) {} }
+            };
+            const num = (v, d) => (isFinite(+v) && +v > 0) ? +v : d;
+
+            const colorRow = (label, dataKey, value, fallback, resetKey) =>
+                '<div class="s-row"><span class="s-row-label">' + label + '</span>' +
+                '<span class="s-mc-colorwrap">' +
+                    '<input type="color" class="s-color-input" data-mc-' + dataKey + ' value="' + col(value, fallback) + '" style="width:36px;height:26px;border:1px solid rgba(255,255,255,0.1);border-radius:4px;background:transparent;cursor:pointer;flex-shrink:0;">' +
+                    '<button class="ind-btn s-mc-reset" data-mc-reset="' + resetKey + '" title="Back to default">↺</button>' +
+                '</span></div>';
+
+            let html = '<div class="ind-modal">' +
+                '<div class="ind-modal-header">' +
+                    '<h3>Main Candles — Base Chart</h3>' +
+                    '<button class="ind-modal-close">&times;</button>' +
+                '</div>' +
+                '<div class="s-modal-body">' +
+                    '<div class="s-area">' +
+                        '<div class="s-title">Main Candles</div>' +
+                        '<div class="s-desc">The base candles of the main chart — a system element that is always present and cannot be removed. Chart type, colors and the candle transform are configured here; every change applies live.</div>' +
+                        '<div class="s-section-div">' +
+                            '<div class="s-section-label">Chart Type</div>' +
+                            '<div class="s-row"><span class="s-row-label">Type</span><div class="s-dd" data-mc-type></div></div>' +
+                            '<div class="s-check-row"><input type="checkbox" class="s-check" data-mc-ha' + (mc.heikinAshi ? ' checked' : '') + '><span class="s-check-label">Heikin-Ashi (smoothed candles)</span></div>' +
+                        '</div>' +
+                        '<div class="s-section-div">' +
+                            '<div class="s-section-label">Colors</div>' +
+                            colorRow('Up color', 'up', mc.upColor, theme.up || '#3fb950', 'upColor') +
+                            colorRow('Down color', 'down', mc.downColor, theme.down || '#f85149', 'downColor') +
+                            (isCandles ?
+                                (colorRow('Wick up', 'wup', mc.wickUpColor, col(mc.upColor, theme.up || '#3fb950'), 'wickUpColor') +
+                                 colorRow('Wick down', 'wdown', mc.wickDownColor, col(mc.downColor, theme.down || '#f85149'), 'wickDownColor')) : '') +
+                            (isLine ?
+                                (colorRow('Line color', 'linec', mc.lineColor, '#58a6ff', 'lineColor') +
+                                '<div class="s-row"><span class="s-row-label">Line width</span><input type="number" class="s-input" data-mc-linew value="' + num(mc.lineWidth, 1.5) + '" min="0.5" max="6" step="0.5"></div>' +
+                                '<div class="s-row"><span class="s-row-label">Line style</span><div class="s-dd" data-mc-lstyle></div></div>')
+                                : '') +
+                        '</div>' +
+                        (isLine ? '' :
+                        '<div class="s-section-div">' +
+                            '<div class="s-section-label">Body</div>' +
+                            // V129: hollow is a MODE — Off / Up / Down / Both —
+                            //   with a clean-hollow default (wick clipped to the
+                            //   body exterior) + configurable outline width.
+                            (isCandles ?
+                            ('<div class="s-row"><span class="s-row-label">Hollow</span><div class="s-dd" data-mc-hollowmode></div></div>' +
+                            '<div class="s-row"><span class="s-row-label">Hollow border width</span><input type="number" class="s-input" data-mc-hbw value="' + num(mc.hollowBorderWidth, 1) + '" min="0.5" max="4" step="0.5"></div>' +
+                            '<div class="s-check-row"><input type="checkbox" class="s-check" data-mc-wtb' + (mc.wickThroughBody ? ' checked' : '') + '><span class="s-check-label">Wick through hollow body</span></div>') : '') +
+                            '<div class="s-row"><span class="s-row-label">Body width ratio</span><input type="number" class="s-input" data-mc-cwr value="' + num(mc.candleWidthRatio, 0.65) + '" min="0.2" max="0.98" step="0.05"></div>' +
+                            '<div class="s-row"><span class="s-row-label">Wick width ratio</span><input type="number" class="s-input" data-mc-wwr value="' + num(mc.wickWidthRatio, 0.1) + '" min="0.02" max="0.5" step="0.01"></div>' +
+                            (isCandles ? '<div class="s-check-row"><input type="checkbox" class="s-check" data-mc-gaps' + ((mc.gapConnectors !== false) ? ' checked' : '') + '><span class="s-check-label">Gap connector lines</span></div>' : '') +
+                        '</div>') +
+                        '<div class="s-section-div">' +
+                            '<div class="s-section-label">System</div>' +
+                            '<div class="s-desc" style="font-size:10px;">This element belongs to the chart itself — it cannot be removed or hidden. Colors left on the theme default follow the active theme; Reset restores all defaults.</div>' +
+                            '<div class="s-row"><button class="ind-btn" data-mc-resetall style="flex:1;padding:6px;">Reset to defaults</button></div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="ind-modal-footer">' +
+                    '<button class="ind-btn ind-btn-back">Back</button>' +
+                '</div>' +
+            '</div>';
+
+            backdrop.innerHTML = html;
+            backdrop.querySelector('.ind-modal-close').onclick = backToMgr;
+            backdrop.querySelector('.ind-btn-back').onclick = backToMgr;
+            backdrop.onclick = (e) => { if (e.target === backdrop) backToMgr(); };
+
+            // Chart type — custom dropdown (V126 component: groups, tags,
+            // keyboard, outside-click). Switching re-renders this view so the
+            // dependent rows (wicks vs line settings) follow the type.
+            const typeDd = backdrop.querySelector('[data-mc-type]');
+            if (typeDd) {
+                _initCDropdown(typeDd, [{ label: null, items: [
+                    { value: 'candles', label: 'Candles', tag: 'CDL' },
+                    { value: 'bars', label: 'Bars (OHLC)', tag: 'BAR' },
+                    { value: 'line', label: 'Line', tag: 'LIN' },
+                ]}], mc.chartType || 'candles', {
+                    onChange: (v) => {
+                        mc.chartType = v;
+                        apply();
+                        _renderMainCandlesSettings(backdrop, api, engine, backToMgr);
+                    },
+                });
+            }
+
+            // V129: Hollow mode — Off / Up / Down / Both. A dropdown instead
+            //   of the v128 up-only checkbox (user request); picking a value
+            //   just writes the hub + re-renders the chart (the rows shown do
+            //   not depend on the mode, so no view re-render is needed).
+            const hollowDd = backdrop.querySelector('[data-mc-hollowmode]');
+            if (hollowDd) {
+                _initCDropdown(hollowDd, [{ label: null, items: [
+                    { value: 'off',  label: 'Off',  tag: 'OFF' },
+                    { value: 'up',   label: 'Up candles',   tag: 'UP' },
+                    { value: 'down', label: 'Down candles', tag: 'DN' },
+                    { value: 'both', label: 'Both', tag: 'BTH' },
+                ]}], mc.hollowMode || 'off', {
+                    onChange: (v) => {
+                        mc.hollowMode = (v === 'up' || v === 'down' || v === 'both') ? v : 'off';
+                        apply();
+                    },
+                });
+            }
+
+            // V129: Line style — Solid / Dashed / Dotted (line chart type).
+            const lstyleDd = backdrop.querySelector('[data-mc-lstyle]');
+            if (lstyleDd) {
+                _initCDropdown(lstyleDd, [{ label: null, items: [
+                    { value: 'solid',  label: 'Solid',  tag: '—' },
+                    { value: 'dashed', label: 'Dashed', tag: '– –' },
+                    { value: 'dotted', label: 'Dotted', tag: '· ·' },
+                ]}], mc.lineStyle || 'solid', {
+                    onChange: (v) => {
+                        mc.lineStyle = (v === 'dashed' || v === 'dotted') ? v : 'solid';
+                        apply();
+                    },
+                });
+            }
+
+            // Live wiring — every input writes straight into the hub and
+            // triggers a re-render (no Save button needed for system props).
+            const on = (sel, fn) => { const el = backdrop.querySelector(sel); if (el) el.addEventListener('input', fn); };
+            on('[data-mc-ha]',     (e) => { mc.heikinAshi = e.target.checked; apply(); });
+            on('[data-mc-wtb]',    (e) => { mc.wickThroughBody = e.target.checked; apply(); });
+            on('[data-mc-gaps]',   (e) => { mc.gapConnectors = e.target.checked; apply(); });
+            on('[data-mc-hbw]',    (e) => { const v = parseFloat(e.target.value); if (isFinite(v) && v >= 0.5 && v <= 4) { mc.hollowBorderWidth = v; apply(); } });
+            on('[data-mc-up]',     (e) => { mc.upColor = e.target.value; apply(); });
+            on('[data-mc-down]',   (e) => { mc.downColor = e.target.value; apply(); });
+            on('[data-mc-wup]',    (e) => { mc.wickUpColor = e.target.value; apply(); });
+            on('[data-mc-wdown]',  (e) => { mc.wickDownColor = e.target.value; apply(); });
+            on('[data-mc-linec]',  (e) => { mc.lineColor = e.target.value; apply(); });
+            on('[data-mc-linew]',  (e) => { const v = parseFloat(e.target.value); if (isFinite(v) && v > 0) { mc.lineWidth = v; apply(); } });
+            on('[data-mc-cwr]',    (e) => { const v = parseFloat(e.target.value); if (isFinite(v) && v > 0) { mc.candleWidthRatio = v; apply(); } });
+            on('[data-mc-wwr]',    (e) => { const v = parseFloat(e.target.value); if (isFinite(v) && v > 0) { mc.wickWidthRatio = v; apply(); } });
+
+            // Per-color reset → back to the theme default ('' = follow theme).
+            backdrop.querySelectorAll('[data-mc-reset]').forEach(b => {
+                b.onclick = () => {
+                    mc[b.dataset.mcReset] = '';
+                    apply();
+                    _renderMainCandlesSettings(backdrop, api, engine, backToMgr);
+                };
+            });
+            const resetAll = backdrop.querySelector('[data-mc-resetall]');
+            if (resetAll) resetAll.onclick = () => {
+                if (typeof resetMainCandlesCfg === 'function') resetMainCandlesCfg();
+                apply();
+                _renderMainCandlesSettings(backdrop, api, engine, backToMgr);
+            };
+        }
+
         function _renderPicker(backdrop, api, engine, onPick, backToMgr) {
             const cats = brickRegistry.listByCategory();
             const catNames = Object.keys(cats).sort();
@@ -64949,6 +66165,278 @@ class ChartFactory {
                 item.onclick = () => onPick(item.dataset.type);
             });
             backdrop.onclick = (e) => { if (e.target === backdrop) backToMgr(); };
+        }
+
+        // ══ V125-source-dd / V126-dd: custom grouped DOM dropdowns ═════════
+        // V125 replaced the native <select> for the "Source" row in the
+        // indicator settings modal. V126 generalizes the same component
+        // (_initCDropdown) to EVERY dropdown row in the modal (params, panel,
+        // TF anchor, interpolation, band type, divergence, line dash, dynamic
+        // color mode). Design goals (user request):
+        //   • NOT a native js dropdown — a real DOM component styled like the
+        //     rest of the settings UI;
+        //   • grouped: price/OHLCV sources in one group, then one group per
+        //     indicator on the chart (label + id) with its outputs — so a long
+        //     list of indicators never becomes an unreadable wall;
+        //   • searchable — a filter box hides non-matching items/groups
+        //     (auto-enabled at ≥12 items; the Source row is always searchable);
+        //   • touch-friendly rows, type pills (line / candles), ✓ on the
+        //     current selection, keyboard nav (↑/↓ move, Enter select, Esc close);
+        //   • compatible: save handlers keep reading [data-…].value from the
+        //     root DIV, and each selection also dispatches non-bubbling
+        //     'input' + 'change' Events on the root — the modal's live wiring
+        //     (selectedParams sync, band-fields toggle, swipe-row toggle) works
+        //     exactly as it did with native <select> elements.
+        function _buildSourceGroups(api, self) {
+            const groups = [{
+                label: 'Price · OHLCV',
+                hint: null,
+                items: [
+                    { value: 'close',  label: 'close',  hint: 'default', tag: 'default' },
+                    { value: 'open',   label: 'open',   hint: null, tag: 'line' },
+                    { value: 'high',   label: 'high',   hint: null, tag: 'line' },
+                    { value: 'low',    label: 'low',    hint: null, tag: 'line' },
+                    { value: 'hl2',    label: 'hl2',    hint: '(high+low)/2', tag: '(high+low)/2' },
+                    { value: 'hlc3',   label: 'hlc3',   hint: '(high+low+close)/3', tag: '(h+l+c)/3' },
+                    { value: 'ohlc4',  label: 'ohlc4',  hint: '(O+H+L+C)/4', tag: '(O+H+L+C)/4' },
+                    { value: 'volume', label: 'volume', hint: 'volume series', tag: 'volume' },
+                ],
+            }];
+            for (const ind of (api.getIndicator() || [])) {
+                if (self && ind.id === self.id) continue;  // can't source yourself
+                const m = ind.constructor?.META;
+                if (!m?.outputs || m.outputs.length === 0) continue;
+                const items = m.outputs.map(out => ({
+                    value: `${ind.id}.${out.name}`,
+                    label: out.label || out.name,
+                    // V125: tag the output kind — candles vs line — so the
+                    //   volnorm candle OHLC values are visually distinct.
+                    hint: out.type === 'candles' ? 'candle OHLC' : (out.type || 'line'),
+                    tag: out.type === 'candles' ? 'candles' : (out.type || 'line'),
+                    tagCls: out.type === 'candles' ? ' candle' : '',
+                }));
+                groups.push({ label: m.label || ind.id, hint: ind.id, items });
+            }
+            return groups;
+        }
+
+        // V126: the GENERIC custom dropdown — same component for every
+        //   dropdown row in the indicator settings modal. Contract:
+        //   • root: DIV carrying the same data-attributes the old <select>
+        //     had (data-param / data-panelmode / data-anchortf / …) → all
+        //     save handlers keep working via root.value;
+        //   • groups: [{ label, hint, items: [{ value, label, hint, tag, tagCls }] }]
+        //     — a group with a falsy label renders NO header (flat dropdown);
+        //   • on selection the root receives non-bubbling 'input' + 'change'
+        //     Events (native-select parity) and opts.onChange(v) is called.
+        function _initCDropdown(root, groups, currentValue, opts) {
+            if (!root) return;
+            opts = opts || {};
+            const flat = [];
+            for (const g of groups) for (const it of (g.items || [])) flat.push(it);
+            // Set .value FIRST — the save handlers read it; nothing below is
+            // allowed to leave it unset. Unknown/stale values are kept as-is
+            // (labelFor falls back to showing the raw value).
+            root.value = (currentValue != null && currentValue !== '')
+                ? currentValue
+                : (flat.length ? flat[0].value : '');
+            // Search box: explicit opt-in/out, otherwise auto at ≥12 items —
+            // a filter row on a 4-item dropdown is noise.
+            const searchable = opts.searchable === true
+                || (opts.searchable !== false && flat.length >= 12);
+
+            root.innerHTML =
+                '<button type="button" class="s-srcdd-btn" aria-haspopup="listbox" aria-expanded="false">' +
+                '<span class="s-srcdd-btn-text"></span><span class="s-srcdd-caret">▾</span></button>';
+            const btn = root.querySelector('.s-srcdd-btn');
+            const btnText = root.querySelector('.s-srcdd-btn-text');
+
+            const groupOf = (v) => groups.find(g => (g.items || []).some(o => o.value === v));
+            const labelFor = (v) => {
+                const it = flat.find(o => o.value === v);
+                if (!it) return v;  // stale/unknown ref — show the raw value
+                const g = groupOf(v);
+                const prefix = (g && g.hint) ? (g.label + ' → ') : '';
+                return prefix + it.label;
+            };
+            const setTrigger = () => { btnText.textContent = labelFor(root.value); btnText.title = labelFor(root.value); };
+            setTrigger();
+
+            let panel = null;
+            let closePanel = null;
+            const select = (v) => {
+                root.value = v;
+                setTrigger();
+                if (closePanel) closePanel();
+                // V126: native-select parity — notify the modal's live wiring.
+                //   'input'  → selectedParams sync for [data-param] rows;
+                //   'change' → band-fields toggle, swipe-row toggle.
+                //   Non-bubbling: nothing outside this row should react.
+                try {
+                    root.dispatchEvent(new Event('input'));
+                    root.dispatchEvent(new Event('change'));
+                } catch (_) {}
+                if (typeof opts.onChange === 'function') { try { opts.onChange(v); } catch (_) {} }
+            };
+
+            const open = () => {
+                if (panel) { closePanel(); return; }  // toggle on repeat tap
+                panel = document.createElement('div');
+                panel.className = 's-srcdd-panel';
+                panel.setAttribute('role', 'listbox');
+                // Inline styles (tz-menu pattern): the panel lives in <body> so
+                // it escapes .s-area overflow clipping; z-index sits above the
+                // settings modal backdrop (100000).
+                panel.style.cssText = 'position:fixed;z-index:100002;min-width:' + (opts.minWidth || 200) + 'px;max-width:min(92vw,360px);' +
+                    'max-height:min(60vh,420px);display:flex;flex-direction:column;background:#161b22;' +
+                    'border:1px solid #30363d;border-radius:8px;box-shadow:0 12px 32px rgba(0,0,0,.6);' +
+                    'overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;';
+
+                // ── Filter box (16px font = no iOS zoom-on-focus) ──
+                let search = null;
+                if (searchable) {
+                    search = document.createElement('input');
+                    search.type = 'text';
+                    search.placeholder = opts.placeholder || 'Filter…';
+                    search.style.cssText = 'margin:6px;padding:6px 8px;background:#0d1117;border:1px solid #30363d;' +
+                        'border-radius:5px;color:#e6edf3;font-size:16px;line-height:1.2;outline:none;flex-shrink:0;width:calc(100% - 12px);box-sizing:border-box;';
+                    panel.appendChild(search);
+                } else {
+                    // Keyboard focus target when there is no search input —
+                    // without focus inside the panel, keydown never arrives.
+                    panel.tabIndex = -1;
+                    panel.style.outline = 'none';
+                }
+
+                const list = document.createElement('div');
+                list.style.cssText = 'overflow-y:auto;overflow-x:hidden;padding:0 0 4px;flex:1;overscroll-behavior:contain;';
+                panel.appendChild(list);
+
+                const renderList = (q) => {
+                    const query = (q || '').trim().toLowerCase();
+                    list.innerHTML = '';
+                    let visible = 0;
+                    for (const g of groups) {
+                        const items = query
+                            ? (g.items || []).filter(it => ((it.label + ' ' + (it.hint || '') + ' ' + (it.tag || '') + ' ' + (g.label || '') + ' ' + (g.hint || '')).toLowerCase().includes(query)))
+                            : (g.items || []);
+                        if (!items.length) continue;
+                        if (g.label) {
+                            const gh = document.createElement('div');
+                            gh.className = 's-srcdd-group';
+                            gh.textContent = g.label + (g.hint ? ' · ' + g.hint : '');
+                            gh.title = g.label + (g.hint ? ' · ' + g.hint : '');
+                            list.appendChild(gh);
+                        }
+                        for (const it of items) {
+                            visible++;
+                            const row = document.createElement('div');
+                            row.className = 's-srcdd-item' + (it.value === root.value ? ' sel' : '');
+                            row.setAttribute('role', 'option');
+                            row.dataset.value = it.value;
+                            const name = document.createElement('span');
+                            name.className = 's-srcdd-item-name';
+                            name.textContent = it.label;
+                            row.appendChild(name);
+                            if (it.tag) {
+                                const tag = document.createElement('span');
+                                tag.className = 's-srcdd-item-tag' + (it.tagCls || '');
+                                tag.textContent = it.tag;
+                                row.appendChild(tag);
+                            }
+                            if (it.value === root.value) {
+                                const chk = document.createElement('span');
+                                chk.className = 's-srcdd-check';
+                                chk.textContent = '✓';
+                                row.appendChild(chk);
+                            }
+                            row.addEventListener('click', (ev) => { ev.stopPropagation(); select(it.value); });
+                            list.appendChild(row);
+                        }
+                    }
+                    if (!visible) {
+                        const empty = document.createElement('div');
+                        empty.className = 's-srcdd-empty';
+                        empty.textContent = 'No matches';
+                        list.appendChild(empty);
+                    }
+                };
+                renderList('');
+                if (search) search.addEventListener('input', () => renderList(search.value));
+
+                document.body.appendChild(panel);
+                // ── Position: below the trigger, flip up when tight ──
+                const r = btn.getBoundingClientRect();
+                panel.style.left = Math.max(6, Math.min(r.left, window.innerWidth - panel.offsetWidth - 6)) + 'px';
+                const roomBelow = window.innerHeight - r.bottom;
+                if (roomBelow < 220 && r.top > 260) {
+                    panel.style.top = '';
+                    panel.style.bottom = (window.innerHeight - r.top + 4) + 'px';
+                } else {
+                    panel.style.top = (r.bottom + 4) + 'px';
+                    panel.style.bottom = '';
+                }
+                btn.setAttribute('aria-expanded', 'true');
+                if (search) search.focus(); else panel.focus();
+
+                // ── Keyboard nav: Esc close, ↑/↓ move, Enter select ──
+                panel.addEventListener('keydown', (e) => {
+                    if (e.key === 'Escape') {
+                        e.stopPropagation();  // don't close the whole modal too
+                        if (closePanel) closePanel();
+                    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        const rows = Array.from(list.querySelectorAll('.s-srcdd-item'));
+                        if (!rows.length) return;
+                        let idx = rows.findIndex(x => x.classList.contains('active'));
+                        if (idx < 0) idx = 0;
+                        idx = e.key === 'ArrowDown' ? Math.min(rows.length - 1, idx + 1) : Math.max(0, idx - 1);
+                        // Start from the selected item when nothing is active yet.
+                        if (!rows.some(x => x.classList.contains('active')) && rows[idx] && !rows[idx].classList.contains('sel')) {
+                            const selIdx = rows.findIndex(x => x.classList.contains('sel'));
+                            if (selIdx >= 0) idx = e.key === 'ArrowDown' ? Math.min(rows.length - 1, selIdx + 1) : Math.max(0, selIdx - 1);
+                        }
+                        rows.forEach(x => x.classList.remove('active'));
+                        rows[idx].classList.add('active');
+                        rows[idx].scrollIntoView({ block: 'nearest' });
+                    } else if (e.key === 'Enter') {
+                        const active = list.querySelector('.s-srcdd-item.active') || list.querySelector('.s-srcdd-item.sel');
+                        if (active) { e.preventDefault(); select(active.dataset.value); }
+                    }
+                });
+
+                // ── Close on outside pointerdown (capture) ──
+                // V132-toggle-fix: the check must be btn.CONTAINS(target) —
+                //   a tap on the trigger lands on the <span> inside the
+                //   button, not the button node itself. With the old
+                //   `!== btn` check the outside-close fired on pointerdown,
+                //   then the button's click handler called open() which saw
+                //   panel===null and re-created the list — the "repeat tap
+                //   re-opens instead of closing" bug. Now the tap reaches
+                //   open(), which toggles the panel closed.
+                const outside = (ev) => {
+                    if (panel && !panel.contains(ev.target) && !btn.contains(ev.target)) closePanel();
+                };
+                document.addEventListener('pointerdown', outside, true);
+
+                closePanel = () => {
+                    document.removeEventListener('pointerdown', outside, true);
+                    btn.setAttribute('aria-expanded', 'false');
+                    if (panel) { panel.remove(); panel = null; }
+                    closePanel = null;
+                };
+            };
+
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();  // V124: don't let the tap reach the chart
+                open();
+            });
+        }
+
+        // V125 API kept: the Source row is the always-searchable, wide variant
+        //   of the generic dropdown.
+        function _initSourceDropdown(root, groups, currentValue) {
+            _initCDropdown(root, groups, currentValue, { searchable: true, minWidth: 230, placeholder: 'Filter sources…' });
         }
 
         function _renderSettings(backdrop, api, engine, existingInd, type, onDone, backToMgr) {
@@ -64996,6 +66484,16 @@ class ChartFactory {
                 selectedParams.offset = isExisting ? (existingInd.params?.offset ?? 0) : 0;
             }
 
+            // V125-source-dd: groups + current value for the custom Source
+            //   dropdown — mounted by _initSourceDropdown() right after
+            //   innerHTML (see below).
+            let srcDdGroups = null;
+            let srcDdCurrent = 'close';
+            // V126-dd: registry of every OTHER custom dropdown row — each
+            //   native <select> below is replaced by a <div class="s-dd"> root
+            //   (same data-attributes) that gets mounted by _initCDropdown()
+            //   after innerHTML. Entries: { sel, groups, current, opts }.
+            const ddMounts = [];
             let html = `<div class="ind-modal">
                 <div class="ind-modal-header">
                     <h3>${title}</h3>
@@ -65030,11 +66528,21 @@ class ChartFactory {
                 }
                 const val = selectedParams[p.name];
                 if (p.type === 'select' && p.options) {
-                    html += `<div class="s-row"><span class="s-row-label">${esc(String(p.label))}</span><select class="s-select" data-param="${esc(String(p.name))}">`;
-                    for (const opt of p.options) {
-                        html += `<option value="${esc(String(opt.value))}" ${opt.value == val ? 'selected' : ''}>${esc(String(opt.label))}</option>`;
-                    }
-                    html += `</select></div>`;
+                    // V126-dd: custom DOM dropdown (grouped component, no
+                    //   native <select>). Root keeps data-param so the wiring
+                    //   and save handler keep reading .value; selection also
+                    //   dispatches 'input' on the root → selectedParams sync.
+                    const ddItems = p.options.map(o => ({
+                        value: String(o.value),
+                        label: String(o.label != null ? o.label : o.value),
+                    }));
+                    const ddCur = (val != null && String(val) !== '') ? String(val) : (ddItems.length ? ddItems[0].value : '');
+                    html += `<div class="s-row"><span class="s-row-label">${esc(String(p.label))}</span><div class="s-dd" data-param="${esc(String(p.name))}"></div></div>`;
+                    ddMounts.push({
+                        sel: `[data-param="${esc(String(p.name))}"]`,
+                        groups: [{ label: null, items: ddItems }],
+                        current: ddCur,
+                    });
                 } else if (p.type === 'bool') {
                     html += `<div class="s-check-row"><input type="checkbox" class="s-check" data-param="${esc(String(p.name))}" ${val ? 'checked' : ''}><span class="s-check-label">${esc(String(p.label))}</span></div>`;
                 } else {
@@ -65111,40 +66619,29 @@ class ChartFactory {
                 //   dropdown's selected option. If sourceRef is set, it's the
                 //   ref string (e.g. 'ao-123.line'). Otherwise it's
                 //   inputs.source (e.g. 'close', 'volume', 'hlc3').
+                // V126: for a NEW indicator the default is the brick's declared
+                //   input default (hl2 = classic median for AO) — not a
+                //   hardcoded 'close' — so the dropdown tells the truth about
+                //   what the indicator will actually compute from.
+                const srcDefault = (meta.inputs || []).find(i => i && i.name === 'source')?.default ?? 'close';
                 const currentSource = isExisting
-                    ? (existingInd.sourceRef || existingInd.inputs?.source || 'close')
-                    : 'close';
-                html += `<div class="s-row"><span class="s-row-label">Source</span><select class="s-select" data-source="source">`;
-                const srcOpt = (val, label) => `<option value="${val}" ${currentSource === val ? 'selected' : ''}>${label}</option>`;
-                html += srcOpt('close', 'close (default)');
-                html += srcOpt('open', 'open');
-                html += srcOpt('high', 'high');
-                html += srcOpt('low', 'low');
-                html += srcOpt('volume', 'volume');
-                // V55-source-options: typical price variants for MA/oscillators.
-                html += srcOpt('hl2', 'hl2 (high+low)/2');
-                html += srcOpt('hlc3', 'hlc3 (high+low+close)/3');
-                html += srcOpt('ohlc4', 'ohlc4 (O+H+L+C)/4');
-                const existingInds = api.getIndicator() || [];
-                for (const ind of existingInds) {
-                    if (isExisting && ind.id === existingInd.id) continue;
-                    const m2 = ind.constructor?.META;
-                    if (m2?.outputs) {
-                        for (const out of m2.outputs) {
-                            const ref = `${ind.id}.${out.name}`;
-                            html += srcOpt(ref, `${m2.label} → ${out.label} (${ind.id})`);
-                        }
-                    }
-                }
-                html += `</select></div>`;
+                    ? (existingInd.sourceRef || existingInd.inputs?.source || srcDefault)
+                    : srcDefault;
+                // V125-source-dd: custom DOM dropdown replaces the native
+                //   <select>. A flat native select listing every indicator's
+                //   outputs was unusable on long lists — no grouping, no
+                //   search, truncated labels, tiny touch rows. The dropdown
+                //   body (groups + filter + keyboard nav) is mounted by
+                //   _initSourceDropdown() after innerHTML; the save handlers
+                //   keep reading [data-source="source"].value, so they work
+                //   unchanged.
+                html += `<div class="s-row"><span class="s-row-label">Source</span><div class="s-srcdd" data-source="source" data-value="${esc(String(currentSource))}"></div></div>`;
+                srcDdGroups = _buildSourceGroups(api, isExisting ? existingInd : null);
+                srcDdCurrent = currentSource;
             }
-            // Panel mode
-            html += `<div class="s-row"><span class="s-row-label">Panel</span><select class="s-select" data-panelmode>`;
-            // V38: Default panel placement is driven by meta.panelMode.
-            // 'separate' → default to "new panel" (RSI, MACD, Funding, OI, RelPerf)
-            // 'overlay' → default to "main chart" (SMA, EMA, Bollinger, GEX projection)
-            // Category-based defaults were too broad — 'composite' included both
-            // separate indicators (Funding/OI/RelPerf) and overlay ones (GEX).
+            // Panel mode — V126-dd: custom dropdown (grouped: placement +
+            //   existing panels). Root keeps data-panelmode; save handlers and
+            //   the swipe-row toggle keep reading .value / 'change' events.
             const defaultSeparate = meta.category === 'momentum'
                 || meta.category === 'volatility'
                 || meta.panelMode === 'separate';
@@ -65156,9 +66653,12 @@ class ChartFactory {
             const isOnMain = defaultExistingPanelId === 'main' || (!defaultExistingPanelId && !defaultSeparate);
             const isOnSeparate = defaultExistingPanelId && defaultExistingPanelId !== 'main'
                 && defaultExistingPanelId === (isExisting ? existingInd.id + '_panel' : null);
-            html += `<option value="overlay" ${isOnMain ? 'selected' : ''}>main chart</option>`;
-            html += `<option value="separate" ${(defaultSeparate && !defaultExistingPanelId) || isOnSeparate ? 'selected' : ''}>new panel</option>`;
+            const panelGroups = [{ label: null, items: [
+                { value: 'overlay', label: 'main chart' },
+                { value: 'separate', label: 'new panel' },
+            ]}];
             const existingPanels = new Set();
+            const panelExistingItems = [];
             for (const ind of (api.getIndicator() || [])) {
                 if (isExisting && ind.id === existingInd.id) continue;
                 if (ind.panelId && ind.panelId !== 'main') {
@@ -65166,12 +66666,22 @@ class ChartFactory {
                     const label = m3?.label || ind.id;
                     if (!existingPanels.has(ind.panelId)) {
                         existingPanels.add(ind.panelId);
-                        const isCurrent = isExisting && defaultExistingPanelId === ind.panelId;
-                        html += `<option value="existing:${ind.panelId}" ${isCurrent ? 'selected' : ''}>${label} panel</option>`;
+                        panelExistingItems.push({ value: 'existing:' + ind.panelId, label: label + ' panel' });
                     }
                 }
             }
-            html += `</select></div>`;
+            if (panelExistingItems.length > 0) {
+                panelGroups.push({ label: 'Existing panels', items: panelExistingItems });
+            }
+            // Precedence matches the old native <select> (later `selected`
+            //   attr wins): overlay → separate → existing:<panelId>.
+            let pmCurrent = (defaultSeparate && !defaultExistingPanelId) || isOnSeparate ? 'separate' : 'overlay';
+            if (isExisting && defaultExistingPanelId && defaultExistingPanelId !== 'main') {
+                const hit = panelExistingItems.find(it => it.value === 'existing:' + defaultExistingPanelId);
+                if (hit) pmCurrent = hit.value;  // own/separate panel ids fall back via isOnSeparate
+            }
+            html += `<div class="s-row"><span class="s-row-label">Panel</span><div class="s-dd" data-panelmode></div></div>`;
+            ddMounts.push({ sel: '[data-panelmode]', groups: panelGroups, current: pmCurrent });
             // V109e: "swipe target" checkbox — shown when adding to an existing panel.
             //   When checked, the indicator is added to the panel's swipe group
             //   (hidden, accessible via swipe) instead of being shown alongside.
@@ -65215,32 +66725,35 @@ class ChartFactory {
                 : true;
             html += `<div class="s-section-div">`;
             html += `<div class="s-section-label collapsed">Timeframe anchor</div>`;
-            html += `<div class="s-row"><span class="s-row-label">TF</span><select class="s-select" data-anchortf>`;
-            html += `<option value="chart" ${existingTf === 'chart' ? 'selected' : ''}>chart (same as chart)</option>`;
-            // V38: User-restricted timeframe set. Both higher-TF (HTF) and
-            // lower-TF (LTF) anchors are supported — the engine decides which
-            // path to take by comparing tfToMs(anchor) with the chart interval.
-            // HTF → forward-fill the HTF result onto chart bars.
-            // LTF → sample the LTF result at chart bar boundaries (last LTF
-            //       value within each chart bar wins).
+            // V126-dd: TF dropdown — grouped (chart / Timeframes), custom DOM.
             // V55-tf-dropdown: keep in sync with the main TF dropdown —
             //   include 1w, 3d, 2w as anchor options too.
-            for (const tf of ['1m','5m','15m','30m','1h','4h','1d','1w','3d','2w']) {
-                html += `<option value="${tf}" ${existingTf === tf ? 'selected' : ''}>${tf}</option>`;
-            }
-            html += `</select></div>`;
+            html += `<div class="s-row"><span class="s-row-label">TF</span><div class="s-dd" data-anchortf></div></div>`;
+            ddMounts.push({
+                sel: '[data-anchortf]',
+                groups: [
+                    { label: null, items: [{ value: 'chart', label: 'chart (same as chart)' }] },
+                    { label: 'Timeframes', items: ['1m','5m','15m','30m','1h','4h','1d','1w','3d','2w'].map(tf => ({ value: tf, label: tf })) },
+                ],
+                current: existingTf,
+            });
             // V49n-interp: interpolation mode for HTF anchor mapping.
             // "step" = forward-fill (default — holds HTF value constant, classic MTF look)
             // "linear" = linear interpolation between consecutive HTF bars (smooth line)
             // "cosine" = cosine interpolation (C¹ smooth, no sharp corners at HTF bars)
             // "cubic" = Catmull-Rom cubic interpolation (smoothest, uses 4 points)
             // LTF anchors always use "ff" (sampling-at-close) regardless of this setting.
-            html += `<div class="s-row"><span class="s-row-label">Interpolation</span><select class="s-select" data-anchorinterp>`;
-            html += `<option value="step" ${existingInterp === 'step' ? 'selected' : ''}>step (forward-fill)</option>`;
-            html += `<option value="linear" ${existingInterp === 'linear' ? 'selected' : ''}>linear (interpolated)</option>`;
-            html += `<option value="cosine" ${existingInterp === 'cosine' ? 'selected' : ''}>cosine (smooth)</option>`;
-            html += `<option value="cubic" ${existingInterp === 'cubic' ? 'selected' : ''}>cubic (Catmull-Rom)</option>`;
-            html += `</select></div>`;
+            html += `<div class="s-row"><span class="s-row-label">Interpolation</span><div class="s-dd" data-anchorinterp></div></div>`;
+            ddMounts.push({
+                sel: '[data-anchorinterp]',
+                groups: [{ label: null, items: [
+                    { value: 'step', label: 'step (forward-fill)' },
+                    { value: 'linear', label: 'linear (interpolated)' },
+                    { value: 'cosine', label: 'cosine (smooth)' },
+                    { value: 'cubic', label: 'cubic (Catmull-Rom)' },
+                ]}],
+                current: existingInterp,
+            });
             // V51-extend-partial: checkbox to enable extending the anchor
             //   line through the currently-forming HTF bar.
             html += `<div class="s-check-row"><input type="checkbox" class="s-check" data-extendpartial ${existingExtendPartial ? 'checked' : ''}><span class="s-check-label">Extend to current bar (use partial HTF candle)</span></div>`;
@@ -65313,13 +66826,20 @@ class ChartFactory {
             const bandShowFill = existingBand?.showFill !== false;
             html += `<div class="s-section-div">`;
             html += `<div class="s-section-label collapsed">Band overlay (around this line)</div>`;
-            html += `<div class="s-row"><span class="s-row-label">Band type</span><select class="s-select" data-bandtype>`;
-            html += `<option value="none" ${bandTypeVal === 'none' ? 'selected' : ''}>None</option>`;
-            html += `<option value="atr" ${bandTypeVal === 'atr' ? 'selected' : ''}>ATR × mult</option>`;
-            html += `<option value="stdev" ${bandTypeVal === 'stdev' ? 'selected' : ''}>StdDev × mult</option>`;
-            html += `<option value="pct" ${bandTypeVal === 'pct' ? 'selected' : ''}>Percent × mult</option>`;
-            html += `<option value="donchian" ${bandTypeVal === 'donchian' ? 'selected' : ''}>Donchian (high/low)</option>`;
-            html += `</select></div>`;
+            html += `<div class="s-row"><span class="s-row-label">Band type</span><div class="s-dd" data-bandtype></div></div>`;
+            ddMounts.push({
+                sel: '[data-bandtype]',
+                groups: [{ label: null, items: [
+                    { value: 'none', label: 'None' },
+                    { value: 'atr', label: 'ATR × mult', tag: 'volatility' },
+                    { value: 'stdev', label: 'StdDev × mult', tag: 'volatility' },
+                    { value: 'pct', label: 'Percent × mult', tag: 'relative' },
+                    { value: 'donchian', label: 'Donchian (high/low)', tag: 'range' },
+                ]}],
+                current: bandTypeVal,
+                // onChange is not needed — the existing 'change' listener on
+                // [data-bandtype] toggles the period/mult/fill rows.
+            });
             html += `<div class="s-row" data-bandfields="${bandTypeVal !== 'none'}" style="${bandTypeVal === 'none' ? 'display:none;' : ''}">`;
             html += `<span class="s-row-label">Period</span><input type="number" class="s-input" data-bandperiod value="${bandPeriodVal}" min="1" max="500" step="1">`;
             html += `<span class="s-row-label" style="margin-left:8px;">Mult</span><input type="number" class="s-input" data-bandmult value="${bandMultVal}" min="0.01" max="100" step="0.1">`;
@@ -65354,19 +66874,29 @@ class ChartFactory {
                 const divScale = exDiv.scale || 'all';
                 html += `<div class="s-section-div">`;
                 html += `<div class="s-section-label collapsed">Divergence</div>`;
-                html += `<div class="s-row"><span class="s-row-label">Type</span><select class="s-select" data-divtype>`;
-                html += `<option value="none" ${divType === 'none' ? 'selected' : ''}>None</option>`;
-                html += `<option value="regular" ${divType === 'regular' ? 'selected' : ''}>Regular</option>`;
-                html += `<option value="hidden" ${divType === 'hidden' ? 'selected' : ''}>Hidden</option>`;
-                html += `<option value="both" ${divType === 'both' ? 'selected' : ''}>Both</option>`;
-                html += `</select></div>`;
-                html += `<div class="s-row"><span class="s-row-label">Scale</span><select class="s-select" data-divscale>`;
-                html += `<option value="all" ${divScale === 'all' ? 'selected' : ''}>All scales</option>`;
-                html += `<option value="L" ${divScale === 'L' ? 'selected' : ''}>Large only</option>`;
-                html += `<option value="M" ${divScale === 'M' ? 'selected' : ''}>Medium only</option>`;
-                html += `<option value="S" ${divScale === 'S' ? 'selected' : ''}>Small only</option>`;
-                html += `<option value="LM" ${divScale === 'LM' ? 'selected' : ''}>Large + Medium</option>`;
-                html += `</select></div>`;
+                html += `<div class="s-row"><span class="s-row-label">Type</span><div class="s-dd" data-divtype></div></div>`;
+                ddMounts.push({
+                    sel: '[data-divtype]',
+                    groups: [{ label: null, items: [
+                        { value: 'none', label: 'None' },
+                        { value: 'regular', label: 'Regular', tag: 'classic' },
+                        { value: 'hidden', label: 'Hidden', tag: 'trend' },
+                        { value: 'both', label: 'Both' },
+                    ]}],
+                    current: divType,
+                });
+                html += `<div class="s-row"><span class="s-row-label">Scale</span><div class="s-dd" data-divscale></div></div>`;
+                ddMounts.push({
+                    sel: '[data-divscale]',
+                    groups: [{ label: null, items: [
+                        { value: 'all', label: 'All scales' },
+                        { value: 'L', label: 'Large only' },
+                        { value: 'M', label: 'Medium only' },
+                        { value: 'S', label: 'Small only' },
+                        { value: 'LM', label: 'Large + Medium' },
+                    ]}],
+                    current: divScale,
+                });
                 html += `<div class="s-row"><span class="s-row-label">Lookback</span><input type="number" class="s-input" data-divlookback value="${divLookback}" min="1" max="20" step="1"></div>`;
                 html += `</div>`;
             }
@@ -65382,6 +66912,11 @@ class ChartFactory {
             }
             html += `</div>`;
             for (const out of meta.outputs) {
+                // V125: candle outputs (volnorm synOpen/…) are painted by the
+                //   brick's render() with up/down colors — a color/width editor
+                //   row would be misleading. They're still selectable as a
+                //   source and listed in the Outputs tags below.
+                if (out.type === 'candles') continue;
                 const exStyle = isExisting ? (existingInd.outputStyles?.[out.name] || {}) : {};
                 const color = exStyle.color || out.color || '#58a6ff';
                 const lineWidth = exStyle.lineWidth ?? out.lineWidth ?? 1.5;
@@ -65398,14 +66933,20 @@ class ChartFactory {
                 if (!isFillOnly) {
                     html += `<span style="font-size:10px;color:#8b949e;">W</span>`;
                     html += `<input type="number" class="s-mini-input" data-style-width="${out.name}" value="${lineWidth}" min="0.5" max="10" step="0.5" style="width:36px;">`;
-                    // V51-line-styles: dash style dropdown
-                    html += `<select class="s-select" data-style-dash="${out.name}" style="width:80px;font-size:10px;">`;
-                    html += `<option value="solid" ${lineStyle === 'solid' ? 'selected' : ''}>━━ solid</option>`;
-                    html += `<option value="dash" ${lineStyle === 'dash' ? 'selected' : ''}>╌╌ dash</option>`;
-                    html += `<option value="dot" ${lineStyle === 'dot' ? 'selected' : ''}>⋯⋯ dot</option>`;
-                    html += `<option value="dashdot" ${lineStyle === 'dashdot' ? 'selected' : ''}>╌⋯ dash-dot</option>`;
-                    html += `<option value="longdash" ${lineStyle === 'longdash' ? 'selected' : ''}>━╌ long-dash</option>`;
-                    html += `</select>`;
+                    // V51-line-styles / V126-dd: dash style dropdown (custom
+                    //   DOM, compact trigger — the row is dense).
+                    html += `<div class="s-dd" data-style-dash="${out.name}" style="flex:0 0 84px;"></div>`;
+                    ddMounts.push({
+                        sel: `[data-style-dash="${out.name}"]`,
+                        groups: [{ label: null, items: [
+                            { value: 'solid', label: '━━ solid' },
+                            { value: 'dash', label: '╌╌ dash' },
+                            { value: 'dot', label: '⋯⋯ dot' },
+                            { value: 'dashdot', label: '╌⋯ dash-dot' },
+                            { value: 'longdash', label: '━╌ long-dash' },
+                        ]}],
+                        current: lineStyle || 'solid',
+                    });
                 }
                 html += `<span style="font-size:10px;color:#8b949e;">α</span>`;
                 html += `<input type="range" class="s-alpha-slider" data-style-alpha="${out.name}" value="${alpha}" min="0" max="1" step="0.05" style="width:50px;vertical-align:middle;">`;
@@ -65419,7 +66960,7 @@ class ChartFactory {
             html += `<div class="s-section-div">`;
             html += `<div class="s-section-label collapsed">Dynamic colors</div>`;
             for (const out of meta.outputs) {
-                if (out.type === 'band' || out.type === 'cloud') continue;
+                if (out.type === 'band' || out.type === 'cloud' || out.type === 'candles') continue;
                 const exScheme = isExisting ? (existingInd.colorSchemes?.[out.name] || {}) : {};
                 const enabled = exScheme.enabled || false;
                 const mode = exScheme.mode || 'direction';
@@ -65435,11 +66976,16 @@ class ChartFactory {
                 // Enable toggle
                 html += `<input type="checkbox" data-cs-enabled="${out.name}" ${enabled ? 'checked' : ''}>`;
                 // Mode
-                html += `<select class="s-select" data-cs-mode="${out.name}" style="width:90px;">`;
-                html += `<option value="direction" ${mode === 'direction' ? 'selected' : ''}>Direction</option>`;
-                html += `<option value="above" ${mode === 'above' ? 'selected' : ''}>Above/Below</option>`;
-                html += `<option value="zones" ${mode === 'zones' ? 'selected' : ''}>Zones</option>`;
-                html += `</select>`;
+                html += `<div class="s-dd" data-cs-mode="${out.name}" style="flex:0 0 100px;"></div>`;
+                ddMounts.push({
+                    sel: `[data-cs-mode="${out.name}"]`,
+                    groups: [{ label: null, items: [
+                        { value: 'direction', label: 'Direction', tag: 'up/down' },
+                        { value: 'above', label: 'Above/Below', tag: 'ref' },
+                        { value: 'zones', label: 'Zones', tag: 'levels' },
+                    ]}],
+                    current: mode,
+                });
                 // Up/above color
                 html += `<span style="font-size:9px;color:#3fb950;">↑</span>`;
                 html += `<input type="color" data-cs-up="${out.name}" value="${upColor}" style="width:24px;height:20px;border:1px solid rgba(255,255,255,0.1);border-radius:3px;background:transparent;cursor:pointer;">`;
@@ -65465,6 +67011,43 @@ class ChartFactory {
 
             backdrop.innerHTML = html;
             const configArea = backdrop.querySelector('.s-area');
+
+            // V125-source-dd: mount the custom Source dropdown into its root
+            //   div (builds trigger + floating panel + filter + keyboard nav).
+            //   .value on the root is set immediately so the save handlers can
+            //   read it even if opening the panel never happens.
+            const srcDdRoot = configArea ? configArea.querySelector('[data-source="source"]') : null;
+            if (srcDdRoot && srcDdGroups) {
+                try {
+                    _initSourceDropdown(srcDdRoot, srcDdGroups, srcDdCurrent);
+                } catch (err) {
+                    // Never leave .value unset — save would crash on it.
+                    srcDdRoot.value = srcDdCurrent;
+                    console.warn('[srcdd] init failed, fallback to raw value', err);
+                }
+            }
+
+            // V126-dd: mount every other custom dropdown recorded during the
+            //   HTML build (params, Panel, TF, Interpolation, Band type,
+            //   Divergence, dash style, dynamic-color mode). Each root DIV
+            //   keeps the data-attribute the old <select> carried, so the
+            //   save handlers + live wiring below read .value / listen to
+            //   'input'/'change' exactly as before. This must run BEFORE the
+            //   swipe-row initial state check (reads [data-panelmode].value).
+            for (const m of ddMounts) {
+                try {
+                    const root = configArea ? configArea.querySelector(m.sel) : null;
+                    if (!root) continue;
+                    _initCDropdown(root, m.groups, m.current, m.opts);
+                } catch (err) {
+                    // Never leave .value unset — save would read undefined.
+                    try {
+                        const root = configArea ? configArea.querySelector(m.sel) : null;
+                        if (root) root.value = m.current;
+                    } catch (_) {}
+                    console.warn('[sdd] init failed for ' + m.sel + ', fallback to raw value', err);
+                }
+            }
 
             // V38: toggle band fields visibility when band type changes
             const bandTypeSel = backdrop.querySelector('[data-bandtype]');
@@ -68610,15 +70193,21 @@ class CoinPicker {
             this._searchClearEl.style.display = this._query ? 'block' : 'none';
             this._applyFilters();
         });
-        // Clear-search button — wipe the input and re-focus so the user can
-        // immediately type a new query.
+        // Clear-search button. V132: the tap must NOT change the focus state
+        //   at all — if the search box was focused it stays focused (keyboard
+        //   stays open), if it wasn't nothing gains focus (keyboard doesn't
+        //   pop up). preventDefault() on pointerdown/mousedown cancels the
+        //   browser's default focus transfer for the tap, and we deliberately
+        //   do NOT call _searchEl.focus() (the old behavior opened the
+        //   keyboard every time you cleared). click still fires normally.
+        this._searchClearEl.addEventListener('pointerdown', (e) => { e.preventDefault(); });
+        this._searchClearEl.addEventListener('mousedown', (e) => { e.preventDefault(); });
         this._searchClearEl.addEventListener('click', (e) => {
             e.stopPropagation();
             this._searchEl.value = '';
             this._searchText = '';
             this._query = '';
             this._searchClearEl.style.display = 'none';
-            this._searchEl.focus();
             this._applyFilters();
         });
 
@@ -71879,7 +73468,419 @@ if (window._chart && window.ChartStatePersistence) {
 
 
 // ── V39: регистрация в реестре модулей ──
-CE.registerModule('chart-engine-app', ['ce-engine', 'chart-engine-adapters', 'ce-data-cache'], ['bindCycleButton', 'ToolbarController', 'DataSourceOrchestrator', 'SourceUIController', 'PanelModeManager', 'PresetManager', 'PanelCarouselManager', 'FooterSwipeHandler', 'TOOLBAR_ARIA_LABELS', '_ariaLabelForButton', 'ChartFactory', 'CP_ROW_HEIGHT', 'CP_OVERSCAN', '_cpCachedCoins', '_cpCoinsPromise', '_cpCachedExchange', '_cpLoadedLogos', '_cpPreloadCoins', '_cpForceRefresh', '_cpLoadState', '_cpSaveState', 'CoinPicker'], 'MAIN-THREAD ONLY');
+// ═══════════════════════════════════════════════════════════════════════════════
+// V133: NumericKeypad — in-app numeric keypad for <input type="number">.
+// ═══════════════════════════════════════════════════════════════════════════════
+// On phones the native keyboard covers the tiny number fields of the indicator
+// settings / drawing dialogs, so values are typed blind. This module swaps it
+// for an in-app keypad with a BIG always-visible value readout:
+//   • auto-on for coarse-pointer (touch) devices; desktop is untouched
+//     (NumericKeypad.force = true flips it on for e2e tests / exotic setups);
+//   • a capture-phase pointerdown on any <input type="number"> (opt out per
+//     field with a data-vk-off attribute) calls preventDefault() — the field
+//     never gains focus, so the native keyboard never opens; a .vk-focus
+//     ring marks the field being edited;
+//   • only touch/pen pointers are intercepted — a real mouse click always
+//     keeps native behavior (touch-screen laptops get both worlds);
+//   • V133 layout: the ⌫ key sits directly right of the big readout and is
+//     the ONLY clear key (no C button — everything is cleared by backspace);
+//     the + / − steppers moved into the grid's right column, stacked
+//     vertically (+ above, − below), where ⌫ / C used to live;
+//   • digits / '.' / ± edit a string buffer shown in the big readout (the
+//     first typed digit starts fresh, like a preselected prompt() field);
+//     the + / − steppers honor the field's step and clamp to min/max (the
+//     hint row shows "min … max · step s");
+//   • long-press on ⌫ / + / − auto-repeats (hold ⌫ to chew through the whole
+//     buffer, hold a stepper to ramp the value);
+//   • OK — or a tap on another field / outside the pad, TradingView-style —
+//     commits: the value is written back and native-parity bubbling
+//     'input' + 'change' events fire, so every existing wiring
+//     (selectedParams sync, band fields, drawing dialogs) keeps working;
+//     Esc / ✕ cancel; typed values are clamped to [min,max] on commit.
+const NumericKeypad = (() => {
+    const VK = { force: false, version: 'v133' };
+    let pad = null;           // keypad root (built lazily, removed on close)
+    let input = null;         // current target field
+    let buf = '';             // string being edited
+    let orig = '';            // value snapshot at open time
+    let dirty = false;        // false → the first digit press starts fresh
+    let meta = { min: NaN, max: NaN, step: 1, label: 'Value' };
+    let ui = {};              // cached sub-elements
+    let domObserver = null;   // watches input removal (modal close / rerender)
+
+    // ── CSS (injected once) ──
+    const injectCss = (() => {
+        let done = false;
+        return () => {
+            if (done) return;
+            done = true;
+            const st = document.createElement('style');
+            st.textContent = [
+                '.vk-pad { position: fixed; left: 50%; transform: translateX(-50%); bottom: 0; z-index: 100004;',
+                '  width: min(100vw, 420px); box-sizing: border-box; background: #161b22;',
+                '  border: 1px solid #30363d; border-bottom: none; border-radius: 10px 10px 0 0;',
+                '  box-shadow: 0 -8px 32px rgba(0,0,0,.55); padding: 8px 8px calc(10px + env(safe-area-inset-bottom));',
+                '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;',
+                '  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;',
+                '  touch-action: manipulation; }',
+                '.vk-head { display: flex; align-items: center; gap: 8px; padding: 2px 6px 6px; }',
+                '.vk-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;',
+                '  color: #8b949e; font-size: 12px; }',
+                '.vk-close { background: none; border: none; color: #8b949e; font-size: 15px; width: 32px; height: 26px;',
+                '  cursor: pointer; padding: 0; line-height: 1; }',
+                '.vk-close:hover { color: #e6edf3; }',
+                '.vk-disp-row { display: flex; align-items: stretch; gap: 8px; padding: 0 2px 6px; }',
+                '.vk-back { flex: 0 0 64px; border: 1px solid #30363d; background: #0d1117; color: #e6edf3;',
+                '  border-radius: 8px; font-size: 21px; cursor: pointer; padding: 0; touch-action: manipulation; }',
+                '.vk-back:active { background: #21262d; }',
+                '.vk-disp { flex: 1; min-width: 0; background: #0d1117; border: 1px solid #30363d; border-radius: 8px;',
+                '  color: #e6edf3; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;',
+                '  font-size: 22px; font-weight: 600; text-align: right; padding: 9px 12px; overflow: hidden;',
+                '  text-overflow: ellipsis; white-space: nowrap; }',
+                '.vk-hint { color: #6e7681; font-size: 10px; padding: 0 6px 6px; text-align: right;',
+                '  min-height: 6px; }',
+                '.vk-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }',
+                '.vk-grid button { height: 46px; border: 1px solid #30363d; background: #0d1117; color: #e6edf3;',
+                '  border-radius: 8px; font-size: 19px; font-family: inherit; cursor: pointer; padding: 0;',
+                '  touch-action: manipulation; }',
+                '.vk-grid button:active { background: #21262d; }',
+                '.vk-grid .vk-util { color: #8b949e; font-size: 16px; }',
+                '.vk-grid .vk-ok { grid-column: span 2; background: rgba(41,98,255,.28);',
+                '  border-color: rgba(41,98,255,.7); color: #79b8ff; font-weight: 600; font-size: 16px; }',
+                '.vk-grid .vk-ok:active { background: rgba(41,98,255,.5); }',
+                'input[type="number"].vk-focus { border-color: #58a6ff !important;',
+                '  box-shadow: 0 0 0 2px rgba(88,166,255,.25); }',
+            ].join('\n');
+            document.head.appendChild(st);
+        };
+    })();
+
+    // ── activation: touch devices (or forced for tests) ──
+    const coarse = () => VK.force
+        || (window.matchMedia && window.matchMedia('(pointer:coarse)').matches)
+        || ('ontouchstart' in window);
+
+    const numberInputFrom = (t) => {
+        const inp = (t && t.closest) ? t.closest('input[type="number"]') : null;
+        return (inp && !inp.disabled && !inp.readOnly && !inp.hasAttribute('data-vk-off')) ? inp : null;
+    };
+
+    // ── formatting helpers ──
+    const fmt = (n) => {
+        if (!isFinite(n)) return '0';
+        let s = String(parseFloat(n.toPrecision(12)));
+        if (s === '-0') s = '0';
+        return s;
+    };
+    const clamp = (n) => {
+        if (isFinite(meta.min) && n < meta.min) n = meta.min;
+        if (isFinite(meta.max) && n > meta.max) n = meta.max;
+        return n;
+    };
+
+    // ── buffer editing (calculator semantics) ──
+    const pressDigit = (d) => {
+        if (dirty && buf.replace(/[-.]/g, '').length >= 12) return;
+        if (!dirty) { buf = d; dirty = true; return; }
+        if (buf === '0') buf = d;
+        else if (buf === '-0') buf = '-' + d;
+        else buf += d;
+    };
+    const pressDot = () => {
+        if (buf.includes('.')) return;
+        if (!dirty) { buf = '0.'; dirty = true; return; }
+        buf = (buf === '' || buf === '-') ? buf + '0.' : buf + '.';
+        dirty = true;
+    };
+    const pressSign = () => {
+        buf = buf.startsWith('-') ? buf.slice(1) : (buf === '' || buf === '0' ? '-0' : '-' + buf);
+        dirty = true;
+    };
+    const pressBack = () => { buf = buf.slice(0, -1); dirty = true; };
+    const pressClear = () => { buf = ''; dirty = true; };
+    const stepBy = (dir) => {
+        const st = (isFinite(meta.step) && meta.step > 0) ? meta.step : 1;
+        const cur = parseFloat(dirty && buf !== '' ? buf : (input ? input.value : '0'));
+        let n = (isFinite(cur) ? cur : 0) + dir * st;
+        n = clamp(n);
+        buf = fmt(n);
+        dirty = true;
+    };
+
+    // ── long-press auto-repeat (⌫ / + / −) ──
+    const REPEATABLE = { back: 1, minus: 1, plus: 1 };
+    const HOLD_DELAY = 420;     // ms of holding before auto-repeat kicks in
+    const HOLD_RATE = 90;       // ms between repeats
+    let holdT = null;           // start-delay timer
+    let holdI = null;           // repeat interval
+    let suppressClick = false;  // repeatable key already acted on pointerdown
+
+    const stopHold = () => {
+        if (holdT) { clearTimeout(holdT); holdT = null; }
+        if (holdI) { clearInterval(holdI); holdI = null; }
+    };
+
+    const startHold = (b) => {
+        stopHold();
+        const k = b.dataset.k;
+        holdT = setTimeout(() => {
+            holdT = null;
+            holdI = setInterval(() => {
+                if (!input || !pad || !pad.isConnected) { stopHold(); return; }
+                if (k === 'back' && buf === '') { stopHold(); return; }  // nothing left to delete
+                VK.press(k);
+            }, HOLD_RATE);
+        }, HOLD_DELAY);
+    };
+
+    // Releasing anywhere (or a cancel / window blur) stops the repeat. The
+    // browser dispatches the trailing click BEFORE this timer runs, so the
+    // suppressClick flag is still set for it and resets right after.
+    document.addEventListener('pointerup', () => {
+        if (suppressClick || holdT || holdI) { stopHold(); setTimeout(() => { suppressClick = false; }, 0); }
+    }, true);
+    document.addEventListener('pointercancel', () => {
+        if (suppressClick || holdT || holdI) { stopHold(); setTimeout(() => { suppressClick = false; }, 0); }
+    }, true);
+    window.addEventListener('blur', stopHold);
+
+    // ── field label resolution ──
+    const labelOf = (inp) => {
+        try {
+            if (inp.dataset && inp.dataset.vkLabel) return String(inp.dataset.vkLabel);
+            const row = inp.closest('.s-row, .row, .s-check-row');
+            if (row) {
+                const lbl = row.querySelector('.s-row-label, label');
+                if (lbl) {
+                    const t = (lbl.textContent || '').trim();
+                    if (t && t.length <= 48) return t;
+                }
+            }
+            if (inp.dataset.param) return String(inp.dataset.param);
+            if (inp.dataset.f) return String(inp.dataset.f);
+        } catch (_) {}
+        return (inp.placeholder || 'Value');
+    };
+
+    // ── DOM ──
+    const build = () => {
+        injectCss();
+        if (pad) return;
+        pad = document.createElement('div');
+        pad.className = 'vk-pad';
+        pad.setAttribute('role', 'dialog');
+        pad.setAttribute('aria-label', 'Numeric keypad');
+        pad.innerHTML = ''
+            + '<div class="vk-head">'
+            +   '<div class="vk-title"></div>'
+            +   '<button type="button" class="vk-close" aria-label="Cancel">✕</button>'
+            + '</div>'
+            + '<div class="vk-disp-row">'
+            +   '<div class="vk-disp"></div>'
+            +   '<button type="button" data-k="back" class="vk-back" aria-label="Backspace">⌫</button>'
+            + '</div>'
+            + '<div class="vk-hint"></div>'
+            + '<div class="vk-grid">'
+            +   '<button type="button" data-k="7">7</button>'
+            +   '<button type="button" data-k="8">8</button>'
+            +   '<button type="button" data-k="9">9</button>'
+            +   '<button type="button" data-k="plus" class="vk-util" aria-label="Increment">+</button>'
+            +   '<button type="button" data-k="4">4</button>'
+            +   '<button type="button" data-k="5">5</button>'
+            +   '<button type="button" data-k="6">6</button>'
+            +   '<button type="button" data-k="minus" class="vk-util" aria-label="Decrement">−</button>'
+            +   '<button type="button" data-k="1">1</button>'
+            +   '<button type="button" data-k="2">2</button>'
+            +   '<button type="button" data-k="3">3</button>'
+            +   '<button type="button" data-k="sign" class="vk-util" aria-label="Toggle sign">±</button>'
+            +   '<button type="button" data-k="0">0</button>'
+            +   '<button type="button" data-k="." class="vk-util">.</button>'
+            +   '<button type="button" data-k="ok" class="vk-ok">OK</button>'
+            + '</div>';
+        ui.title = pad.querySelector('.vk-title');
+        ui.closeBtn = pad.querySelector('.vk-close');
+        ui.disp = pad.querySelector('.vk-disp');
+        ui.hint = pad.querySelector('.vk-hint');
+        document.body.appendChild(pad);
+
+        ui.closeBtn.addEventListener('click', () => VK.close());
+
+        // One click delegation for every key button — grid keys AND the ⌫
+        // beside the readout (the ✕ has no data-k and is skipped).
+        pad.addEventListener('click', (e) => {
+            const b = e.target.closest('button');
+            if (!b || !b.dataset.k) return;
+            if (suppressClick) { suppressClick = false; return; }  // acted on pointerdown already
+            VK.press(b.dataset.k);
+        });
+
+        // Repeatable keys (⌫ / + / −) act IMMEDIATELY on press and
+        // auto-repeat while held (long-press); the click that follows the
+        // release is suppressed, so a quick tap is exactly one action.
+        pad.addEventListener('pointerdown', (e) => {
+            const b = e.target.closest('button');
+            const k = b && b.dataset.k;
+            if (!k || !REPEATABLE[k]) return;
+            suppressClick = true;
+            VK.press(k);
+            startHold(b);
+        });
+
+        // Holding a touch key can raise the context menu / callout — kill
+        // it inside the pad (CSS sets -webkit-touch-callout: none too).
+        pad.addEventListener('contextmenu', (e) => e.preventDefault());
+    };
+
+    const update = () => {
+        if (!input || !input.isConnected) { VK.close(); return; }
+        if (ui.disp) ui.disp.textContent = (buf === '' || buf === '-') ? '0' : buf;
+        if (ui.hint) {
+            const parts = [];
+            if (isFinite(meta.min) && isFinite(meta.max)) parts.push(fmt(meta.min) + ' … ' + fmt(meta.max));
+            else if (isFinite(meta.min)) parts.push('min ' + fmt(meta.min));
+            else if (isFinite(meta.max)) parts.push('max ' + fmt(meta.max));
+            if (isFinite(meta.step) && meta.step !== 1) parts.push('step ' + fmt(meta.step));
+            ui.hint.textContent = parts.join(' · ');
+        }
+    };
+
+    // ── lifecycle ──
+    VK.openFor = (inp) => {
+        if (!inp || !inp.isConnected || inp.disabled || inp.readOnly) return;
+        const min = parseFloat(inp.getAttribute('min'));
+        const max = parseFloat(inp.getAttribute('max'));
+        let st = parseFloat(inp.getAttribute('step'));
+        if (!isFinite(st) || st <= 0) st = 1;
+        meta = { min, max, step: st, label: labelOf(inp) };
+        input = inp;
+        orig = String(inp.value != null ? inp.value : '');
+        buf = orig;
+        dirty = false;
+        build();
+        ui.title.textContent = meta.label;
+        ui.title.title = meta.label;
+        input.classList.add('vk-focus');
+        // Field into view (center of the modal's scroll area) — the pad
+        // itself sits at the very bottom of the screen.
+        try { input.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
+        // Auto-close if the field is removed from the DOM (modal closed,
+        // marker list rerendered, section toggled …).
+        if (!domObserver) {
+            domObserver = new MutationObserver(() => {
+                if (input && !input.isConnected) VK.close();
+            });
+            try { domObserver.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
+        }
+        update();
+    };
+
+    VK.close = () => {
+        stopHold();          // a held key must not keep firing after close
+        if (domObserver) { try { domObserver.disconnect(); } catch (_) {} domObserver = null; }
+        if (input && input.classList) input.classList.remove('vk-focus');
+        if (pad) pad.remove();
+        pad = null;
+        input = null;
+        buf = '';
+        orig = '';
+        dirty = false;
+        ui = {};
+    };
+
+    // ── commit / press (public — also used by the e2e suite) ──
+    const commit = () => {
+        const inp = input;
+        if (!inp) { VK.close(); return; }
+        if (!inp.isConnected) { VK.close(); return; }
+        let v = String(buf).trim();
+        const n = parseFloat(v);
+        if (v === '' || !isFinite(n)) v = orig;
+        else {
+            const c = clamp(n);
+            if (c !== n) v = fmt(c);   // clamp; otherwise keep the typed text as-is
+        }
+        if (String(inp.value) !== v) {
+            inp.value = v;
+            // Native-parity notifications — the same two events real typing
+            // produces, bubbling so every existing listener sees them.
+            try {
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                inp.dispatchEvent(new Event('change', { bubbles: true }));
+            } catch (_) {}
+        }
+        VK.close();
+    };
+
+    VK.press = (k) => {
+        if (!input) return;
+        if (k === 'ok') { commit(); return; }
+        if (k === 'back') pressBack();
+        else if (k === 'clear') pressClear();
+        else if (k === 'sign') pressSign();
+        else if (k === '.') pressDot();
+        else if (k >= '0' && k <= '9') pressDigit(String(k));
+        else if (k === '-' || k === 'minus') { stepBy(-1); }
+        else if (k === '+' || k === 'plus') { stepBy(1); }
+        update();
+    };
+
+    VK.isOpen = () => !!input;
+    VK.state = () => ({
+        open: !!input,
+        buf: buf,
+        orig: orig,
+        dirty: dirty,
+        label: meta.label,
+        min: meta.min,
+        max: meta.max,
+        step: meta.step,
+        input: input || null,
+    });
+
+    // ── interception (touch pointers only; force covers mouse for tests) ──
+    const onDown = (ev) => {
+        if (!coarse()) return;
+        if (ev.pointerType === 'mouse' && !VK.force) return;  // real mouse → native
+        if (pad && ev.target && pad.contains(ev.target)) return;  // keypad's own taps
+        const inp = numberInputFrom(ev.target);
+        if (inp) {
+            // The tap must never focus the field — that's what opens the
+            // native keyboard and covers the UI.
+            ev.preventDefault();
+            if (input === inp) return;        // re-tap on the same field: keep editing
+            if (input) commit();              // switching fields: save current first
+            VK.openFor(inp);
+            return;
+        }
+        if (input) commit();                  // tap elsewhere: TradingView-style commit
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    // Legacy fallback (no Pointer Events): same interception via mousedown.
+    // Guarded by window.PointerEvent — on modern browsers the pointerdown
+    // handler above has already decided (including "mouse → native"), and a
+    // second opinion here would re-intercept what it deliberately skipped.
+    document.addEventListener('mousedown', (ev) => {
+        if (window.PointerEvent) return;   // modern: pointerdown already decided
+        if (!coarse()) return;
+        if (pad && ev.target && pad.contains(ev.target)) return;
+        const inp = numberInputFrom(ev.target);
+        if (inp) { ev.preventDefault(); if (input !== inp) { if (input) commit(); VK.openFor(inp); } return; }
+        if (input) commit();
+    }, true);
+
+    // Esc = cancel, Enter = commit (capture: the modal must not also react).
+    document.addEventListener('keydown', (e) => {
+        if (!input) return;
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); VK.close(); }
+        else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); commit(); }
+    }, true);
+
+    return VK;
+})();
+window.NumericKeypad = NumericKeypad;
+
+
+CE.registerModule('chart-engine-app', ['ce-engine', 'chart-engine-adapters', 'ce-data-cache'], ['bindCycleButton', 'ToolbarController', 'DataSourceOrchestrator', 'SourceUIController', 'PanelModeManager', 'PresetManager', 'PanelCarouselManager', 'FooterSwipeHandler', 'TOOLBAR_ARIA_LABELS', '_ariaLabelForButton', 'ChartFactory', 'CP_ROW_HEIGHT', 'CP_OVERSCAN', '_cpCachedCoins', '_cpCoinsPromise', '_cpCachedExchange', '_cpLoadedLogos', '_cpPreloadCoins', '_cpForceRefresh', '_cpLoadState', '_cpSaveState', 'CoinPicker', 'NumericKeypad'], 'MAIN-THREAD ONLY');
 })(window.CE, window);
 </script>
 
