@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Chart Engine v49p — series.js v6 foundation · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
+    <title>Chart Engine v49p — series.js v6 foundation · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -45798,7 +45798,20 @@ class SourceAPI {
             }
             overlay.history.setActiveTicker(newTicker);
             if (newTicker && oldTicker !== newTicker) {
-                overlay.loadFromStorage(newTicker);
+                // V177-boot-race: consume the one-shot skip armed by
+                // ChartStatePersistence's global overlay restore (step 3b).
+                // The FIRST ticker change after a restore targets the boot
+                // symbol when a late-connecting adapter finally reports in;
+                // loading the stale bucket then wiped the restored
+                // drawings. Any LATER switch (user-initiated) runs the
+                // normal bucket load as before.
+                const skip = window.__ceSkipNextBucketLoad || null;
+                if (skip) { try { delete window.__ceSkipNextBucketLoad; } catch (_) { window.__ceSkipNextBucketLoad = null; } }
+                if (skip && skip.ticker && skip.ticker === newTicker) {
+                    debugLog('[ChartAPI.updateSourceInfo] V177: skip post-restore bucket load for ' + newTicker + ' (global overlays are at least as fresh)');
+                } else {
+                    overlay.loadFromStorage(newTicker);
+                }
             }
             this._prevTicker = newTicker;
         }
@@ -55787,6 +55800,10 @@ class Engine {
             }
             this.dirty?.setAll?.();
             this.requestRender?.();
+            // V177: style edits never triggered a save (obj.style is mutated
+            // in place, no api.updateObject call) — the new look existed only
+            // in memory until some unrelated save. Persist it now.
+            try { if (window.ChartStatePersistence) window.ChartStatePersistence.save(); } catch (_) {}
         };
         [colorInput].forEach(el => el.addEventListener('change', applyLive));
         [widthInput, alphaInput].forEach(el => {
@@ -78276,6 +78293,55 @@ const ChartStatePersistence = (() => {
             get restoreDone() { return true; }
         };
     }
+    // ── V177: THE DRAWINGS' SAVE TRIGGER ──────────────────────────────────
+    // The drawing tools commit via overlay.addObject() directly (NOT the
+    // api.addObject patch below), the V103 style modal mutates obj.style in
+    // place and drags call overlay._dirty() per frame — none of these went
+    // through any save trigger, so a drawn line existed ONLY in memory
+    // until some unrelated event (viewport pan, indicator add, ticker
+    // switch) or the pagehide saveNow happened to serialize it. Kill the
+    // tab on mobile (swipe away / app switch — pagehide is unreliable
+    // there) and the line — its style with it — was gone, its alert
+    // orphaned («drawing not found»). Patch the ONE method every overlay
+    // mutation funnels through — OverlayManager._dirty — to schedule the
+    // debounced save. Restricted to the MAIN chart's manager so
+    // CE.runTests fixtures (their own OverlayManager instances) never
+    // write test drawings into the user's saved state.
+    try {
+        const OMAP = (typeof OverlayManager !== 'undefined')
+            ? OverlayManager.prototype
+            : (window.OverlayManager && window.OverlayManager.prototype);
+        if (OMAP && typeof OMAP._dirty === 'function' && !OMAP.__cePersistPatched) {
+            const origDirty = OMAP._dirty;
+            OMAP._dirty = function () {
+                const r = origDirty.apply(this, arguments);
+                try {
+                    const mainCtx = window._chart && window._chart.api && window._chart.api._ctx;
+                    if (mainCtx && mainCtx.overlay === this) save();
+                } catch (_) {}
+                return r;
+            };
+            OMAP.__cePersistPatched = true;
+        }
+    } catch (_) {}
+
+    // ── V177: pagehide safety net armed at MODULE INIT, not after restore ─
+    // Offline/slow boots stall in waitForDataReady for up to 5 s;
+    // wireEventListeners only ran AFTER restore finished, so a tab killed
+    // in that window had NO unload handler at all. Registered exactly once
+    // for the page lifetime (saveNow is a no-op until a chart exists).
+    if (!window.__ceHideWired) {
+        window.__ceHideWired = true;
+        try {
+            const _onHide = () => { try { saveNow(); } catch (_) {} };
+            window.addEventListener('pagehide', _onHide, { capture: true });
+            window.addEventListener('beforeunload', _onHide, { capture: true });
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') { try { saveNow(); } catch (_) {} }
+            });
+        } catch (_) {}
+    }
+
     const STORAGE_KEY = 'chartEngine_state';
     const SCHEMA_VERSION = 1;
     let _chart = null;       // ref to window._chart
@@ -78948,6 +79014,22 @@ const ChartStatePersistence = (() => {
                         console.warn('[StatePersistence] failed to restore overlay:', cfg.type, e?.message || e);
                     }
                 }
+                // V177-boot-race: arm the one-shot per-ticker bucket-load
+                // skip for the boot symbol. If the adapter connects LATE
+                // (offline start / weak network), updateSourceInfo runs
+                // AFTER this global restore and its loadFromStorage() used
+                // to REPLACE the freshly restored drawings with the stale
+                // per-ticker bucket (written at the last switch-away) —
+                // every line drawn since then vanished, and the next save
+                // made the loss permanent. The global set is always at
+                // least as fresh as the bucket for this ticker, so the
+                // first bucket load for it is skipped (see updateSourceInfo).
+                try {
+                    window.__ceSkipNextBucketLoad = {
+                        ticker: (state.source && state.source.symbol) || null,
+                        ts: Date.now(),
+                    };
+                } catch (_) {}
             } catch (e) {
                 console.warn('[StatePersistence] overlays restore failed:', e?.message || e);
             }
@@ -79307,23 +79389,27 @@ const ChartStatePersistence = (() => {
         _unsubs.push(() => clearInterval(settingsPoll));
 
         // Save on page hide (best-effort, synchronous)
-        try {
-            window.addEventListener('pagehide', saveNow, { capture: true });
-            window.addEventListener('beforeunload', saveNow, { capture: true });
-            // FIX: store the visibilitychange handler so we can remove it
-            //   later. Previously this used an anonymous arrow function and
-            //   was never removed in _unsubs — every wireEventListeners call
-            //   added a new listener that survived for the page lifetime.
-            const onVisibilityChange = () => {
-                if (document.visibilityState === 'hidden') saveNow();
-            };
-            document.addEventListener('visibilitychange', onVisibilityChange);
-            _unsubs.push(() => {
-                window.removeEventListener('pagehide', saveNow, { capture: true });
-                window.removeEventListener('beforeunload', saveNow, { capture: true });
-                document.removeEventListener('visibilitychange', onVisibilityChange);
-            });
-        } catch (e) {}
+        // V177: this registration MOVED to module init (right after the
+        // _dirty patch) — offline boots stall in waitForDataReady for up to
+        // 5 s and a tab killed in that window had NO unload handler at all
+        // (this wiring only ran after restore finished). window.__ceHideWired
+        // guards against double registration.
+        if (!window.__ceHideWired) {
+            window.__ceHideWired = true;
+            try {
+                window.addEventListener('pagehide', saveNow, { capture: true });
+                window.addEventListener('beforeunload', saveNow, { capture: true });
+                const onVisibilityChange = () => {
+                    if (document.visibilityState === 'hidden') saveNow();
+                };
+                document.addEventListener('visibilitychange', onVisibilityChange);
+                _unsubs.push(() => {
+                    window.removeEventListener('pagehide', saveNow, { capture: true });
+                    window.removeEventListener('beforeunload', saveNow, { capture: true });
+                    document.removeEventListener('visibilitychange', onVisibilityChange);
+                });
+            } catch (e) {}
+        }
     }
 
     /**
@@ -82366,6 +82452,33 @@ if (typeof URLSearchParams !== 'undefined' && new URLSearchParams(location.searc
 //     touching implies its containing coarse candle touches too — no
 //     false negatives for touch/zone; only a pure gap-through cross can
 //     slip past). The 20/min budget stays as the hard cap on top.
+// V177: OFFLINE PERSISTENCE REPAIR — user: «Линии перестали сохраняться в
+//     офлайне. Так что фикси. Там и алерты в них должны сохраняться. И
+//     стили.» Three root causes found and fixed. ① NO SAVE TRIGGER: the
+//     drawing tools commit via overlay.addObject() directly (NOT the
+//     patched api.addObject), the V103 style modal mutates obj.style in
+//     place and drags call overlay._dirty() per frame — a drawn line
+//     existed ONLY in memory until an unrelated event (viewport pan,
+//     indicator add, ticker switch) or the pagehide saveNow happened to
+//     serialize it; kill the tab on mobile (swipe away — pagehide is
+//     unreliable there) and the line (its style with it) was gone, its
+//     alert orphaned. OverlayManager._dirty — the ONE method every
+//     mutation funnels through — is now patched (main chart only, so
+//     CE.runTests fixtures never leak into the saved state) to schedule
+//     the debounced save; the style modal saves explicitly. ② BOOT-RACE
+//     WIPE: offline/slow start → the adapter connects AFTER the global
+//     overlay restore and updateSourceInfo's per-ticker loadFromStorage
+//     REPLACED the freshly restored drawings with the stale bucket
+//     (written at the last switch-away); the next save made the loss
+//     permanent. The restore arms a one-shot skip for the boot symbol's
+//     bucket load — the global set is always at least as fresh. ③
+//     RECOVERY: the alert modal now stores the drawing's style (a.style)
+//     and the Alerts tab gains a «🧩 Restore N» button — one tap re-creates
+//     every missing alert drawing from its stored snapshot (createdAt =
+//     oCreated, so the alert re-links automatically). The pagehide
+//     safety net is also armed at module init now (offline boots stall in
+//     waitForDataReady for up to 5 s — a tab killed in that window had no
+//     unload handler at all before).
 
 (function () {
 'use strict';
@@ -84316,6 +84429,51 @@ const ChartAlerts = {
         } catch (_) { return null; }
     },
 
+    // ── V177: restore a LOST drawing from the alert's stored snapshot ──
+    // Drawings that were created before the V177 persistence fix (or lost
+    // to a mobile tab-kill / the boot-race wipe) may be gone while their
+    // alerts survived — the alert's snap is then the ONLY place the
+    // geometry still exists. _restorableSnap(a) tells whether a.snap
+    // carries enough geometry to rebuild; restoreDrawing(a) re-creates the
+    // drawing with createdAt = a.oCreated so the alert re-links to it
+    // AUTOMATICALLY (identity = type + createdAt), ticker-scoped to the
+    // alert's coin, styled from a.style when the alert has one.
+    _restorableSnap(a) {
+        try {
+            if (!a || !a.snap) return false;
+            if (a.otype === 'hline') return isFinite(a.snap.level);
+            if (a.otype === 'trend') return [a.snap.x1, a.snap.y1, a.snap.x2, a.snap.y2].every(isFinite) && a.snap.extend !== 'vertical';
+            if (a.otype === 'zone') return isFinite(a.snap.y1) && isFinite(a.snap.y2);
+        } catch (_) {}
+        return false;
+    },
+    restoreDrawing(a) {
+        try {
+            if (!this._restorableSnap(a)) return null;
+            const api = window._chart && window._chart.api;
+            if (!api || typeof api.addObject !== 'function') return null;
+            const cfg = { createdAt: a.oCreated, ticker: a.symbol || null, visible: true };
+            if (a.style && typeof a.style === 'object') {
+                try { cfg.style = JSON.parse(JSON.stringify(a.style)); } catch (_) { cfg.style = null; }
+            }
+            if (!cfg.style || !Object.keys(cfg.style).length) delete cfg.style;
+            if (a.otype === 'hline') {
+                cfg.type = 'line'; cfg.orientation = 'horizontal'; cfg.staticValue = a.snap.level;
+            } else if (a.otype === 'trend') {
+                cfg.type = 'trendline';
+                cfg.x1 = a.snap.x1; cfg.y1 = a.snap.y1; cfg.x2 = a.snap.x2; cfg.y2 = a.snap.y2;
+                cfg.style = Object.assign({}, cfg.style || {}, { extend: a.snap.extend || 'none' });
+            } else if (a.otype === 'zone') {
+                cfg.type = 'zone'; cfg.y1 = a.snap.y1; cfg.y2 = a.snap.y2;
+            } else return null;
+            // Use the stored name only when it cannot collide with a live
+            // object's key (addObject keys by name when present).
+            try { if (a.oName && !api.getObject(a.oName)) cfg.name = a.oName; } catch (_) {}
+            const o = api.addObject(cfg);
+            return o || null;
+        } catch (_) { return null; }
+    },
+
     // ── levels from the live drawing (falls back to the stored snapshot) ──
     _levelsOf(a, obj) {
         try {
@@ -84779,6 +84937,25 @@ function _renderAlertsTab(box) {
         chkBtn.disabled = false;
     };
     head.appendChild(chkBtn);
+    // V177: one-tap restoration of drawings lost before the persistence
+    // fix (mobile tab-kill / boot-race wipe) — the alert snapshots still
+    // carry their geometry. Re-created drawings re-link automatically
+    // (identity = type + createdAt).
+    const _missing = items.filter(a => !ChartAlerts._objOf(a) && ChartAlerts._restorableSnap(a));
+    if (_missing.length) {
+        const rstBtn = document.createElement('button');
+        rstBtn.textContent = '🧩 Restore ' + _missing.length;
+        rstBtn.style.cssText = CSS.btn + 'padding:2px 8px;font-size:10px;';
+        rstBtn.title = 'Re-create the drawing(s) missing for these alerts from the stored snapshots (line style restored when the alert has one; the alert re-links automatically)';
+        rstBtn.onclick = () => {
+            let n = 0;
+            for (const a of _missing) { try { if (ChartAlerts.restoreDrawing(a)) n++; } catch (_) {} }
+            rstBtn.textContent = n ? '✔ Restored ' + n : 'nothing to restore';
+            rstBtn.disabled = true;
+            setTimeout(() => { try { ChartAlerts._rerender(); } catch (_) {} }, 700);
+        };
+        head.appendChild(rstBtn);
+    }
     wrap.appendChild(head);
 
     // ── Active alerts ──
@@ -85057,6 +85234,10 @@ function _caOpenModal(obj, t, ctx, existing) {
             otype: t, oCreated: obj.createdAt,
             oName: obj.name || '', oLabel: drawLabel,
             snap: ChartAlerts._snapOf(obj, t),
+            // V177: remember the drawing's look — restoreDrawing() uses it
+            // to re-create the line with its original style if it is ever
+            // lost.
+            style: (function () { try { return JSON.parse(JSON.stringify(obj.style || {})); } catch (_) { return null; } })(),
             symbol: bind.symbol, srcMode: bind.srcMode, ex: bind.ex,
             symLabel: bind.symLabel,
             isRatio: bind.isRatio,
