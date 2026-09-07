@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Chart Engine v49p — series.js v6 foundation · V171 ByBit category-adoption toast removed (silent switch, «Cat: …» button stays the feedback)</title>
+    <title>Chart Engine v49p — series.js v6 foundation · V174 alerts run in the background (own symbol + own TF multi-select, weekly baseline fix, no Scan-finished toast) · V173 toasts removed · V172 🔔 in the selection panel</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -43074,11 +43074,17 @@ class OverlayStateSync {
 }
 
 // ─── ToolActionPanel — canvas-rendered floating menu for the selected ──────
-// instrument. Shows small buttons (delete, lock/unlock, settings) near the
-// object's bounding box. Each button has hover + press visual states. The
+// instrument. Shows small buttons (delete, lock/unlock, alert, settings) near
+// the object's bounding box. Each button has hover + press visual states. The
 // settings button is only rendered when an onSettings callback is set; the
 // delete button only when onDelete is set. The lock button is always shown
 // (lock state lives on the overlay object's `locked` field).
+// V172: the 🔔 Alert button is rendered (between lock and settings) ONLY for
+// drawings that can carry an alert (zones, trend lines/rays, horizontal
+// lines) AND when the host provides an onAlert callback; it opens the
+// ChartAlerts modal for this drawing. A green dot badge at the button's
+// top-right corner marks drawings that already have an armed alert (checked
+// at render time, so saving/removing an alert in the modal updates live).
 //
 // Click handling is delegated to the host (OverlayManager) via hitTest() +
 // the action callbacks set via setCallbacks().
@@ -43100,6 +43106,23 @@ class ToolActionPanel {
         // V37 step 14: onSettings callback (set by host). Delete is built-in
         // (always calls overlay.removeObject), so it has no callback field.
         this.onSettings = null;
+        // V172: onAlert callback (set by host) — opens the ChartAlerts modal
+        // for the selected drawing. The button itself only appears for
+        // alert-eligible objects (see _alertEligible).
+        this.onAlert = null;
+    }
+
+    /** V172: can this drawing carry an alert? Same eligibility as the
+     *  right-click context menu: zones, trend lines/rays and horizontal
+     *  lines. Vertical lines, labels, etc. → false (no bell button). */
+    static _alertEligible(obj) {
+        if (!obj) return false;
+        try {
+            if (typeof ZoneObject !== 'undefined' && obj instanceof ZoneObject) return true;
+            if (typeof TrendLineObject !== 'undefined' && obj instanceof TrendLineObject) return true;
+            if (typeof LineObject !== 'undefined' && obj instanceof LineObject && obj.orientation === 'horizontal') return true;
+        } catch (_) {}
+        return false;
     }
 
     /**
@@ -43117,7 +43140,16 @@ class ToolActionPanel {
         // Delete + lock are always present (delete is a built-in operation,
         // lock is a per-object flag). Settings is only present when the host
         // has provided an onSettings callback.
+        // V172: the alert button slots in between lock and settings — but
+        // only for drawings that can carry an alert and only when the host
+        // wired an onAlert callback (and ChartAlerts exists). show() runs on
+        // EVERY frame while the object is selected, so the list self-heals
+        // when the selection changes.
         const buttons = ['delete', 'lock'];
+        if (this.onAlert && typeof window !== 'undefined' && window.ChartAlerts
+            && ToolActionPanel._alertEligible(obj)) {
+            buttons.push('alert');
+        }
         if (this.onSettings) buttons.push('settings');
         this._buttons = buttons;
         // Position the panel. V152: prefer the selection anchor (clamped into
@@ -43310,6 +43342,39 @@ class ToolActionPanel {
                     ctx.beginPath();
                     ctx.arc(cx, cy - 1, 3, Math.PI, -0.4);
                     ctx.stroke();
+                }
+            } else if (name === 'alert') {
+                // V172: Bell icon — dome + skirt, clapper, top nub. Amber
+                // while the drawing has an armed alert, blue on hover, gray
+                // otherwise. A green dot badge at the top-right corner marks
+                // an armed alert (checked at RENDER time so it flips live
+                // when the modal saves/removes the alert).
+                let _alActive = false;
+                try { _alActive = !!(window.ChartAlerts && this._obj && window.ChartAlerts.hasFor(this._obj)); } catch (_) {}
+                const alCol = _alActive ? '#d29922' : (isHover ? '#58a6ff' : '#e6edf3');
+                ctx.strokeStyle = alCol;
+                ctx.fillStyle   = alCol;
+                // Body: dome (top half-circle) + flared skirt
+                ctx.beginPath();
+                ctx.arc(cx, cy - 1, 4, Math.PI, 0);
+                ctx.lineTo(cx + 5.5, cy + 3);
+                ctx.lineTo(cx - 5.5, cy + 3);
+                ctx.closePath();
+                ctx.stroke();
+                // Clapper
+                ctx.beginPath();
+                ctx.arc(cx, cy + 5.2, 1.4, 0, Math.PI * 2);
+                ctx.fill();
+                // Top nub
+                ctx.beginPath();
+                ctx.arc(cx, cy - 5.6, 1, 0, Math.PI * 2);
+                ctx.fill();
+                // Armed-alert badge: green dot on the button's top-right
+                if (_alActive) {
+                    ctx.fillStyle = '#3fb950';
+                    ctx.beginPath();
+                    ctx.arc(b.x + b.size - 5, b.y + 5, 2.4, 0, Math.PI * 2);
+                    ctx.fill();
                 }
             } else if (name === 'settings') {
                 // Gear icon — simplified: circle with 6 small teeth.
@@ -43690,8 +43755,11 @@ class OverlayManager {
      *  Delete is NOT a callback — it's a built-in operation that removes the
      *  object from this overlay manager. The delete button is always visible
      *  (no opt-in needed) for any selected object. */
-    setActionCallbacks({ onSettings } = {}) {
+    setActionCallbacks({ onSettings, onAlert } = {}) {
         this.actionPanel.onSettings = onSettings || null;
+        // V172: onAlert — opens the ChartAlerts modal for the selected
+        // drawing; the bell button renders only for alert-eligible objects.
+        this.actionPanel.onAlert = onAlert || null;
     }
 
     /** V37 step 14: hit-test the action panel. Returns button name or null. */
@@ -51573,6 +51641,9 @@ class PointerController {
                     overlay.updateObject(obj._key, { locked: !obj.locked });
                 } else if (btn === 'settings' && overlay.actionPanel.onSettings) {
                     overlay.actionPanel.onSettings(obj);
+                } else if (btn === 'alert' && overlay.actionPanel.onAlert) {
+                    // V172: bell button → ChartAlerts modal for this drawing.
+                    overlay.actionPanel.onAlert(obj);
                 }
                 overlay._dirty();
                 this.api.requestRender();
@@ -52552,6 +52623,8 @@ function resolveActionPanelButton(btn, obj) {
             return { type: 'updateObject', key: obj._key, update: { locked: !obj.locked } };
         case 'settings':
             return { type: 'callback', callback: 'onSettings' };
+        case 'alert':
+            return { type: 'callback', callback: 'onAlert' };
         default:
             return { type: 'none' };
     }
@@ -52965,6 +53038,9 @@ class DrawRecognizer extends GestureRecognizer {
                         overlay.updateObject(action.key, action.update);
                     } else if (action.type === 'callback' && action.callback === 'onSettings' && overlay.actionPanel.onSettings) {
                         overlay.actionPanel.onSettings(obj);
+                    } else if (action.type === 'callback' && action.callback === 'onAlert' && overlay.actionPanel.onAlert) {
+                        // V172: bell button (touch/gesture path).
+                        overlay.actionPanel.onAlert(obj);
                     }
                     overlay._dirty();
                     this.api.requestRender();
@@ -55237,8 +55313,13 @@ class Engine {
 
         // V103: wire onSettings callback — opens a DOM modal for editing
         //   overlay object style (color, lineWidth, lineStyle, alpha).
+        // V172: wire onAlert too — the action panel's bell button opens the
+        //   ChartAlerts modal (touch / cross / margin; zones: touch/close-in/
+        //   exit) for THIS drawing. Eligibility + the armed badge are handled
+        //   by ToolActionPanel itself.
         this.overlay.setActionCallbacks({
-            onSettings: (obj) => this._openOverlaySettingsModal(obj)
+            onSettings: (obj) => this._openOverlaySettingsModal(obj),
+            onAlert: (obj) => { try { if (window.ChartAlerts) window.ChartAlerts.openForObject(obj); } catch (_) {} }
         });
 
         // V37 step 16: register overlay-state CommandBus channel for worker.
@@ -82195,6 +82276,46 @@ if (typeof URLSearchParams !== 'undefined' && new URLSearchParams(location.searc
 //     data and the orchestrator still mirrors it into the «Cat: …» cycle
 //     button + persisted state; that label sync is now the only feedback,
 //     no toast noise on coins whose spot/linear listing is one-sided.
+// V172: the selected-drawing action panel (the small canvas toolbar next to
+//     a selected line/zone — delete / lock / settings) gains a 🔔 Alert
+//     button: zones, trend lines/rays and horizontal lines get a bell that
+//     opens the ChartAlerts modal for THAT drawing — no right-click needed
+//     anymore (the context menu keeps its Alert item too). A green dot
+//     badge on the bell marks drawings with an armed alert; the bell turns
+//     amber while armed. Vertical lines / labels keep the 3-button panel.
+// V173: alerts went QUIET and fire at creation — user feedback: «убери
+//     тосты» and «провёл линию через последнюю свечу и ничего». ① Every
+//     🔔 toast the alerts feature added (trigger, Test, created/updated,
+//     «No alert conditions met») is removed; feedback = the Alerts tab
+//     (event log, unread (n) badge, card rows) + the amber bell on the
+//     panel; «Check now» flashes «no new events» on the button itself.
+//     ② An alert created while price ALREADY sits on the drawing (the line
+//     drawn through the current candle) no longer stays silent: the
+//     forming candle at creation is a valid episode START — touch /
+//     touchzone / closein fire once on it without requiring the previous
+//     candle to be outside the band (dedup keeps it to one event). ③ Cross
+//     also fires when a candle's own open and close straddle the line
+//     (body crossing), not only on a close-to-close flip. ④ Trend segments
+//     get a half-candle grace: the forming candle is evaluated at the
+//     endpoint value when it lands a hair beyond x2. ⑤ The alert modal
+//     explains touch vs cross under each option.
+// V174: alerts went BACKGROUND + the weekly fix — user: «на дневном да, а
+//     на неделе нет», «почему у меня на 4ч тф Алерт написано?», «для других
+//     монет… не надо график их открывать», «убери тост Scan finished».
+//     ① Weekly silence fixed: the creation watermark/baseline was
+//     floor(created/iv) — a THURSDAY-aligned boundary, while 1w candles
+//     start MONDAY, so the baseline candle never matched on weekly charts
+//     (1d was fine — both UTC-midnight aligned). The guard is now
+//     alignment-independent: a candle may fire only if it was still
+//     forming at creation (c.x + iv > created); the baseline candle is the
+//     one CONTAINING the creation moment.
+//     ② The TF multi-select (15m…1w) is no longer ratio-only: every alert
+//     watches the picked TFs and evaluates in the BACKGROUND for its own
+//     symbol — mono candles via scanner-private adapters (isPerp captured
+//     at creation, 60 s cache, 20 s backoff on failure), TFs in parallel;//     no need to keep its chart open. Legacy alerts without isPerp keep
+//     the old chart-only behavior until re-saved; card status «background»
+//     (blue) vs «waiting for its chart» (amber) tells them apart.
+//     ③ The «Scan finished: N coins, M events» toast is removed.
 
 (function () {
 'use strict';
@@ -83053,11 +83174,7 @@ function finalizeRun() {
         // Stopped early (pause) or exhausted attempts on some tasks.
         state.status = 'paused';
     } else {
-        state.status = 'done';
-        const nCoins = Object.keys(state.results).length;
-        let nEv = 0;
-        for (const b of Object.keys(state.results)) nEv += coinScore(state.results[b]);
-        _toast(`Scan finished: ${nCoins} coins, ${nEv} events`);
+        state.status = 'done';   // V174: no «Scan finished» toast (user request) — the modal itself shows the results
     }
     markDirty(); saveNow(); notifyUi(true);
 }
@@ -83925,10 +84042,11 @@ const ScanAlerts = {
 // menu (● badge when an alert already exists) → a per-drawing modal:
 //   • line: Touch / Cross / Both + a per-line margin % for touch triggering;
 //   • zone: Touch of zone / Close inside / Exit from zone (no margin);
-//   • RATIO charts (ETH/SOL-style divisions) additionally get a TF
-//     multi-select (15m…1w, chart TF preselected): a division can touch a
-//     level on one TF and not on another. USDT/USDC charts are evaluated
-//     on the chart's own TF — nothing to choose.
+//   • EVERY chart gets a TF multi-select (15m…1w, chart TF preselected):
+//     V174 — the alert watches the picked TFs in the BACKGROUND for its own
+//     symbol (mono candles via the scanner's private adapters, 60 s cache),
+//     no need to keep its chart open. A division (ETH/SOL) can touch a
+//     level on one TF and not on another.
 // Evaluation runs every 4 s while the chart shows the alert's symbol:
 //   the chart's own candles via api.getOHLCRange; extra ratio TFs via the
 //   scanner's private adapters + computeRatio (90 s cache, per-symbol
@@ -83975,6 +84093,7 @@ const ChartAlerts = {
     })(),
     _ads: {},          // scanner-private leg adapters, key ex|perp|sym
     _legCache: {},     // key ex|num|den|np|dp|tf → { t, candles }
+    _bgCache: {},      // V174: key ex:p|s:sym|tf → { t, candles } (60 s background cache)
     _timer: null,
 
     list() { return this._items.slice(); },
@@ -84024,7 +84143,7 @@ const ChartAlerts = {
             let ex = '';
             if (isRatio) ex = (orch._preRatioSource && ADAPTER_CLASSES[orch._preRatioSource]) ? orch._preRatioSource : 'binance';
             else if (ADAPTER_CLASSES[src]) ex = src;
-            return { sym: orch.symbol || '', tf: orch.timeframe || '1d', src, isRatio, rc, ex };
+            return { sym: orch.symbol || '', tf: orch.timeframe || '1d', src, isRatio, rc, ex, isPerp: !!orch.isPerp };
         } catch (_) { return null; }
     },
 
@@ -84069,11 +84188,18 @@ const ChartAlerts = {
         return null;
     },
 
-    _trendVal(L, x) {
+    _trendVal(L, x, tol) {
         if (!L || L.x2 === L.x1) return null;                    // vertical — no value
         if (L.extend === 'none') {
             const lo = Math.min(L.x1, L.x2), hi = Math.max(L.x1, L.x2);
-            if (x < lo || x > hi) return null;                   // segment ended — no line there
+            if (x < lo || x > hi) {
+                // V173: half-candle grace — a segment ending right ON the last
+                // candle still evaluates that candle (endpoint value) instead
+                // of going silent when the candle x lands a hair beyond x2.
+                const t = (isFinite(tol) && tol > 0) ? tol : 0;
+                if (x < lo - t || x > hi + t) return null;       // truly beyond the segment
+                x = Math.min(Math.max(x, lo), hi);
+            }
         }
         return L.y1 + (L.y2 - L.y1) * (x - L.x1) / (L.x2 - L.x1);
     },
@@ -84118,6 +84244,9 @@ const ChartAlerts = {
         const isZone = L.kind === 'zone';
         const m = (!isZone && isFinite(+a.marginPct)) ? Math.max(0, +a.marginPct) / 100 : 0;
 
+        // V173: half-candle tolerance for trend segments (see _trendVal)
+        const tol = (candles.length >= 2) ? Math.abs(candles[candles.length - 1].x - candles[candles.length - 2].x) / 2 : 0;
+        const _opp = (a, b) => (a > 0 && b < 0) || (a < 0 && b > 0);   // opposite signs
         const cond = (c, prev) => {
             if (L.kind === 'line') {
                 const Lv = L.level;
@@ -84125,20 +84254,22 @@ const ChartAlerts = {
                 let cross = false;
                 if (prev) {
                     const d0 = prev.c - Lv, d1 = c.c - Lv;
-                    cross = (d0 > 0 && d1 < 0) || (d0 < 0 && d1 > 0);
+                    cross = _opp(d0, d1);
                 }
+                if (!cross) cross = _opp(c.o - Lv, c.c - Lv);   // V173: candle BODY crosses the line
                 return { touch, cross, level: Lv };
             }
             if (L.kind === 'trend') {
-                const Lv = this._trendVal(L, c.x);
+                const Lv = this._trendVal(L, c.x, tol);
                 if (!isFinite(Lv)) return { touch: false, cross: false };
-                const Lp = prev ? this._trendVal(L, prev.x) : null;
+                const Lp = prev ? this._trendVal(L, prev.x, tol) : null;
                 const touch = (c.l <= Lv * (1 + m)) && (c.h >= Lv * (1 - m));
                 let cross = false;
                 if (prev && isFinite(Lp)) {
                     const d0 = prev.c - Lp, d1 = c.c - Lv;
-                    cross = (d0 > 0 && d1 < 0) || (d0 < 0 && d1 > 0);
+                    cross = _opp(d0, d1);
                 }
+                if (!cross) cross = _opp(c.o - Lv, c.c - Lv);   // V173: candle BODY crosses the line
                 return { touch, cross, level: Lv };
             }
             const touch = (c.h >= L.bot) && (c.l <= L.top);
@@ -84150,29 +84281,39 @@ const ChartAlerts = {
         const want = a.type;
         // V170-fix: never fire on candles OLDER than the alert itself — the
         // first evaluation used to backfill EVERY historical crossing/touch
-        // in the 60-candle window (4 events at once). The watermark is the
-        // candle that contains the creation moment (the forming candle at
-        // creation time), so the current candle is still evaluated.
+        // in the 60-candle window (4 events at once). V174: the guard is
+        // ALIGNMENT-INDEPENDENT — a candle may fire only if it was still
+        // forming at creation (c.x + iv > created). floor(created/iv) used
+        // to be a THURSDAY-aligned boundary while 1w candles start MONDAY,
+        // so on weekly charts the baseline candle never matched and the
+        // alert stayed silent (1d was fine — both UTC-midnight aligned).
         const ivMs = CA_TF_MS[tf] || 864e5;
-        const sinceX = a.created ? Math.floor(a.created / ivMs) * ivMs : 0;
+        const created = a.created || 0;
         const n = candles.length;
         for (let i = 1; i < n; i++) {
             const c = candles[i], prev = candles[i - 1];
+            // V173/V174: BASELINE — the candle CONTAINING the creation moment
+            // is a valid episode START: the user may have just drawn the line
+            // right through it, so the "previous candle outside the band"
+            // transition never happens. Without this the alert stays silent
+            // forever. Dedup keeps it to one event per candle; later candles
+            // keep the strict episodic enter rule.
+            const baseline = !!(created && c.x <= created && created < c.x + ivMs);
             const r = cond(c, prev);
             const rp = cond(prev, candles[i - 2]);
             let kind = null;
             if (isZone) {
-                if (want === 'touchzone' && r.touch && !rp.touch) kind = 'touchzone';
-                else if (want === 'closein' && r.closein && !rp.closein) kind = 'closein';
+                if (want === 'touchzone' && r.touch && (!rp.touch || baseline)) kind = 'touchzone';
+                else if (want === 'closein' && r.closein && (!rp.closein || baseline)) kind = 'closein';
                 else if (want === 'exit' && r.exit) kind = 'exit';
             } else {
-                const touchHit = (want === 'touch' || want === 'both') && r.touch && !rp.touch;
+                const touchHit = (want === 'touch' || want === 'both') && r.touch && (!rp.touch || baseline);
                 const crossHit = (want === 'cross' || want === 'both') && r.cross;
                 if (crossHit) kind = 'cross';
                 else if (touchHit) kind = 'touch';
             }
             if (!kind) continue;
-            if (sinceX && c.x < sinceX) continue;                // pre-creation history
+            if (created && c.x + ivMs <= created) continue;      // closed before the alert existed
             const key = tf + '|' + kind;
             const lastX = a.lastFired ? a.lastFired[key] : undefined;
             if (isFinite(lastX) && c.x <= lastX) continue;       // dedup per candle
@@ -84247,6 +84388,43 @@ const ChartAlerts = {
         } catch (_) { return null; }
     },
 
+    // V174: can this alert be evaluated WITHOUT its chart open?
+    //   ratio alerts — always (legs via scanner-private adapters);
+    //   mono alerts — when we know the market (isPerp captured at creation;
+    //   legacy alerts without it keep the old chart-only behavior).
+    _canFetch(a) {
+        if (a.isRatio) return !!(a.ratio && a.ratio.num);
+        return !!(a.ex && a.symbol && ADAPTER_CLASSES[a.ex] && typeof a.isPerp === 'boolean');
+    },
+
+    // V174: candles for a background alert (its chart is closed or showing
+    // another symbol/TF). Ratio → _ratioCandles; mono → scanner-private
+    // adapter + scanFetch, 60 s cache (20 s backoff on failure so errors
+    // never hammer the exchange).
+    async _bgCandles(a, tf) {
+        if (a.isRatio) return this._ratioCandles(a, tf);
+        const key = a.ex + ':' + (a.isPerp ? 'p' : 's') + ':' + a.symbol + '|' + tf;
+        const c = this._bgCache[key];
+        if (c && Date.now() - c.t < 60000) return c.candles;
+        try {
+            const ad = this._ad(a.ex, !!a.isPerp, a.symbol);
+            if (!ad) { this._bgCache[key] = { t: Date.now() - 40000, candles: null }; return null; }
+            const raw = await scanFetch(ad, a.ex, a.symbol, tf, 150);
+            let out = null;
+            if (raw && raw.length >= 2) {
+                out = raw.slice(-60)
+                    .map(k => ({ x: (k._x != null) ? k._x : k.x, o: k.open, h: k.high, l: k.low, c: (k.close != null) ? k.close : k.c }))
+                    .filter(k => isFinite(k.x) && isFinite(k.o) && isFinite(k.h) && isFinite(k.l) && isFinite(k.c));
+                if (out.length < 2) out = null;
+            }
+            this._bgCache[key] = { t: out ? Date.now() : Date.now() - 40000, candles: out };
+            return out;
+        } catch (_) {
+            this._bgCache[key] = { t: Date.now() - 40000, candles: null };
+            return null;
+        }
+    },
+
     async evaluate() {
         const ctx = this._ctx();
         let live = null, liveTried = false;
@@ -84254,23 +84432,25 @@ const ChartAlerts = {
         for (const a of this._items) {
             try {
                 if (a.enabled === false) continue;
-                if (!ctx || a.symbol !== ctx.sym || a.srcMode !== ctx.src) continue;   // waits for its chart
-                if (!this._objOf(a)) continue;                                          // drawing deleted → orphan
-                if (!liveTried) { live = this._chartCandles(ctx.tf, 60) || []; liveTried = true; }
-                const tfs = a.isRatio ? ((a.tfs && a.tfs.length) ? a.tfs : [ctx.tf]) : [ctx.tf];
+                const chartMatch = !!(ctx && a.symbol === ctx.sym && a.srcMode === ctx.src);
+                // V174: no chart match → still evaluate in the background when
+                // the alert carries enough data to fetch its own candles.
+                if (!chartMatch && !this._canFetch(a)) continue;   // legacy alert → waits for its chart
+                if (!this._objOf(a)) continue;                     // drawing deleted → orphan
+                if (chartMatch && !liveTried) { live = this._chartCandles(ctx.tf, 60) || []; liveTried = true; }
+                const tfs = (a.tfs && a.tfs.length) ? a.tfs : (chartMatch ? [ctx.tf] : []);
+                if (!tfs.length) continue;
                 const fired = [];
-                for (const tf of tfs) {
+                const perTf = await Promise.all(tfs.map(async (tf) => {
                     let candles = null;
-                    if (!a.isRatio || tf === ctx.tf) candles = live;
-                    else candles = await this._ratioCandles(a, tf);
-                    if (candles && candles.length >= 2) {
-                        for (const ev of this._evalAlert(a, tf, candles)) fired.push(ev);
-                    }
-                }
+                    if (chartMatch && tf === ctx.tf) candles = live;   // live series, no fetch
+                    else candles = await this._bgCandles(a, tf);
+                    return (candles && candles.length >= 2) ? this._evalAlert(a, tf, candles) : [];
+                }));
+                for (const arr of perTf) for (const ev of arr) fired.push(ev);
                 a.lastCheck = Date.now();
                 if (fired.length) {
-                    this.save();
-                    for (const ev of fired.slice(0, 2)) _toast('🔔 ' + ev.msg);
+                    this.save();   // V173: no toast — the Alerts tab log + unread badge is the feedback
                     for (const ev of firedAll.concat(fired)) { if (firedAll.indexOf(ev) < 0) firedAll.push(ev); }
                 }
             } catch (_) {}
@@ -84323,7 +84503,14 @@ function _renderAlertsTab(box) {
     chkBtn.title = 'Evaluate all alerts immediately (they also run every 4 s in the background)';
     chkBtn.onclick = async () => {
         chkBtn.disabled = true;
-        try { const n = await ChartAlerts.evaluate(); if (!n) _toast('No alert conditions met'); } catch (_) {}
+        try {
+            const n = await ChartAlerts.evaluate();
+            // V173: no toast — when nothing fired, flash the button itself
+            if (!n) {
+                chkBtn.textContent = 'no new events';
+                setTimeout(() => { try { chkBtn.textContent = '⟳ Check now'; } catch (_) {} }, 1200);
+            }
+        } catch (_) {}
         chkBtn.disabled = false;
     };
     head.appendChild(chkBtn);
@@ -84340,9 +84527,9 @@ function _renderAlertsTab(box) {
         empty.innerHTML =
             '<div style="font-size:20px;text-align:center;margin-bottom:6px;">🔔</div>' +
             '<div style="text-align:center;font-weight:600;color:#c9d1d9;margin-bottom:6px;">No chart alerts yet</div>' +
-            'Right-click a <b>horizontal line</b>, <b>trend line / segment / ray</b> or a <b>zone</b> on the chart → <b>🔔 Alert</b> in the menu.<br>' +
+            'Select a <b>horizontal line</b>, <b>trend line / segment / ray</b> or a <b>zone</b> on the chart → tap <b>🔔</b> in its floating panel (or right-click → <b>🔔 Alert</b>).<br>' +
             'Lines can trigger on touch (± margin %), on a close-through cross, or both; zones on touch, close-inside or exit. ' +
-            'On ratio charts (e.g. ETH/SOL) you also pick the timeframe(s) to watch, since a division may touch a level on one TF and not on another.';
+            'Pick the timeframe(s) to watch — the alert checks them in the background for its own coin, even when its chart is closed.';
         wrap.appendChild(empty);
     }
     for (const a of items) {
@@ -84351,7 +84538,12 @@ function _renderAlertsTab(box) {
         // status
         let st = 'armed', stColor = '#3fb950';
         if (a.enabled === false) { st = 'paused'; stColor = '#8b949e'; }
-        else if (!ctx || a.symbol !== ctx.sym || a.srcMode !== ctx.src) { st = 'waiting for its chart'; stColor = '#d29922'; }
+        else if (!ctx || a.symbol !== ctx.sym || a.srcMode !== ctx.src) {
+            // V174: background-capable alerts evaluate without their chart
+            const bg = ChartAlerts._canFetch(a);
+            st = bg ? 'background' : 'waiting for its chart';
+            stColor = bg ? '#58a6ff' : '#d29922';
+        }
         else if (!ChartAlerts._objOf(a)) { st = 'drawing not found'; stColor = '#f85149'; }
         const L = ChartAlerts._levelsOf(a, null);   // display levels from the snapshot
         let lvTxt = '';
@@ -84371,7 +84563,7 @@ function _renderAlertsTab(box) {
         // meta: TFs + created + triggers
         const meta = document.createElement('div');
         meta.style.cssText = 'display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:4px;';
-        const tfs = (a.isRatio && Array.isArray(a.tfs)) ? a.tfs : [];
+        const tfs = Array.isArray(a.tfs) ? a.tfs : [];
         for (const tf of tfs) {
             const chip = document.createElement('span');
             chip.textContent = tf;
@@ -84399,8 +84591,7 @@ function _renderAlertsTab(box) {
             (a2.events = a2.events || []).unshift({ t: Date.now(), tf: (a2.isRatio && a2.tfs && a2.tfs[0]) || (ChartAlerts._ctx() || {}).tf || '1d', kind: a2.otype === 'zone' ? 'touchzone' : 'touch', price, level: price, msg: (a2.symLabel || a2.symbol) + ' — test event', test: true });
             if (a2.events.length > 100) a2.events.length = 100;
             a2.trigCount = (a2.trigCount || 0) + 1;
-            ChartAlerts.save();
-            _toast('🔔 Test event fired');
+            ChartAlerts.save();   // V173: no toast — the event appears in the log (unread-highlighted)
         }));
         meta.appendChild(mkBtn(a.enabled === false ? 'Off' : 'On', CSS.btnWarn, 'Arm / pause this alert', () => {
             ChartAlerts.update(a.id, { enabled: a.enabled === false });
@@ -84438,7 +84629,7 @@ function _renderAlertsTab(box) {
     if (!evs.length) {
         const none = document.createElement('div');
         none.style.cssText = 'color:#8b949e;font-style:italic;font-size:11px;padding:4px 6px;';
-        none.textContent = 'No triggered events yet — the log fills up when an alert fires (a 🔔 toast appears too).';
+        none.textContent = 'No triggered events yet — the log fills up when an alert fires.';
         wrap.appendChild(none);
     }
     const logBox = document.createElement('div');
@@ -84487,6 +84678,20 @@ function _caOpenModal(obj, t, ctx, existing) {
     else if (L && L.kind === 'trend') levelTxt = ChartAlerts._fmtP(L.y1) + ' → ' + ChartAlerts._fmtP(L.y2) + (L.extend && L.extend !== 'none' ? ' (' + L.extend + ')' : ' (segment)');
     else if (L && L.kind === 'zone') levelTxt = ChartAlerts._fmtP(L.bot) + ' … ' + ChartAlerts._fmtP(L.top);
     const drawLabel = obj.shortInfo || obj.name || (isZone ? 'Zone' : t === 'trend' ? 'Trend line / ray' : 'Horizontal line');
+    // V174: editing an alert KEEPS its coin binding — the drawing can outlive
+    // a symbol switch, and saving ctx blindly would silently rebind the
+    // alert to whatever chart happens to be open.
+    const bind = existing ? {
+        symbol: existing.symbol, srcMode: existing.srcMode, ex: existing.ex,
+        symLabel: existing.symLabel, isRatio: !!existing.isRatio, ratio: existing.ratio || null,
+        isPerp: (typeof existing.isPerp === 'boolean') ? existing.isPerp : !!ctx.isPerp,
+    } : {
+        symbol: ctx.sym, srcMode: ctx.src, ex: ctx.ex,
+        symLabel: _caSymLabel(ctx), isRatio: !!ctx.isRatio,
+        ratio: (ctx.isRatio && ctx.rc) ? { num: ctx.rc.numerator, den: ctx.rc.denominator, numPerp: !!ctx.rc.numeratorIsPerp, denPerp: !!ctx.rc.denominatorIsPerp } : null,
+        isPerp: !!ctx.isPerp,
+    };
+    const foreign = existing && existing.symbol && ctx.sym && existing.symbol !== ctx.sym;
     const curType = existing ? existing.type : (isZone ? 'touchzone' : 'touch');
     const curMargin = existing && isFinite(+existing.marginPct) ? +existing.marginPct : 0.1;
     const curTfs = existing && Array.isArray(existing.tfs) && existing.tfs.length ? existing.tfs : [ctx.tf];
@@ -84502,12 +84707,18 @@ function _caOpenModal(obj, t, ctx, existing) {
     h += '<div style="color:#8b949e;font-size:11px;margin-bottom:10px;line-height:1.5;">' +
         _esc(levelTxt ? 'Drawing: ' + levelTxt : 'Drawing') +
         '<br>Chart: <b style="color:#c9d1d9;">' + _esc(_caSymLabel(ctx) || ctx.sym || '?') + '</b> · ' + _esc(ctx.tf || '?') +
-        (ctx.ex ? ' · ' + _esc(EXCH_NAMES[ctx.ex] || ctx.ex) : '') + '</div>';
-    // Trigger type
+        (ctx.ex ? ' · ' + _esc(EXCH_NAMES[ctx.ex] || ctx.ex) : '') +
+        (foreign ? '<br><span style="color:#d29922;">Alert coin: <b style="color:#c9d1d9;">' + _esc(existing.symLabel || existing.symbol) + '</b> — kept on save</span>' : '') + '</div>';
+    // Trigger type — V173: each option carries a one-line explanation
+    // (touch = reaching the line, cross = closing beyond it)
+    const _typeHints = isZone
+        ? { touchzone: 'the candle range enters the zone', closein: 'a candle closes inside the zone', exit: 'a close leaves the zone after being inside' }
+        : { touch: 'the candle reaches the line (wick or body) — margin % applies', cross: 'a candle CLOSES on the opposite side of the line — a wick touch alone does not count', both: 'fire on both events: touches and closes-through' };
     h += '<div style="color:#8b949e;font-size:9.5px;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px;">Trigger on</div>';
     for (const [val, lbl] of typeOpts) {
         h += '<label style="display:flex;align-items:center;gap:8px;padding:4px 2px;color:#c9d1d9;font-size:12px;cursor:pointer;">' +
-            '<input type="radio" name="ca-type" value="' + val + '"' + (curType === val ? ' checked' : '') + '>' + lbl + '</label>';
+            '<input type="radio" name="ca-type" value="' + val + '"' + (curType === val ? ' checked' : '') + '>' + lbl + '</label>' +
+            '<div style="color:#8b949e;font-size:9.5px;padding:0 2px 3px 22px;line-height:1.4;">' + _esc(_typeHints[val] || '') + '</div>';
     }
     // Margin (lines only)
     if (!isZone) {
@@ -84516,22 +84727,23 @@ function _caOpenModal(obj, t, ctx, existing) {
             '<input type="number" data-ca-margin value="' + curMargin + '" min="0" max="10" step="0.01" style="background:#161b22;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:3px 6px;font-size:12px;width:76px;">' +
             '<span style="color:#8b949e;font-size:10px;">touch fires when the candle range comes within this % of the line</span></div>';
     }
-    // TF multi-select — RATIO charts only (a division can touch on one TF
-    // and not on another; USDT/USDC pairs do not need this).
-    if (ctx.isRatio) {
-        h += '<div style="color:#8b949e;font-size:9.5px;text-transform:uppercase;letter-spacing:.6px;margin:12px 0 5px;">Watch timeframes (ratio chart)</div>';
-        h += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
-        for (const tf of CA_TFS) {
-            const on = curTfs.indexOf(tf) >= 0;
-            h += '<label style="display:inline-flex;align-items:center;gap:5px;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:3px 8px;color:#c9d1d9;font-size:11px;cursor:pointer;">' +
-                '<input type="checkbox" data-ca-tf="' + tf + '"' + (on ? ' checked' : '') + '>' + tf +
-                (tf === ctx.tf ? ' <span style="color:#58a6ff;font-size:9px;">(chart)</span>' : '') + '</label>';
-        }
-        h += '</div>';
-        h += '<div style="color:#8b949e;font-size:10px;margin-top:5px;">A division (ETH/SOL…) can touch a level on one timeframe and not on another — the alert checks every TF you pick.</div>';
-    } else {
-        h += '<div style="color:#8b949e;font-size:10px;margin-top:12px;">Evaluated on the chart timeframe (current: ' + _esc(ctx.tf || '?') + '). Timeframe selection is only needed on ratio charts (ETH/SOL…).</div>';
+    // TF multi-select — V174: on EVERY chart (not only ratio). The alert
+    // watches the picked TFs in the background, even while its chart is
+    // closed or showing another coin; non-open TFs are fetched by the
+    // scanner's private adapters (60 s cache).
+    h += '<div style="color:#8b949e;font-size:9.5px;text-transform:uppercase;letter-spacing:.6px;margin:12px 0 5px;">Watch timeframes</div>';
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
+    for (const tf of CA_TFS) {
+        const on = curTfs.indexOf(tf) >= 0;
+        h += '<label style="display:inline-flex;align-items:center;gap:5px;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:3px 8px;color:#c9d1d9;font-size:11px;cursor:pointer;">' +
+            '<input type="checkbox" data-ca-tf="' + tf + '"' + (on ? ' checked' : '') + '>' + tf +
+            (tf === ctx.tf ? ' <span style="color:#58a6ff;font-size:9px;">(chart)</span>' : '') + '</label>';
     }
+    h += '</div>';
+    h += '<div style="color:#8b949e;font-size:10px;margin-top:5px;">' +
+        (ctx.isRatio
+            ? 'A division (ETH/SOL…) can touch a level on one timeframe and not on another — the alert checks every TF you pick.'
+            : 'The alert checks every TF you pick in the background — even when its chart is closed or switched to another coin. The chart TF is preselected.') + '</div>';
     // Buttons
     h += '<div style="display:flex;align-items:center;gap:8px;margin-top:14px;">' +
         (existing ? '<button data-ca-del style="background:#21262d;border:1px solid #30363d;border-radius:4px;color:#f85149;padding:4px 10px;font-size:11px;cursor:pointer;">🗑 Remove alert</button>' : '') +
@@ -84555,24 +84767,23 @@ function _caOpenModal(obj, t, ctx, existing) {
             marginVal = isFinite(mv) && mv >= 0 ? Math.min(10, mv) : 0.1;
         }
         const tfs = [];
-        if (ctx.isRatio) {
-            card.querySelectorAll('[data-ca-tf]').forEach((cb) => { if (cb.checked) tfs.push(cb.getAttribute('data-ca-tf')); });
-            if (!tfs.length) tfs.push(ctx.tf);
-        }
+        card.querySelectorAll('[data-ca-tf]').forEach((cb) => { if (cb.checked) tfs.push(cb.getAttribute('data-ca-tf')); });
+        if (!tfs.length) tfs.push(ctx.tf);
         const rec = {
             otype: t, oCreated: obj.createdAt,
             oName: obj.name || '', oLabel: drawLabel,
             snap: ChartAlerts._snapOf(obj, t),
-            symbol: ctx.sym, srcMode: ctx.src, ex: ctx.ex,
-            symLabel: _caSymLabel(ctx),
-            isRatio: !!ctx.isRatio,
-            ratio: (ctx.isRatio && ctx.rc) ? { num: ctx.rc.numerator, den: ctx.rc.denominator, numPerp: !!ctx.rc.numeratorIsPerp, denPerp: !!ctx.rc.denominatorIsPerp } : null,
-            tfs: ctx.isRatio ? tfs : (existing && Array.isArray(existing.tfs) ? existing.tfs : []),
+            symbol: bind.symbol, srcMode: bind.srcMode, ex: bind.ex,
+            symLabel: bind.symLabel,
+            isRatio: bind.isRatio,
+            ratio: bind.ratio,
+            isPerp: bind.isPerp,
+            tfs: tfs,
             type: selType, marginPct: marginVal,
         };
         if (existing) ChartAlerts.update(existing.id, rec);
         else ChartAlerts.add(rec);
-        _toast('🔔 Alert ' + (existing ? 'updated' : 'created') + ': ' + (rec.symLabel || rec.symbol || ''));
+        // V173: no toast — the panel bell turns amber + green badge is the feedback
         close();
     };
     document.body.appendChild(back);
