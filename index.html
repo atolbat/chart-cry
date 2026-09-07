@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Chart Engine v49p — series.js v6 foundation · V174 alerts run in the background (own symbol + own TF multi-select, weekly baseline fix, no Scan-finished toast) · V173 toasts removed · V172 🔔 in the selection panel</title>
+    <title>Chart Engine v49p — series.js v6 foundation · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -82316,6 +82316,56 @@ if (typeof URLSearchParams !== 'undefined' && new URLSearchParams(location.searc
 //     the old chart-only behavior until re-saved; card status «background»
 //     (blue) vs «waiting for its chart» (amber) tells them apart.
 //     ③ The «Scan finished: N coins, M events» toast is removed.
+// V175: alert feedback + fetch budget + result/side filters — user: «Да,
+//     все это делай» (the V174-closing proposals) + «сделай чтобы я мог
+//     отдельные индикаторы фильтровать после скана» + «фильтровать при
+//     алерте с какой стороны свеча коснулась или пересекла». ① FIRE
+//     FEEDBACK: ChartAlerts._beep() — a self-contained two-tone WebAudio
+//     sine blip (880/1318.5 Hz, no files); the AudioContext is created
+//     lazily and unlocked by a self-removing pointerdown listener armed in
+//     start() (while suspended the beep is silently skipped); at most one
+//     blip per evaluate() tick. A 🔊/🔇 toggle sits in the Alerts tab
+//     header (left of «Check now»), persisted in 'ce_alerts_sound_v1'
+//     (default on), clicking it plays a confirmation blip. Pulsing glow:
+//     @keyframes ceAlertGlow injected once (#ce-alert-glow-style); the
+//     «🔔 Alerts (n)» tab button carries .ce-alert-glow while unread > 0.
+//     ② BG FETCH BUDGET: ChartAlerts._fetchLog (rolling 60 s) +
+//     _mayFetch() — at most 20 background fetch STARTS per minute across
+//     mono _bgCandles AND ratio _ratioCandles; over budget → the stale
+//     cache (or null) is served for that tick. The scan itself keeps its
+//     own pacing (workers + EXCH_GAP_FLOOR) and MAX_ATTEMPTS=3 retries.
+//     ③ POST-SCAN INDICATOR FILTER: evVisible(e) = evEnabled(e.t) &&
+//     evInd[e.i] !== false — coinScore counts only visible events; the
+//     results header gains a Filter bar: event-type pills (the SAME
+//     state.settings.evSort store as the settings' «Count in score»
+//     group) + one pill per INDICATOR label found in the stored results
+//     (state.settings.evInd, persisted; label shown with its event count,
+//     sorted by count); rows' chips render only visible events; when any
+//     filter is off, coins with score 0 are HIDDEN and the header shows
+//     «(filtered)»; details keep the dim treatment (dim = !evVisible).
+//     DEF_SETTINGS.evInd = {} + migrateState merge.
+//     ④ ALERT SIDE FILTER: line alerts get «Side of the line» radios in
+//     the modal — Any side / From above / From below — defined via the
+//     CLOSE so a straddling candle is unambiguous: From above = a touching
+//     candle CLOSED at/over the line and a cross is a DOWNWARD one; From
+//     below = closed at/under and a cross is UPWARD. Close-to-close AND
+//     body-cross directions are both side-aware; a.side = ''|'above'|
+//     'below' is persisted (legacy alerts → Any); fired events carry
+//     ev.side, the msg gains «↓from above»/«↑from below» and the
+//     Alerts-tab log rows show ↓/↑ after the verb. Zones are unaffected.
+// V176: failed-coin RETRY discipline — user: «А зафейлиные коины ты
+//     ретраишь?». ① ESCALATING BACKOFF: every background fetch failure
+//     (no adapter, empty/bad response, network throw) now backs off
+//     20 s → 40 s → 80 s → 160 s → capped 5 min per key — mono _bgCache
+//     AND ratio-leg _legCache (which previously had NO failure caching at
+//     all and re-fetched BOTH legs every 4 s tick); the counter resets on
+//     success. A dead/delisted coin costs one request per 5 minutes.
+//     ② COARSE-TF-FIRST: an alert's TFs evaluate from the largest
+//     interval down; if the coarsest window shows NO candle touching the
+//     band/zone, the finer TFs are skipped entirely (a fine candle
+//     touching implies its containing coarse candle touches too — no
+//     false negatives for touch/zone; only a pure gap-through cross can
+//     slip past). The 20/min budget stays as the hard cap on top.
 
 (function () {
 'use strict';
@@ -82424,6 +82474,7 @@ const DEF_SETTINGS = {
     periods: { 1: true, 2: true, 3: true, 6: true, 12: false },
     indSel: {},          // indicator id → true/false (default: included)
     evSort: { ath: true, atl: true, max: true, min: true, cross: true, osc: true },
+    evInd: {},           // V175: indicator LABEL → true/false (results filter; absent = on)
 };
 
 function _defState() {
@@ -82452,6 +82503,7 @@ function migrateState(raw) {
     st.settings.quotes = Object.assign({ ...DEF_SETTINGS.quotes }, st.settings.quotes || {});
     st.settings.periods = Object.assign({ ...DEF_SETTINGS.periods }, st.settings.periods || {});
     st.settings.evSort = Object.assign({ ...DEF_SETTINGS.evSort }, st.settings.evSort || {});
+    st.settings.evInd = Object.assign({}, st.settings.evInd || {});   // V175
     st.settings.indSel = st.settings.indSel || {};
     st.coins = Array.isArray(st.coins) ? st.coins : [];
     st.tasks = st.tasks || {}; st.attempts = st.attempts || {}; st.baseTasks = {};
@@ -82944,9 +82996,13 @@ function detectSeriesEvents(candles, tf, quote, checks) {
 }
 
 function evEnabled(t) { return state.settings.evSort[t] !== false; }
+// V175: an event is VISIBLE when its type passes the score filter AND its
+// indicator (by label) is not filtered off in the results Filter bar.
+// Events without an indicator label (ATH/ATL/Max/Min) are type-only.
+function evVisible(e) { return evEnabled(e.t) && (state.settings.evInd[e.i] !== false); }
 function coinScore(coin) {
     let n = 0;
-    for (const e of (coin.ev || [])) if (evEnabled(e.t)) n++;
+    for (const e of (coin.ev || [])) if (evVisible(e)) n++;
     return n;
 }
 
@@ -83571,6 +83627,8 @@ function render(backdrop) {
         // unseen triggered events.
         const _caUnread = (tabId === 'alerts') ? ChartAlerts.unread() : 0;
         tb.textContent = tabLbl + (_caUnread ? ' (' + _caUnread + ')' : '');
+        // V175: the Alerts tab button pulses (glow) while events are unread.
+        if (tabId === 'alerts' && _caUnread) tb.classList.add('ce-alert-glow');
         tb.style.cssText = CSS.btn + (S.tab === tabId
             ? 'background:#1f2937;border-color:#58a6ff55;color:#58a6ff;font-weight:600;'
             : 'color:#8b949e;') + (_caUnread ? 'border-color:#58a6ff88;' : '');
@@ -83822,6 +83880,25 @@ function render(backdrop) {
     // V161: ONE basket per coin — all series' events (USDT + ratios × TFs)
     // live in a single row. Clicking the row toggles structured per-series
     // details; the 📈 button opens the coin on the chart.
+    // V175: FILTER BAR — event-type pills (the SAME state.settings.evSort
+    // store as the settings' «Count in score» group) + one pill per
+    // INDICATOR label found in the stored results (state.settings.evInd,
+    // persisted, shown with its event count, sorted by count). coinScore
+    // counts only evVisible events, rows' chips render only visible events,
+    // and when any filter is off, coins with score 0 are HIDDEN and the
+    // header shows «(filtered)». Details keep the dim treatment.
+    const anyTypeOff = EVENT_TYPES.some(t => state.settings.evSort[t] === false);
+    const indCounts = new Map();
+    for (const base of Object.keys(state.results)) {
+        const r = state.results[base];
+        for (const e of (r.ev || [])) {
+            if (!e.i) continue;
+            if (e.q && e.q !== 'USDT' && e.q === base) continue;   // V169 legacy identical-pair drop
+            indCounts.set(e.i, (indCounts.get(e.i) || 0) + 1);
+        }
+    }
+    const anyIndOff = [...indCounts.keys()].some(lab => state.settings.evInd[lab] === false);
+    const anyOff = anyTypeOff || anyIndOff;
     const rp = document.createElement('div');
     rp.style.cssText = CSS.panel;
     const entries = Object.keys(state.results).map(base => {
@@ -83832,13 +83909,14 @@ function render(backdrop) {
         // are dropped at render time — the scanner no longer produces them.
         const evs = (r.ev || []).filter(e => !e.q || e.q === 'USDT' || e.q !== base);
         return { base, sym: r.sym, vol: r.vol || 0, isPerp: r.isPerp, ev: evs, n: coinScore({ ev: evs }) };
-    }).filter(r => r.n > 0 || r.ev.length);
+    })
+        .filter(r => (anyOff ? r.n > 0 : (r.n > 0 || r.ev.length)));   // V175: filter on → hide score-0 coins
     entries.sort((a, b) => (b.n - a.n) || (b.vol - a.vol));
     const anyExpanded = S.expanded.size > 0;
     const hdrRow = document.createElement('div');
     hdrRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;';
     hdrRow.appendChild(Object.assign(document.createElement('div'), {
-        textContent: `Results — ${entries.length} coins with events (sorted by combined event count):`,
+        textContent: `Results — ${entries.length} coins with events` + (anyOff ? ' (filtered)' : '') + ' (sorted by combined event count):',
         style: CSS.lbl + 'margin-bottom:0;flex:1;',
     }));
     if (entries.length) {
@@ -83853,11 +83931,30 @@ function render(backdrop) {
         hdrRow.appendChild(expAll);
     }
     rp.appendChild(hdrRow);
+    // V175: the Filter bar — type pills first (synced with «Count in score»
+    // in Settings), then one pill per indicator label with its event count.
+    if ((entries.length || indCounts.size) && (EVENT_TYPES.length || indCounts.size)) {
+        const fBar = document.createElement('div');
+        fBar.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;';
+        const EV_LBL = { ath: 'ATH', atl: 'ATL', max: 'Period MAX', min: 'Period MIN', cross: 'Line touch/cross', osc: 'Oscillator levels' };
+        for (const t of EVENT_TYPES) {
+            fBar.appendChild(_pill(EV_LBL[t], state.settings.evSort[t] !== false, v => {
+                state.settings.evSort[t] = v; markDirty(); scheduleSave(); notifyUi(true);
+            }, false, 'Show/hide ' + EV_LBL[t] + ' events (synced with «Count in score»)'));
+        }
+        const indLabels = [...indCounts.keys()].sort((x, y) => (indCounts.get(y) - indCounts.get(x)) || (x < y ? -1 : 1));
+        for (const lab of indLabels) {
+            fBar.appendChild(_pill(lab + ' ·' + indCounts.get(lab), state.settings.evInd[lab] !== false, v => {
+                state.settings.evInd[lab] = v; markDirty(); scheduleSave(); notifyUi(true);
+            }, false, 'Show/hide ' + lab + ' events'));
+        }
+        rp.appendChild(fBar);
+    }
     if (!entries.length) {
         rp.appendChild(Object.assign(document.createElement('div'), {
             textContent: state.status === 'idle'
                 ? 'Press Start to scan the top coins of the current exchange.'
-                : 'No events found yet.',
+                : (anyOff ? 'No visible events — turn the filter pills above back on.' : 'No events found yet.'),
             style: 'color:#8b949e;font-style:italic;padding:6px 0;',
         }));
     } else {
@@ -83896,7 +83993,7 @@ function render(backdrop) {
             row.appendChild(sym); row.appendChild(nBadge); row.appendChild(rank);
             const chips = document.createElement('span');
             chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;overflow:hidden;max-height:38px;flex:1;min-width:0;';
-            const mev = _mergeEvents(r.ev);   // V165: same-price MAX/MIN → one chip
+            const mev = _mergeEvents(r.ev.filter(evVisible));   // V165: one line per price · V175: visible only
             const shown = mev.slice(0, 14);
             for (const e of shown) {
                 const meta = EV_CHIP[e.t] || EV_CHIP.cross;
@@ -83957,7 +84054,7 @@ function render(backdrop) {
                     det.appendChild(gh);
                     for (const e of gev) {
                         const meta = EV_CHIP[e.t] || EV_CHIP.cross;
-                        const dim = !evEnabled(e.t);
+                        const dim = !evVisible(e);   // V175: dim when hidden by the type OR indicator filter
                         if (dim) dimCount++;
                         const line = document.createElement('div');
                         line.style.cssText = 'display:flex;align-items:center;gap:7px;padding:1.5px 0;font-size:11px;min-width:0;' + (dim ? 'opacity:.4;' : '');
@@ -83992,7 +84089,7 @@ function render(backdrop) {
                 const tot = document.createElement('span');
                 tot.style.cssText = 'color:#8b949e;font-size:10px;flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
                 tot.textContent = `${r.ev.length} events total · ${r.n} counted in score` +
-                    (dimCount ? ` · ${dimCount} dimmed (excluded by the score filter)` : '');
+                    (dimCount ? ` · ${dimCount} dimmed (excluded by the filter)` : '');
                 foot.appendChild(tot);
                 det.appendChild(foot);
                 tbl.appendChild(det);
@@ -84059,6 +84156,9 @@ const ScanAlerts = {
 // ─────────────────────────────────────────────────────────────────────────────
 const CA_LS_KEY = 'ce_chart_alerts_v1';
 const CA_SEEN_KEY = 'ce_chart_alerts_seen_v1';
+// V175: alert-sound preference ('0' = muted; ABSENT = on — the default is
+// audible so a background trigger actually reaches the user).
+const CA_SOUND_KEY = 'ce_alerts_sound_v1';
 const CA_TF_MS = { '1m': 6e4, '5m': 3e5, '15m': 9e5, '30m': 18e5, '1h': 36e5, '2h': 72e5, '4h': 144e5, '1d': 864e5, '1w': 6048e5 };
 const CA_TFS = ['15m', '1h', '4h', '1d', '1w'];
 
@@ -84092,9 +84192,12 @@ const ChartAlerts = {
         catch (_) { return []; }
     })(),
     _ads: {},          // scanner-private leg adapters, key ex|perp|sym
-    _legCache: {},     // key ex|num|den|np|dp|tf → { t, candles }
-    _bgCache: {},      // V174: key ex:p|s:sym|tf → { t, candles } (60 s background cache)
+    _legCache: {},     // key ex|num|den|np|dp|tf → { t, candles, errs? }
+    _bgCache: {},      // key ex:p|s:sym|tf → { t, candles, errs? } (60 s cache, V176 escalating backoff)
     _timer: null,
+    _audio: null,      // V175: lazily created AudioContext for the trigger blip
+    _fetchLog: [],     // V175: rolling 60 s log of bg fetch START times (budget)
+    _probe: false,     // V176: touch probe of the last _evalAlert call (coarse-TF gate)
 
     list() { return this._items.slice(); },
     save() { try { _ls() && _ls().setItem(CA_LS_KEY, JSON.stringify(this._items)); } catch (_) {} this._rerender(); },
@@ -84117,6 +84220,62 @@ const ChartAlerts = {
         return n;
     },
     markSeen() { try { _ls() && _ls().setItem(CA_SEEN_KEY, String(Date.now())); } catch (_) {} },
+
+    // ── V175: fire feedback + fetch budget ──
+    soundOn() {
+        try { return (_ls() && _ls().getItem(CA_SOUND_KEY)) !== '0'; } catch (_) { return true; }
+    },
+    toggleSound() {
+        try { _ls() && _ls().setItem(CA_SOUND_KEY, this.soundOn() ? '0' : '1'); } catch (_) {}
+    },
+    // Two-tone sine blip (880 → 1318.5 Hz), no audio files. The AudioContext
+    // is created lazily; while it is still suspended (autoplay policy — no
+    // user gesture yet) the blip is silently skipped. evaluate() calls this
+    // AT MOST once per tick, no matter how many events fired.
+    _beep() {
+        if (!this.soundOn()) return;
+        try {
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return;
+            if (!this._audio) this._audio = new AC();
+            const ac = this._audio;
+            if (ac.state !== 'running') return;
+            const t0 = ac.currentTime;
+            for (const [dt, freq] of [[0, 880], [0.14, 1318.5]]) {
+                const osc = ac.createOscillator(), g = ac.createGain();
+                osc.type = 'sine'; osc.frequency.value = freq;
+                g.gain.setValueAtTime(0.0001, t0 + dt);
+                g.gain.exponentialRampToValueAtTime(0.12, t0 + dt + 0.02);
+                g.gain.exponentialRampToValueAtTime(0.0001, t0 + dt + 0.12);
+                osc.connect(g); g.connect(ac.destination);
+                osc.start(t0 + dt); osc.stop(t0 + dt + 0.14);
+            }
+        } catch (_) {}
+    },
+    // V175: background fetch budget — at most 20 fetch STARTS per rolling
+    // 60 s across mono _bgCandles AND ratio legs. With N alerts × M TFs on
+    // a 4 s timer the caches usually absorb everything; when the budget is
+    // exhausted the caller serves the stale cache (or null) for that tick
+    // instead of queuing another request, so the exchange never sees a
+    // request storm. The manual scanner keeps its own pacing (workers +
+    // EXCH_GAP_FLOOR) and does NOT go through this budget.
+    _BG_BUDGET: 20,
+    _mayFetch() {
+        const now = Date.now();
+        this._fetchLog = this._fetchLog.filter(t => now - t < 60000);
+        if (this._fetchLog.length >= this._BG_BUDGET) return false;
+        this._fetchLog.push(now);
+        return true;
+    },
+    // V176: escalating failure backoff — 20 s, 40 s, 80 s, 160 s, capped at
+    // 5 min per key; the counter resets on success. A dead/delisted coin
+    // therefore costs one request per 5 minutes instead of one per 20 s
+    // (V174 mono) or one per 4 s tick (ratio legs, which had NO failure
+    // caching before V176).
+    _backoffMs(errs) {
+        const n = Math.max(1, errs | 0);
+        return Math.min(20000 * Math.pow(2, n - 1), 300000);
+    },
 
     allEvents() {
         const out = [];
@@ -84279,6 +84438,27 @@ const ChartAlerts = {
         };
 
         const want = a.type;
+        // V175: side of the line — «с какой стороны свеча коснулась или
+        // пересекла», defined via the CLOSE so a straddling candle is
+        // unambiguous: side 'above' = the touching candle CLOSED at/over
+        // the line (only the lower wick probed below) and a cross is a
+        // DOWNWARD one; 'below' mirrors it (closed at/under, cross UP).
+        // Zones have no side (a.side stays '').
+        const sideOk = (kind, cn, Lv) => {
+            if (!a.side) return true;
+            if (kind === 'touch') return a.side === 'above' ? (cn.c >= Lv) : (cn.c <= Lv);
+            return a.side === 'above' ? (cn.c < Lv) : (cn.c > Lv);
+        };
+        // V176: touch PROBE — true when ANY candle in the window reaches the
+        // band/zone, regardless of alert type, dedup and creation guards.
+        // evaluate() walks the alert's TFs from the largest interval down
+        // and skips the finer fetches when the coarsest window never
+        // touched: a fine candle touching the band implies its containing
+        // coarse candle touches it too (the coarse range is the union of
+        // the fine ranges), so the gate cannot hide touch/zone triggers;
+        // only a pure gap-through cross (no wick contact) can slip past —
+        // an accepted trade-off for the network savings.
+        let probe = false;
         // V170-fix: never fire on candles OLDER than the alert itself — the
         // first evaluation used to backfill EVERY historical crossing/touch
         // in the 60-candle window (4 events at once). V174: the guard is
@@ -84300,6 +84480,12 @@ const ChartAlerts = {
             // keep the strict episodic enter rule.
             const baseline = !!(created && c.x <= created && created < c.x + ivMs);
             const r = cond(c, prev);
+            if (!probe) {
+                if (isZone) { if (c.h >= L.bot && c.l <= L.top) probe = true; }
+                else if (isFinite(r.level)) {
+                    if (c.l <= r.level * (1 + m) && c.h >= r.level * (1 - m)) probe = true;
+                }
+            }
             const rp = cond(prev, candles[i - 2]);
             let kind = null;
             if (isZone) {
@@ -84307,8 +84493,8 @@ const ChartAlerts = {
                 else if (want === 'closein' && r.closein && (!rp.closein || baseline)) kind = 'closein';
                 else if (want === 'exit' && r.exit) kind = 'exit';
             } else {
-                const touchHit = (want === 'touch' || want === 'both') && r.touch && (!rp.touch || baseline);
-                const crossHit = (want === 'cross' || want === 'both') && r.cross;
+                const touchHit = (want === 'touch' || want === 'both') && r.touch && (!rp.touch || baseline) && sideOk('touch', c, r.level);
+                const crossHit = (want === 'cross' || want === 'both') && r.cross && sideOk('cross', c, r.level);
                 if (crossHit) kind = 'cross';
                 else if (touchHit) kind = 'touch';
             }
@@ -84320,13 +84506,17 @@ const ChartAlerts = {
             if (!a.lastFired) a.lastFired = {};
             a.lastFired[key] = c.x;
             const price = this._fmtP(isFinite(r.level) ? r.level : c.c);
-            const msg = (a.symLabel || a.symbol) + ' ' + this._kindText(kind) + ' ' + price + ' (' + tf + ')';
-            const ev = { t: Date.now(), tf, kind, price: c.c, level: r.level, msg };
+            // V175: the side rides along — msg «touched ↓from above 79…» and
+            // ev.side for the log rows' ↓/↑ decoration.
+            const sideTxt = a.side === 'above' ? ' ↓from above' : a.side === 'below' ? ' ↑from below' : '';
+            const msg = (a.symLabel || a.symbol) + ' ' + this._kindText(kind) + (sideTxt ? sideTxt + ' ' : ' ') + price + ' (' + tf + ')';
+            const ev = { t: Date.now(), tf, kind, price: c.c, level: r.level, side: a.side || undefined, msg };
             (a.events = a.events || []).unshift(ev);
             if (a.events.length > 100) a.events.length = 100;
             a.trigCount = (a.trigCount || 0) + 1;
             fired.push(ev);
         }
+        this._probe = probe;
         return fired;
     },
 
@@ -84372,20 +84562,29 @@ const ChartAlerts = {
         const key = [a.ex, a.ratio.num, a.ratio.den, a.ratio.numPerp ? 1 : 0, a.ratio.denPerp ? 1 : 0, tf].join('|');
         const c = this._legCache[key];
         if (c && Date.now() - c.t < 90000) return c.candles;
+        // V176: failure backoff — a key that failed recently is not retried
+        // until its escalating backoff elapses (see _backoffMs).
+        const legFail = () => {
+            const errs = ((c && c.errs) || 0) + 1;
+            this._legCache[key] = { t: Date.now() - 90000 + this._backoffMs(errs), candles: null, errs };
+        };
         try {
             const adN = this._ad(a.ex, a.ratio.numPerp, a.ratio.num);
             const adD = this._ad(a.ex, a.ratio.denPerp, a.ratio.den);
-            if (!adN || !adD) return null;
+            if (!adN || !adD) { legFail(); return null; }
+            // V175: each leg fetch consumes budget; over budget → null for
+            // this tick (a previous GOOD cache entry is never overwritten).
             const res = await Promise.all([
-                scanFetch(adN, a.ex, a.ratio.num, tf, 150),
-                scanFetch(adD, a.ex, a.ratio.den, tf, 150),
+                this._mayFetch() ? scanFetch(adN, a.ex, a.ratio.num, tf, 150) : Promise.resolve(null),
+                this._mayFetch() ? scanFetch(adD, a.ex, a.ratio.den, tf, 150) : Promise.resolve(null),
             ]);
             const nc = res[0], dc = res[1];
-            if (!nc || !nc.length || !dc || !dc.length) return null;
+            if (!nc || !nc.length || !dc || !dc.length) { legFail(); return null; }
             const ratio = computeRatio(nc, dc).slice(-60).map(k => ({ x: k._x, o: k.open, h: k.high, l: k.low, c: k.close }));
-            if (ratio.length) this._legCache[key] = { t: Date.now(), candles: ratio };
+            if (ratio.length) this._legCache[key] = { t: Date.now(), candles: ratio, errs: 0 };
+            else legFail();
             return ratio.length ? ratio : null;
-        } catch (_) { return null; }
+        } catch (_) { legFail(); return null; }
     },
 
     // V174: can this alert be evaluated WITHOUT its chart open?
@@ -84397,18 +84596,27 @@ const ChartAlerts = {
         return !!(a.ex && a.symbol && ADAPTER_CLASSES[a.ex] && typeof a.isPerp === 'boolean');
     },
 
-    // V174: candles for a background alert (its chart is closed or showing
+    // V176: candles for a background alert (its chart is closed or showing
     // another symbol/TF). Ratio → _ratioCandles; mono → scanner-private
-    // adapter + scanFetch, 60 s cache (20 s backoff on failure so errors
-    // never hammer the exchange).
+    // adapter + scanFetch, 60 s cache, V176 ESCALATING backoff on failure
+    // (20 s → 40 s → 80 s → … → 5 min cap, reset on success) + the V175
+    // budget (stale-or-null when over). Errors never hammer the exchange.
     async _bgCandles(a, tf) {
         if (a.isRatio) return this._ratioCandles(a, tf);
         const key = a.ex + ':' + (a.isPerp ? 'p' : 's') + ':' + a.symbol + '|' + tf;
         const c = this._bgCache[key];
         if (c && Date.now() - c.t < 60000) return c.candles;
+        // V175: over budget → serve the stale cache (or null) this tick.
+        if (!this._mayFetch()) return (c && c.candles) ? c.candles : null;
+        // V176: escalating backoff — each consecutive failure pushes the
+        // next attempt 20 s → 40 s → 80 s → … → 5 min away (per key).
+        const backoff = () => {
+            const errs = ((c && c.errs) || 0) + 1;
+            this._bgCache[key] = { t: Date.now() - 60000 + this._backoffMs(errs), candles: null, errs };
+        };
         try {
             const ad = this._ad(a.ex, !!a.isPerp, a.symbol);
-            if (!ad) { this._bgCache[key] = { t: Date.now() - 40000, candles: null }; return null; }
+            if (!ad) { backoff(); return null; }
             const raw = await scanFetch(ad, a.ex, a.symbol, tf, 150);
             let out = null;
             if (raw && raw.length >= 2) {
@@ -84417,10 +84625,11 @@ const ChartAlerts = {
                     .filter(k => isFinite(k.x) && isFinite(k.o) && isFinite(k.h) && isFinite(k.l) && isFinite(k.c));
                 if (out.length < 2) out = null;
             }
-            this._bgCache[key] = { t: out ? Date.now() : Date.now() - 40000, candles: out };
+            if (out) this._bgCache[key] = { t: Date.now(), candles: out, errs: 0 };
+            else backoff();
             return out;
         } catch (_) {
-            this._bgCache[key] = { t: Date.now() - 40000, candles: null };
+            backoff();
             return null;
         }
     },
@@ -84440,14 +84649,27 @@ const ChartAlerts = {
                 if (chartMatch && !liveTried) { live = this._chartCandles(ctx.tf, 60) || []; liveTried = true; }
                 const tfs = (a.tfs && a.tfs.length) ? a.tfs : (chartMatch ? [ctx.tf] : []);
                 if (!tfs.length) continue;
+                // V176: COARSE TF FIRST — evaluate from the largest interval
+                // down; when a VALID coarse window shows no candle touching
+                // the band/zone at all, the finer windows (which cover LESS
+                // time and are range-contained in the coarse candles) cannot
+                // touch either → skip their fetches entirely. A failed/empty
+                // coarse fetch leaves the gate OPEN so it never blinds the
+                // finer TFs.
+                const tfsDesc = tfs.slice().sort((x, y) => (CA_TF_MS[y] || 864e5) - (CA_TF_MS[x] || 864e5));
                 const fired = [];
-                const perTf = await Promise.all(tfs.map(async (tf) => {
+                let open = true;
+                for (const tf of tfsDesc) {
+                    if (!open) break;
                     let candles = null;
                     if (chartMatch && tf === ctx.tf) candles = live;   // live series, no fetch
                     else candles = await this._bgCandles(a, tf);
-                    return (candles && candles.length >= 2) ? this._evalAlert(a, tf, candles) : [];
-                }));
-                for (const arr of perTf) for (const ev of arr) fired.push(ev);
+                    const valid = !!(candles && candles.length >= 2);
+                    this._probe = false;
+                    const evs = valid ? this._evalAlert(a, tf, candles) : [];
+                    for (const ev of evs) fired.push(ev);
+                    open = valid ? this._probe : true;
+                }
                 a.lastCheck = Date.now();
                 if (fired.length) {
                     this.save();   // V173: no toast — the Alerts tab log + unread badge is the feedback
@@ -84455,12 +84677,29 @@ const ChartAlerts = {
                 }
             } catch (_) {}
         }
+        // V175: fire feedback — at most ONE blip per tick, no matter how
+        // many alerts/events fired (the log + tab glow carry the details).
+        if (firedAll.length) this._beep();
         return firedAll.length;
     },
 
     start() {
         if (this._timer) return;
         this._timer = setInterval(() => { try { this.evaluate(); } catch (_) {} }, 4000);
+        // V175: unlock the AudioContext on the first user gesture (autoplay
+        // policy) — a self-removing one-shot listener; while the context is
+        // still suspended, _beep() stays silent instead of erroring.
+        try {
+            const unlock = () => {
+                try {
+                    const AC = window.AudioContext || window.webkitAudioContext;
+                    if (AC && !this._audio) this._audio = new AC();
+                    if (this._audio && this._audio.state === 'suspended') { try { this._audio.resume(); } catch (_) {} }
+                } catch (_) {}
+                document.removeEventListener('pointerdown', unlock);
+            };
+            document.addEventListener('pointerdown', unlock);
+        } catch (_) {}
         try {
             const bus = window._chart && window._chart.bus;
             if (bus && typeof bus.on === 'function') {
@@ -84481,6 +84720,19 @@ const ChartAlerts = {
 window.ChartAlerts = ChartAlerts;
 ChartAlerts.start();
 
+// V175: pulsing glow for the Alerts tab button while triggered events are
+// unread — injected once, applied in render() while unread > 0.
+(function () {
+    try {
+        if (document.getElementById('ce-alert-glow-style')) return;
+        const st = document.createElement('style');
+        st.id = 'ce-alert-glow-style';
+        st.textContent = '@keyframes ceAlertGlow{0%,100%{box-shadow:0 0 0 0 rgba(88,166,255,0);}50%{box-shadow:0 0 9px 2px rgba(88,166,255,.55);}}' +
+            '.ce-alert-glow{animation:ceAlertGlow 1.6s ease-in-out infinite;}';
+        document.head.appendChild(st);
+    } catch (_) {}
+})();
+
 // V170: Alerts tab — the results UI for ChartAlerts: active alert cards
 // (status, type+margin, TF chips, last events, Test/On-Off/Delete) plus a
 // merged triggered-events log; unread events are highlighted and the tab
@@ -84497,6 +84749,19 @@ function _renderAlertsTab(box) {
         textContent: '🔔 Chart alerts — lines, rays & zones',
         style: CSS.lbl + 'margin-bottom:0;flex:1;font-size:10px;',
     }));
+    // V175: 🔊/🔇 trigger-sound toggle — LEFT of «Check now»; clicking it
+    // plays a confirmation blip when unmuted. Persisted (default on).
+    const sndBtn = document.createElement('button');
+    sndBtn.textContent = ChartAlerts.soundOn() ? '🔊 Sound' : '🔇 Muted';
+    sndBtn.style.cssText = CSS.btn + 'padding:2px 8px;font-size:10px;';
+    sndBtn.title = 'Trigger sound: a short two-tone blip when any alert fires (background included)';
+    sndBtn.onclick = () => {
+        ChartAlerts.toggleSound();
+        const on = ChartAlerts.soundOn();
+        sndBtn.textContent = on ? '🔊 Sound' : '🔇 Muted';
+        if (on) ChartAlerts._beep();
+    };
+    head.appendChild(sndBtn);
     const chkBtn = document.createElement('button');
     chkBtn.textContent = '⟳ Check now';
     chkBtn.style.cssText = CSS.btn + 'padding:2px 8px;font-size:10px;';
@@ -84645,7 +84910,7 @@ function _renderAlertsTab(box) {
         row.innerHTML =
             '<span style="color:#8b949e;width:36px;flex-shrink:0;">' + ts + '</span>' +
             '<span style="color:#e6edf3;font-weight:600;flex-shrink:0;">' + _esc(ev.symLabel || '') + '</span>' +
-            '<span style="color:' + kindColor + ';flex-shrink:0;">' + _esc(ChartAlerts._kindText(ev.kind) || ev.kind) + '</span>' +
+            '<span style="color:' + kindColor + ';flex-shrink:0;">' + _esc((ChartAlerts._kindText(ev.kind) || ev.kind) + (ev.side === 'above' ? ' ↓' : ev.side === 'below' ? ' ↑' : '')) + '</span>' +
             '<span style="color:#c9d1d9;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">@ ' + _esc(ChartAlerts._fmtP(ev.level)) + '</span>' +
             '<span style="background:#161b22;border:1px solid #30363d;border-radius:9px;padding:0 6px;color:#8b949e;flex-shrink:0;">' + _esc(ev.tf || '') + '</span>';
         logBox.appendChild(row);
@@ -84695,6 +84960,7 @@ function _caOpenModal(obj, t, ctx, existing) {
     const curType = existing ? existing.type : (isZone ? 'touchzone' : 'touch');
     const curMargin = existing && isFinite(+existing.marginPct) ? +existing.marginPct : 0.1;
     const curTfs = existing && Array.isArray(existing.tfs) && existing.tfs.length ? existing.tfs : [ctx.tf];
+    const curSide = (existing && existing.side) || '';   // V175: '' | 'above' | 'below'
 
     const typeOpts = isZone
         ? [['touchzone', 'Touch of zone'], ['closein', 'Close inside zone'], ['exit', 'Exit from zone']]
@@ -84719,6 +84985,22 @@ function _caOpenModal(obj, t, ctx, existing) {
         h += '<label style="display:flex;align-items:center;gap:8px;padding:4px 2px;color:#c9d1d9;font-size:12px;cursor:pointer;">' +
             '<input type="radio" name="ca-type" value="' + val + '"' + (curType === val ? ' checked' : '') + '>' + lbl + '</label>' +
             '<div style="color:#8b949e;font-size:9.5px;padding:0 2px 3px 22px;line-height:1.4;">' + _esc(_typeHints[val] || '') + '</div>';
+    }
+    // V175: Side of the line (lines only) — «с какой стороны свеча коснулась
+    // или пересекла», defined via the CLOSE so a straddling candle is
+    // unambiguous. Zones are unaffected.
+    if (!isZone) {
+        h += '<div style="color:#8b949e;font-size:9.5px;text-transform:uppercase;letter-spacing:.6px;margin:10px 0 3px;">Side of the line</div>';
+        const sideOpts = [
+            ['', 'Any side', 'both sides trigger equally'],
+            ['above', 'From above', 'a touching candle CLOSED at/over the line; a cross is a DOWNWARD one'],
+            ['below', 'From below', 'a touching candle CLOSED at/under the line; a cross is an UPWARD one'],
+        ];
+        for (const [val, lbl, hint] of sideOpts) {
+            h += '<label style="display:flex;align-items:center;gap:8px;padding:2px 2px;color:#c9d1d9;font-size:12px;cursor:pointer;">' +
+                '<input type="radio" name="ca-side" value="' + val + '"' + (curSide === val ? ' checked' : '') + '>' + lbl + '</label>' +
+                '<div style="color:#8b949e;font-size:9.5px;padding:0 2px 2px 22px;line-height:1.4;">' + _esc(hint) + '</div>';
+        }
     }
     // Margin (lines only)
     if (!isZone) {
@@ -84769,6 +85051,8 @@ function _caOpenModal(obj, t, ctx, existing) {
         const tfs = [];
         card.querySelectorAll('[data-ca-tf]').forEach((cb) => { if (cb.checked) tfs.push(cb.getAttribute('data-ca-tf')); });
         if (!tfs.length) tfs.push(ctx.tf);
+        const sideEl = card.querySelector('input[name="ca-side"]:checked');
+        const selSide = sideEl ? sideEl.value : '';
         const rec = {
             otype: t, oCreated: obj.createdAt,
             oName: obj.name || '', oLabel: drawLabel,
@@ -84779,7 +85063,7 @@ function _caOpenModal(obj, t, ctx, existing) {
             ratio: bind.ratio,
             isPerp: bind.isPerp,
             tfs: tfs,
-            type: selType, marginPct: marginVal,
+            type: selType, marginPct: marginVal, side: selSide,
         };
         if (existing) ChartAlerts.update(existing.id, rec);
         else ChartAlerts.add(rec);
