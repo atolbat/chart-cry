@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Chart Engine v49p — series.js v6 foundation · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
+    <title>Chart Engine v49p — series.js v6 foundation · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -5571,9 +5571,18 @@ console.log('[CE] Module registry initialized');
 
 'use strict';
 
-// ─── Safe localStorage wrapper (handles sandboxed iframes) ────────────────
+// ─── Safe localStorage wrapper (sandboxed iframes + quota-full rescue) ────
+// V178: the old wrapper latched _available=false FOREVER after a single
+// failed probe. On an origin whose localStorage was filled to quota by the
+// picker's refreshable caches, the very first probe threw QuotaExceeded —
+// from then on EVERY read returned null (empty memory map) and EVERY write
+// went to that map (dead on reload): the app silently lost all persistence
+// for the whole session while raw-localStorage writers (presets) kept
+// working. See the V178 bullet in the ScanStats header.
 const _safeStorage = (() => {
-    let _available = null; // null = not tested yet
+    let _available = null;        // null = not tested yet
+    let _lastProbeFail = 0;       // ts of the last failed probe (throttle)
+    const PROBE_RETRY_MS = 3000;  // re-probe at most this often while broken
     const _fallback = new Map(); // in-memory fallback for sandboxed contexts
     // localStorage.setItem threw). For these keys, _fallback holds the
     // authoritative value and any value still in localStorage is stale.
@@ -5582,17 +5591,99 @@ const _safeStorage = (() => {
     // value (which lived only in _fallback).
     const _fallbackKeys = new Set();
 
-    function _check() {
-        if (_available !== null) return _available;
+    // V178: EVICT REFRESHABLE CACHES ONLY — never user data. Called when a
+    // probe or write hits QuotaExceeded. The coin-picker caches (cp.coins.*
+    // for 11 exchanges, coinpicker_paprika_* index/details/tags) and the
+    // btc_realized_data indicator cache are all re-fetchable, so freeing
+    // them is always safe. Empty per-ticker overlay buckets ('[]' left
+    // behind by coin switching) are noise and pruned too. chartEngine_state,
+    // ce_chart_alerts_*, presets, headerPos/layoutMirror and NON-empty
+    // overlay buckets are NEVER touched.
+    // V179: those cache families now LIVE in IndexedDB (window._idbCache) —
+    // the LS sweep below remains only as a legacy safety net (it mostly
+    // finds nothing anymore) and still prunes empty overlay buckets.
+    function _evictCaches() {
+        let freed = 0, n = 0;
         try {
-            const testKey = '__chartEngine_storage_test__';
-            window.localStorage.setItem(testKey, '1');
-            window.localStorage.removeItem(testKey);
+            const ls = window.localStorage;
+            const kill = [];
+            for (let i = 0; i < ls.length; i++) {
+                const k = ls.key(i);
+                if (k == null) continue;
+                if (k.indexOf('cp.coins.') === 0 ||
+                    k.indexOf('coinpicker_paprika_detail_') === 0 ||
+                    k === 'coinpicker_paprika_index' ||
+                    k === 'coinpicker_paprika_tags_cache' ||
+                    k === 'btc_realized_data') {
+                    kill.push(k);
+                } else if (k.indexOf('chart_overlays_') === 0) {
+                    try { const v = ls.getItem(k); if (v === '[]' || v === '') kill.push(k); } catch (_) {}
+                }
+            }
+            for (let i = 0; i < kill.length; i++) {
+                try {
+                    const v = ls.getItem(kill[i]);
+                    freed += (v ? v.length : 0) + kill[i].length;
+                    ls.removeItem(kill[i]);
+                    n++;
+                } catch (_) {}
+            }
+        } catch (_) {}
+        return { freed, n };
+    }
+
+    function _probe() {
+        const testKey = '__chartEngine_storage_test__';
+        window.localStorage.setItem(testKey, '1');
+        window.localStorage.removeItem(testKey);
+    }
+
+    // V178: availability is no longer latched on a single failure. Probe
+    // fails → evict refreshable caches → re-probe immediately; if it still
+    // fails, re-probes are throttled to once per PROBE_RETRY_MS so a full
+    // quota recovers on its own as soon as space frees up (or a transient
+    // failure self-heals).
+    function _check() {
+        if (_available === true) return true;
+        if (_available === false && (Date.now() - _lastProbeFail) < PROBE_RETRY_MS) return false;
+        try {
+            _probe();
+            const wasBroken = (_available === false);
             _available = true;
+            if (wasBroken) {
+                // Storage recovered — flush the entries written to the memory
+                // fallback while it was broken back into real localStorage
+                // (the newer values must win over any stale copies left there).
+                try {
+                    for (const [k, v] of Array.from(_fallback)) {
+                        if (!_fallbackKeys.has(k)) continue;
+                        try { window.localStorage.setItem(k, v); _fallbackKeys.delete(k); } catch (_) {}
+                    }
+                } catch (_) {}
+                console.info('[safeStorage] localStorage recovered — memory-fallback entries flushed back');
+            }
+            return true;
         } catch (e) {
             _available = false;
+            _lastProbeFail = Date.now();
+            const ev = _evictCaches();
+            if (ev.n > 0) {
+                try {
+                    _probe();
+                    _available = true;
+                    console.warn('[safeStorage] localStorage was FULL — evicted ' + ev.n + ' refreshable cache key(s) (~' + Math.round(ev.freed / 1024) + ' KB freed); persistence restored');
+                    return true;
+                } catch (e2) {
+                    _available = false;
+                    _lastProbeFail = Date.now();
+                }
+            }
+            if (!window.__ceStorageWarned) {
+                window.__ceStorageWarned = true;
+                console.warn('[safeStorage] localStorage unavailable (' + ((e && e.name) || 'Error') + ') — writes will NOT survive a reload until space frees up');
+            }
+            return false;
         }
-        return _available;
     }
 
     return {
@@ -5602,6 +5693,18 @@ const _safeStorage = (() => {
             if (_fallbackKeys.has(key)) {
                 return _fallback.get(key) ?? null;
             }
+            // V179: READS never hit QuotaExceeded — only writes/probes do.
+            // Try raw localStorage FIRST so boot-time restore works even on
+            // a pad-full origin where _check() (a WRITE probe) fails and,
+            // after V179 moved the caches to IndexedDB, there is nothing
+            // left to evict. (Pre-V179 the same probe failure silently
+            // nulled every read — the «everything resets on reload» bug.)
+            // Sandboxed iframes throw on the localStorage ACCESS itself —
+            // caught and routed to the in-memory fallback below.
+            try {
+                const v = window.localStorage.getItem(key);
+                if (v !== null) return v;
+            } catch (e) { /* sandboxed / blocked — fall through */ }
             if (_check()) {
                 try {
                     const v = window.localStorage.getItem(key);
@@ -5616,7 +5719,19 @@ const _safeStorage = (() => {
         },
         setItem(key, value) {
             if (_check()) {
-                try { window.localStorage.setItem(key, value); _fallbackKeys.delete(key); return; } catch (e) { /* quota / sandbox */ }
+                try { window.localStorage.setItem(key, value); _fallbackKeys.delete(key); return; } catch (e) { /* quota — retry after eviction below */ }
+                // V178: mid-session quota — evict refreshable caches and retry
+                // once before falling back to the memory map.
+                try {
+                    const ev = _evictCaches();
+                    window.localStorage.setItem(key, value);
+                    _fallbackKeys.delete(key);
+                    if (ev.n > 0) console.warn('[safeStorage] quota hit on write — evicted ' + ev.n + ' cache key(s) (~' + Math.round(ev.freed / 1024) + ' KB freed) and retried OK');
+                    return;
+                } catch (e2) {
+                    _available = false;
+                    _lastProbeFail = Date.now();
+                }
             }
             // so future getItem() calls don't return the stale localStorage copy.
             _fallback.set(key, value);
@@ -5629,7 +5744,217 @@ const _safeStorage = (() => {
             _fallback.delete(key);
             _fallbackKeys.delete(key);
         },
-        isAvailable() { return _check(); }
+        isAvailable() { return _check(); },
+        // V178: diagnostics
+        status() { return { available: _check(), fallbackKeys: _fallbackKeys.size }; }
+    };
+})();
+
+// ─── _idbCache — IndexedDB home for the REFRESHABLE caches (V179) ──────────
+// User: «А че ты не пренесешь кэш в idb?». V178 made a quota-full
+// localStorage SURVIVABLE (evict + retry + caps); V179 makes it (nearly)
+// IMPOSSIBLE: the refreshable caches — cp.coins.* (×11 exchanges),
+// coinpicker_paprika_index, coinpicker_paprika_detail_<id>,
+// coinpicker_paprika_tags_cache, btc_realized_data — no longer touch
+// localStorage AT ALL. They are re-fetchable by definition, can total
+// several MB (the very thing that triggered the V178 blackout) and die
+// with IndexedDB independently of the user's critical state
+// (chartEngine_state, alerts, presets, headerPos/layoutMirror), which
+// stays in localStorage where synchronous access matters.
+// Design: a tiny KV store ('ce_caches'/'kv') holding the SAME JSON strings
+// the LS copies used to hold, plus an in-memory MIRROR for synchronous
+// readers. The small families are hydrated into the mirror at boot (a few
+// MB worst case); the paprika detail family is hydrated LAZILY per key via
+// getAsync() (its only readers are async and it is the unbounded-count
+// family). Writes are write-through: mirror update + fire-and-forget IDB
+// put. Before hydration completes a get() returns null → the call site
+// treats it as a cache miss and refetches — exactly the pre-cache
+// behaviour, fully self-healing.
+// MIGRATION: the first boot after the upgrade finds the old LS copies,
+// imports them into IDB (a newer ts wins) and removes them from LS — the
+// user's quota is freed immediately. Removal only happens AFTER a
+// successful IDB put, so a context without IndexedDB keeps the old LS
+// behaviour unchanged.
+window._idbCache = (function () {
+    const DB_NAME = 'ce_caches', STORE = 'kv';
+    const DETAIL_PREFIX = 'coinpicker_paprika_detail_';   // lazy family (not hydrated at boot)
+    const LS_PREFIXES = ['cp.coins.', DETAIL_PREFIX];      // migration sweep patterns
+    const LS_KEYS = ['coinpicker_paprika_index', 'coinpicker_paprika_tags_cache', 'btc_realized_data'];
+    let _db = null, _openPromise = null, _hydrated = false, _dbOk = false;
+    const _mem = new Map();    // key → PARSED value (sync readers)
+    const _bytes = new Map();  // key → approx serialized size (status())
+    let _migrated = 0, _migratedKb = 0;
+
+    function _open() {
+        if (_openPromise) return _openPromise;
+        _openPromise = new Promise((res) => {
+            try {
+                const rq = indexedDB.open(DB_NAME, 1);
+                rq.onupgradeneeded = () => { try { rq.result.createObjectStore(STORE); } catch (_) {} };
+                rq.onsuccess = () => { _db = rq.result; _dbOk = true; res(_db); };
+                rq.onerror = () => res(null);
+                rq.onblocked = () => res(null);
+            } catch (_) { res(null); }
+        });
+        return _openPromise;
+    }
+
+    function _put(key, jsonStr) {
+        return _open().then(db => {
+            if (!db) return false;
+            return new Promise((res) => {
+                try {
+                    const tx = db.transaction(STORE, 'readwrite');
+                    tx.objectStore(STORE).put(jsonStr, key);
+                    tx.oncomplete = () => res(true);
+                    tx.onerror = () => res(false);
+                    tx.onabort = () => res(false);
+                } catch (_) { res(false); }
+            });
+        }).catch(() => false);
+    }
+
+    function _del(key) {
+        return _open().then(db => {
+            if (!db) return;
+            try { db.transaction(STORE, 'readwrite').objectStore(STORE).delete(key); } catch (_) {}
+        }).catch(() => {});
+    }
+
+    function _getRaw(key) {
+        return _open().then(db => {
+            if (!db) return null;
+            return new Promise((res) => {
+                try {
+                    const rq = db.transaction(STORE, 'readonly').objectStore(STORE).get(key);
+                    rq.onsuccess = () => res(rq.result || null);
+                    rq.onerror = () => res(null);
+                } catch (_) { res(null); }
+            });
+        }).catch(() => null);
+    }
+
+    function _getAllRaw() {
+        return _open().then(db => {
+            if (!db) return [[], []];
+            return new Promise((res) => {
+                try {
+                    const tx = db.transaction(STORE, 'readonly');
+                    const store = tx.objectStore(STORE);
+                    const kq = store.getAllKeys(), vq = store.getAll();
+                    tx.oncomplete = () => res([kq.result || [], vq.result || []]);
+                    tx.onerror = () => res([[], []]);
+                } catch (_) { res([[], []]); }
+            });
+        }).catch(() => [[], []]);
+    }
+
+    /** [key, parsedValue] pairs for every IDB entry with the prefix (LRU prune). */
+    function entriesWithPrefix(prefix) {
+        return _getAllRaw().then(([keys, vals]) => {
+            const out = [];
+            for (let i = 0; i < keys.length; i++) {
+                const k = String(keys[i]);
+                if (k.indexOf(prefix) !== 0) continue;
+                let v = null;
+                try { v = JSON.parse(vals[i]); } catch (_) {}
+                out.push([k, v]);
+            }
+            return out;
+        }).catch(() => []);
+    }
+
+    // Boot: hydrate the small families into the mirror, then sweep the old
+    // localStorage copies into IDB (one-time migration).
+    (function _boot() {
+        _getAllRaw().then(([keys, vals]) => {
+            for (let i = 0; i < keys.length; i++) {
+                const k = String(keys[i]);
+                if (k.indexOf(DETAIL_PREFIX) === 0) continue;   // lazy family
+                try {
+                    _mem.set(k, JSON.parse(vals[i]));
+                    _bytes.set(k, (vals[i] || '').length + k.length);
+                } catch (_) {}
+            }
+            // ── migration: LS → IDB (newer ts wins; remove from LS only on
+            // a successful put so an IDB-less context keeps LS behaviour) ──
+            const hits = [];
+            try {
+                const ls = window.localStorage;
+                for (let i = 0; i < ls.length; i++) {
+                    const k = ls.key(i);
+                    if (k == null) continue;
+                    if (LS_KEYS.indexOf(k) !== -1 || LS_PREFIXES.some(p => k.indexOf(p) === 0)) hits.push(k);
+                }
+            } catch (_) {}
+            return hits.reduce((p, k) => p.then(() => {
+                let raw = null;
+                try { raw = window.localStorage.getItem(k); } catch (_) {}
+                if (raw == null) return null;
+                let val = null;
+                try { val = JSON.parse(raw); } catch (_) { val = null; }
+                if (!val) { try { window.localStorage.removeItem(k); } catch (_) {} return null; }   // corrupt — drop
+                return _getRaw(k).then(existing => {
+                    let exTs = 0;
+                    try { exTs = (existing && JSON.parse(existing).ts) || 0; } catch (_) {}
+                    const newTs = val.ts || 0;
+                    if (newTs < exTs) return true;   // IDB already newer — LS copy is stale, still removable below
+                    return _put(k, raw);
+                }).then(ok => {
+                    if (ok) {
+                        try { window.localStorage.removeItem(k); } catch (_) {}
+                        _migrated++;
+                        _migratedKb += Math.round(raw.length / 1024);
+                        if (k.indexOf(DETAIL_PREFIX) !== 0) {
+                            try { _mem.set(k, val); _bytes.set(k, raw.length + k.length); } catch (_) {}
+                        }
+                    }
+                });
+            }), Promise.resolve()).then(() => {
+                if (_migrated > 0) {
+                    try { console.info('[idbCache] migrated ' + _migrated + ' refreshable cache key(s) (~' + _migratedKb + ' KB) from localStorage to IndexedDB — LS quota freed'); } catch (_) {}
+                }
+            });
+        }).catch(() => {}).then(() => { _hydrated = true; });
+    })();
+
+    return {
+        /** SYNC — parsed value from the mirror, or null (pre-hydration = cache miss). */
+        get(key) {
+            const v = _mem.get(key);
+            return (v === undefined) ? null : v;
+        },
+        /** ASYNC — mirror first, then IDB (lazy families); result is cached in the mirror. */
+        getAsync(key) {
+            if (_mem.has(key)) return Promise.resolve(this.get(key));
+            return _getRaw(key).then(raw => {
+                if (raw == null) return null;
+                let val = null;
+                try { val = JSON.parse(raw); } catch (_) {}
+                if (val) { _mem.set(key, val); _bytes.set(key, raw.length + key.length); }
+                return val;
+            }).catch(() => null);
+        },
+        /** Write-through: mirror gets the parsed value, IDB gets the JSON string. */
+        set(key, jsonStr) {
+            try { _mem.set(key, JSON.parse(jsonStr)); } catch (_) {}
+            _bytes.set(key, (jsonStr || '').length + key.length);
+            void _put(key, jsonStr);
+        },
+        remove(key) {
+            _mem.delete(key);
+            _bytes.delete(key);
+            void _del(key);
+        },
+        /** [key, parsedValue] pairs for an IDB prefix (detail-family LRU prune). */
+        entriesWithPrefix,
+        /** Resolves when boot hydration + LS→IDB migration have finished. */
+        ready() { return _open().then(() => _hydrated); },
+        status() {
+            let bytes = 0, n = 0;
+            for (const b of _bytes.values()) { bytes += b; n++; }
+            return { dbOk: _dbOk, hydrated: _hydrated, keys: n, approxKb: Math.round(bytes / 1024), migrated: _migrated, migratedKb: _migratedKb };
+        },
     };
 })();
 
@@ -31265,12 +31590,12 @@ class BTCRealizedPriceBrick extends IndicatorBrick {
         if (now - this._lastFetchTs < 1800000) return;
         this._lastFetchTs = now;
 
-        // V55-btc-cache: try localStorage first (1 hour TTL).
+        // V55-btc-cache: 1 hour TTL. V179: the cache lives in IndexedDB now
+        // (sync mirror read — was localStorage).
         const cacheKey = 'btc_realized_data';
         try {
-            const cached = _safeStorage.getItem(cacheKey);
-            if (cached) {
-                const parsed = JSON.parse(cached);
+            const parsed = _idbCache.get(cacheKey);
+            if (parsed) {
                 if (parsed.ts && (now - parsed.ts < 3600000) && parsed.data) {
                     const cachedMap = new Map(parsed.data);
                     // V55-btc-lth-fix: only use cache if it has LTH data.
@@ -31345,12 +31670,14 @@ class BTCRealizedPriceBrick extends IndicatorBrick {
             }
             this._btcData = map;
             this._btcDataKey = 'btc';
-            // Cache to localStorage.
+            // V179: cache to IndexedDB (was localStorage — no LS quota pressure).
             try {
-                _safeStorage.setItem(cacheKey, JSON.stringify({
+                // Size cap stays as a sanity guard (refreshable cache).
+                const _btcJson = JSON.stringify({
                     ts: now,
                     data: Array.from(map.entries()),
-                }));
+                });
+                if (_btcJson.length <= 1500000) _idbCache.set(cacheKey, _btcJson);
             } catch (_) {}
         } catch (e) {
             // All proxies failed — leave _btcData as-is (embedded data).
@@ -63924,15 +64251,12 @@ class PaprikaService {
         if (this._index) return this._index;
         if (this._indexPromise) return this._indexPromise;
 
-        // Try localStorage cache
+        // V179: try the IndexedDB mirror (was the localStorage cache)
         try {
-            const cached = _safeStorage.getItem('coinpicker_paprika_index');
-            if (cached) {
-                const parsed = JSON.parse(cached);
-                if (parsed.ts && Date.now() - parsed.ts < 7 * 86400000) {
-                    this._index = new Map(parsed.data);
-                    return this._index;
-                }
+            const parsed = _idbCache.get('coinpicker_paprika_index');
+            if (parsed && parsed.ts && Date.now() - parsed.ts < 7 * 86400000) {
+                this._index = new Map(parsed.data);
+                return this._index;
             }
         } catch (e) { /* corrupt cache */ }
 
@@ -63968,12 +64292,14 @@ class PaprikaService {
                 }
             }
             this._index = map;
-            // Cache to localStorage
+            // V179: cache to IndexedDB (was localStorage — no LS quota pressure)
             try {
-                _safeStorage.setItem('coinpicker_paprika_index', JSON.stringify({
+                // Size cap stays as a sanity guard (refreshable cache).
+                const _ppJson = JSON.stringify({
                     ts: Date.now(),
                     data: Array.from(map.entries()),
-                }));
+                });
+                if (_ppJson.length <= 1500000) _idbCache.set('coinpicker_paprika_index', _ppJson);
             } catch (e) { /* quota */ }
             return map;
         } catch (e) {
@@ -63988,16 +64314,14 @@ class PaprikaService {
         const cached = this._detailCache.get(id);
         if (cached && Date.now() - cached.ts < 30 * 86400000) return cached.data;
 
-        // localStorage cache
+        // V179: IndexedDB cache (lazy per-key async read — was localStorage;
+        // the detail family is the unbounded-count one and is NOT hydrated
+        // into the boot mirror).
         try {
-            const lsKey = 'coinpicker_paprika_detail_' + id;
-            const lsVal = _safeStorage.getItem(lsKey);
-            if (lsVal) {
-                const parsed = JSON.parse(lsVal);
-                if (parsed.ts && Date.now() - parsed.ts < 30 * 86400000) {
-                    this._detailCache.set(id, { data: parsed.data, ts: parsed.ts });
-                    return parsed.data;
-                }
+            const lsVal = await _idbCache.getAsync('coinpicker_paprika_detail_' + id);
+            if (lsVal && lsVal.ts && Date.now() - lsVal.ts < 30 * 86400000) {
+                this._detailCache.set(id, { data: lsVal.data, ts: lsVal.ts });
+                return lsVal.data;
             }
         } catch (e) { /* corrupt */ }
 
@@ -64041,10 +64365,24 @@ class PaprikaService {
             };
             this._detailCache.set(id, { data: detail, ts: Date.now() });
             try {
-                _safeStorage.setItem('coinpicker_paprika_detail_' + id, JSON.stringify({
-                    ts: Date.now(),
-                    data: detail,
-                }));
+                // V179: detail cache lives in IndexedDB (was localStorage —
+                // one key per viewed coin grew unbounded and helped fill the
+                // LS quota). LRU cap of the 150 newest keys, now enforced
+                // against the IDB key list; the put is write-through.
+                const _ppPrefix = 'coinpicker_paprika_detail_';
+                void (async () => {
+                    try {
+                        const _ppOld = await _idbCache.entriesWithPrefix(_ppPrefix);
+                        if (_ppOld.length >= 150) {
+                            _ppOld.sort((a, b) => (((a[1] && a[1].ts) || 0) - ((b[1] && b[1].ts) || 0)));
+                            for (let i = 0; i < _ppOld.length - 150; i++) _idbCache.remove(_ppOld[i][0]);   // V179: < (was <=) — keep exactly 150, the V178 loop always dropped one extra
+                        }
+                        _idbCache.set(_ppPrefix + id, JSON.stringify({
+                            ts: Date.now(),
+                            data: detail,
+                        }));
+                    } catch (_) {}
+                })();
             } catch (e) { /* quota */ }
             return detail;
         } catch (e) {
@@ -68390,7 +68728,9 @@ class PresetManager {
     /** Load presets + swipeEnabled flag from localStorage. */
     _load() {
         try {
-            const raw = localStorage.getItem(this._storageKey);
+            // V178: route through _safeStorage (quota eviction rescue + sandbox
+            // fallback) instead of raw localStorage.
+            const raw = window._safeStorage.getItem(this._storageKey);
             if (!raw) return;
             const parsed = JSON.parse(raw);
             if (parsed && Array.isArray(parsed.presets)) {
@@ -68409,7 +68749,9 @@ class PresetManager {
     /** Persist presets + swipeEnabled flag to localStorage. */
     _save() {
         try {
-            localStorage.setItem(this._storageKey, JSON.stringify({
+            // V178: route through _safeStorage (quota eviction rescue + sandbox
+            // fallback) instead of raw localStorage.
+            window._safeStorage.setItem(this._storageKey, JSON.stringify({
                 v: 1,
                 presets: this._presets,
                 swipeEnabled: this._swipeEnabled,
@@ -75507,9 +75849,9 @@ function _cpPreloadCoins(exchange, opts) {
     //   within localStorage quota. TTL = 1 hour — prices/volumes update
     //   via the 5s live-price refresh, but the coin SET rarely changes.
     try {
-        const raw = _safeStorage.getItem('cp.coins.' + exchange);
-        if (raw) {
-            const parsed = JSON.parse(raw);
+        // V179: cache lives in IndexedDB (sync mirror read — was localStorage).
+        const parsed = _idbCache.get('cp.coins.' + exchange);
+        if (parsed) {
             // FIX V51-coinbase-stats: also require parsed.coins.length > 0 —
             //   an empty array in cache (e.g. from a previous broken version
             //   that fetched the wrong endpoint) would otherwise make the
@@ -75563,7 +75905,11 @@ function _cpPreloadCoins(exchange, opts) {
             _cpCoinsByExchange.set(exchange, { coins, ts: Date.now() });
             // V50: persist to localStorage for next page load
             try {
-                _safeStorage.setItem('cp.coins.' + exchange, JSON.stringify({ coins, ts: Date.now() }));
+                // V179: write-through to IndexedDB (was localStorage — the
+                // MB-scale family that filled the LS quota). The size cap
+                // stays as a sanity guard against pathological data.
+                const _cpLsJson = JSON.stringify({ coins, ts: Date.now() });
+                if (_cpLsJson.length <= 1500000) _idbCache.set('cp.coins.' + exchange, _cpLsJson);
             } catch (e) { /* quota — silent */ }
             return coins;
         })
@@ -76460,9 +76806,8 @@ class CoinPicker {
      */
     _restoreTagsCache() {
         try {
-            const raw = _safeStorage.getItem('coinpicker_paprika_tags_cache');
-            if (!raw) return;
-            const cache = JSON.parse(raw);
+            // V179: tags cache lives in the IndexedDB mirror (was localStorage).
+            const cache = _idbCache.get('coinpicker_paprika_tags_cache');
             if (!cache || typeof cache !== 'object') return;
             // cache shape: { "BTC": [{id, name}, ...], "ETH": [...], ... }
             for (const [base, tags] of Object.entries(cache)) {
@@ -76481,15 +76826,16 @@ class CoinPicker {
      */
     _persistTagToCache(base, tags) {
         try {
-            const raw = _safeStorage.getItem('coinpicker_paprika_tags_cache');
-            const cache = raw ? JSON.parse(raw) : {};
+            // V179: IndexedDB mirror (shallow copy so the mirrored object is
+            // never mutated in place), then write-through.
+            const cache = Object.assign({}, _idbCache.get('coinpicker_paprika_tags_cache') || {});
             cache[base.toUpperCase()] = tags;
-            // Cap at 500 entries to avoid quota issues
+            // Cap at 500 entries
             const keys = Object.keys(cache);
             if (keys.length > 500) {
                 delete cache[keys[0]];
             }
-            _safeStorage.setItem('coinpicker_paprika_tags_cache', JSON.stringify(cache));
+            _idbCache.set('coinpicker_paprika_tags_cache', JSON.stringify(cache));
         } catch (e) { /* quota */ }
     }
 
@@ -78601,6 +78947,15 @@ const ChartStatePersistence = (() => {
 
     /** Immediate save (used on pagehide). */
     function saveNow() {
+        // V178: NEVER serialize a state that restore hasn't finished applying.
+        // The V177 pagehide net (armed at module init) fires on
+        // pagehide/beforeunload/visibilitychange-hidden; offline/slow boots
+        // stall in waitForDataReady for up to ~5 s AFTER window._chart
+        // exists, so hiding/reloading the tab inside that window serialized
+        // DEFAULTS (no indicators, no overlays, stock settings) over the
+        // user's saved state — the «everything resets on reload» wipe.
+        // save() already had this guard; saveNow was the hole.
+        if (!_restoreDone) return;
         if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
         if (_viewportSaveTimer) { clearTimeout(_viewportSaveTimer); _viewportSaveTimer = null; }
         try {
@@ -82452,6 +82807,50 @@ if (typeof URLSearchParams !== 'undefined' && new URLSearchParams(location.searc
 //     touching implies its containing coarse candle touches too — no
 //     false negatives for touch/zone; only a pure gap-through cross can
 //     slip past). The 20/min budget stays as the hard cap on top.
+// V178: STORAGE-FULL RESCUE — user: «скидываются все индикаторы при
+//     перезагрузке (пресеты хоть остались, могу подгрузить), положение
+//     хэдера сбрасывается, ltr сбрасывается и тд. Линии тоже не
+//     сохраняются». Root cause: the picker's REFRESHABLE caches (cp.coins.*
+//     for 11 exchanges, coinpicker_paprika_index, one coinpicker_paprika_
+//     detail_<id> key per viewed coin, btc_realized_data) slowly filled
+//     localStorage up to the quota; _safeStorage's availability probe then
+//     threw QuotaExceeded ONCE and the old code latched "unavailable" for
+//     the WHOLE page session — every state/line/alert/headerPos/layoutMirror
+//     read returned null at boot and every write went to an in-memory map
+//     that dies on reload, while presets (written via RAW localStorage)
+//     kept working. That asymmetry was the reported bug. Fixes:
+//     ① _check() no longer latches — on a failed probe it EVICTS the
+//     refreshable caches (user data is never touched) and re-probes
+//     immediately; persistent failures re-probe at most every 3 s; entries
+//     written to the memory fallback while broken are flushed back to real
+//     localStorage when it recovers.
+//     ② setItem on a mid-session quota error evicts caches and retries once
+//     before using the memory fallback.
+//     ③ cache writers are size-capped (cp.coins 300 KB, paprika index
+//     250 KB, btc_realized 600 KB) and paprika detail keys are LRU-pruned
+//     to the 150 newest.
+//     ④ ChartStatePersistence.saveNow skips the save until restore finished
+//     — V177's pagehide net could serialize PRE-RESTORE DEFAULTS over the
+//     saved state during a slow/offline boot (~5 s window).
+//     ⑤ PresetManager moved to _safeStorage so presets get the same rescue.
+// V179: CACHES → INDEXEDDB — user: «А че ты не пренесешь кэш в idb?».
+//     V178 made a quota-full localStorage SURVIVABLE (evict + retry +
+//     caps); V179 makes it (nearly) IMPOSSIBLE: the refreshable caches
+//     (cp.coins.* ×11, coinpicker_paprika_index, coinpicker_paprika_
+//     detail_<id> family, coinpicker_paprika_tags_cache, btc_realized_
+//     data) no longer touch localStorage AT ALL. window._idbCache (ce-
+//     infra) is a tiny IndexedDB KV store ('ce_caches'/'kv') holding the
+//     same JSON strings plus an in-memory mirror for the sync readers:
+//     small families hydrate at boot, paprika details are read lazily
+//     per key via getAsync (their readers are async and the family is
+//     unbounded), writes are write-through fire-and-forget; pre-
+//     hydration reads are cache misses → refetch (self-healing). The
+//     first boot after the upgrade MIGRATES the old LS copies into IDB
+//     (a newer ts wins) and frees the quota; LS removal happens only
+//     after a successful IDB put, so a context without IndexedDB keeps
+//     the old behaviour. The detail LRU cap (150 newest) is enforced
+//     against the IDB key list. _safeStorage's V178 eviction stays as a
+//     belt-and-suspenders net (it now mostly finds nothing in LS).
 // V177: OFFLINE PERSISTENCE REPAIR — user: «Линии перестали сохраняться в
 //     офлайне. Так что фикси. Там и алерты в них должны сохраняться. И
 //     стили.» Three root causes found and fixed. ① NO SAVE TRIGGER: the
