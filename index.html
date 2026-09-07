@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Chart Engine v49n — series.js v6 foundation · V168 fixes: no open-chart toast · tab-return catch-up at 1×interval + WS resume · anchor prefetch timeout watchdog</title>
+    <title>Chart Engine v49p — series.js v6 foundation · V170 chart alerts (lines/rays/zones → 🔔 Alert menu → modal → live evaluation → Alerts tab) · volume profile deep settings (POC/dev-POC/bins/VA zone/buy-sell colors+alpha) · scan row shift</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -263,7 +263,7 @@
         .controls .dropdown-trigger {
             display: flex; align-items: center; gap: 3px;
             background: rgba(255,255,255,.05); color: #e6edf3;
-            border: none; padding: 3px 6px; border-radius: 3px;
+            border: none; padding: 4px 6px; border-radius: 3px;
             cursor: pointer; font-size: 10px; font-weight: 500;
             font-family: inherit; white-space: nowrap;
             transition: background .12s, color .12s;
@@ -301,9 +301,13 @@
             transition: background .1s, color .1s;
         }
         .controls .dropdown-menu button:hover { background: rgba(255,255,255,.07); color: #fff; }
-        /* V49n: TF dropdown trigger — looks like the old tf-btn */
+        /* V49n: TF dropdown trigger — looks like the old tf-btn.
+           V169: matched to the coin button's rendered height (20px): 3px
+           padding ×2 + 14px line — the TF trigger used to be a couple px
+           shorter than [BTC/USDT]. */
         .controls .dropdown-trigger.tf-btn {
             padding: 3px 7px; font-size: 11px; font-weight: 600;
+            line-height: 14px;
             letter-spacing: .5px; text-transform: uppercase;
             border-radius: 4px; min-width: 32px; text-align: center;
         }
@@ -5884,6 +5888,11 @@ const CE_MAIN_CANDLES_DEFAULTS = {
     lineColor: '',               // 'line' chartType
     lineWidth: 1.5,
     lineStyle: 'solid',          // 'line' chartType: 'solid' | 'dashed' | 'dotted'
+    // V169: the Main Candles system entry in the Indicators modal can be
+    //   HIDDEN (👁) — like the volume bars/profile it stays non-removable.
+    //   Drawing-only flag: the Y auto-fit keeps reading the price data so
+    //   the scale stays sane while the glyphs are off.
+    hidden: false,
     // V136/V137: crosshair mark opt-ins for the base candles. Same trio
     //   as indicator outputs: dot / Y-axis label / mark from other panels.
     //   V137 defaults: the candle close IS marked on the main panel (chMark)
@@ -5948,6 +5957,8 @@ function sanitizeMainCandlesState(obj) {
     for (const k of ['chMark', 'chLabel', 'chCross']) {
         if (obj[k] === true || obj[k] === false) out[k] = obj[k];
     }
+    // V169: hidden is a boolean choice like the rest (Main Candles 👁)
+    if (obj.hidden === true || obj.hidden === false) out.hidden = obj.hidden;
     return out;
 }
 // V129: full-replace deserialization (preset import semantics — the snapshot
@@ -6016,6 +6027,10 @@ function resetMainCandlesCfg() {
 function applyMainCandlesToConfig(cfg) {
     if (!cfg) return;
     const mc = CE_MAIN_CANDLES;
+    // V169: 👁 hidden — a DRAWING-only flag (NOT series.visible): the Y
+    // auto-fit and crosshair value sampling keep working off the raw data,
+    // only the glyphs disappear.
+    cfg._sysHidden = (mc.hidden === true) ? true : undefined;
     if (mc.chartType === 'line') {
         cfg.type = 'line';
         cfg.priceStyle = undefined;
@@ -35170,6 +35185,7 @@ class VolumeProfileRenderer {
     render(ctx, layout, slice, xScale, yScales, config, yColW, yFormatters) {
         const vpCfg = config;
         if (!vpCfg) return;
+        if (vpCfg.hidden === true) return;   // V169: Volume Profile 👁 off (Indicators modal)
 
         const panelId = 'main';
         const yScale = yScales[panelId];
@@ -35247,7 +35263,10 @@ class VolumeProfileRenderer {
         const targetVol = totalVol * (vaPercent / 100);
         let vaLoIdx = 0, vaHiIdx = 0;
         const showVA = vpCfg.showVA !== false;  // on by default
-        if (showVA && totalVol > 0) {
+        // V170: the VA range is ALWAYS computed when there is data — showVA
+        // now only controls the bright/dim bar distinction, while the new
+        // showVAZone setting draws the shaded band using the SAME indices.
+        if (totalVol > 0) {
             vaLoIdx = pocIdx;
             vaHiIdx = pocIdx;
             let cumVol = levelsBuyVol[pocIdx] + levelsSellVol[pocIdx];
@@ -35268,7 +35287,7 @@ class VolumeProfileRenderer {
                 }
             }
         } else {
-            // VA disabled or no data: all levels are "inside" (bright)
+            // No data: all levels are "inside" (bright)
             vaLoIdx = 0;
             vaHiIdx = nodeCount - 1;
         }
@@ -35278,6 +35297,25 @@ class VolumeProfileRenderer {
         // Clip includes plot area + Y-axis label area so POC line can reach the label
         ctx.rect(layout.plotLeft, panelTop, layout.width - layout.plotLeft, panelHeight);
         ctx.clip();
+
+        // ── V170: Value Area zone — a shaded band from the VA bottom level
+        // to the VA top level, drawn UNDER the histogram bars. Color/alpha
+        // are configurable (settings write rgba strings directly).
+        if (vpCfg.showVAZone && totalVol > 0) {
+            const zTop = yScale.valToPix(levelsPriceHi[vaHiIdx]);
+            const zBot = yScale.valToPix(levelsPriceLo[vaLoIdx]);
+            const zH = Math.max(1, zBot - zTop);
+            ctx.fillStyle = vpCfg.vaZoneColor || 'rgba(88,166,255,0.07)';
+            ctx.fillRect(layout.plotLeft, zTop, layout.plotWidth, zH);
+            ctx.strokeStyle = vpCfg.vaZoneBorderColor || 'rgba(88,166,255,0.28)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 3]);
+            ctx.beginPath();
+            ctx.moveTo(layout.plotLeft, zTop); ctx.lineTo(layout.plotRight, zTop);
+            ctx.moveTo(layout.plotLeft, zBot); ctx.lineTo(layout.plotRight, zBot);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
 
         // ── Draw bars for each level ──
         const gapFrac = gapPercent / 100;  // e.g. 0.15 = 15% gap
@@ -35291,7 +35329,9 @@ class VolumeProfileRenderer {
             const rowY = pyTop + gap / 2;
 
             // Choose colors based on whether this level is inside Value Area
-            const isInVA = li >= vaLoIdx && li <= vaHiIdx;
+            // V170: with showVA off every level counts as "inside" (bright),
+            // while the VA indices above are still real (for the zone band).
+            const isInVA = !showVA || (li >= vaLoIdx && li <= vaHiIdx);
             const lBuyColor = isInVA ? buyColor : outsideBuyColor;
             const lSellColor = isInVA ? sellColor : outsideSellColor;
 
@@ -35360,8 +35400,11 @@ class VolumeProfileRenderer {
             }
             pocY = yScale.valToPix(pocPrice);
             ctx.strokeStyle = vpCfg.pocColor || '#ffffff';
-            ctx.lineWidth = RENDER_CONSTANTS.POC_LINE_WIDTH_PX;
-            ctx.setLineDash([]);
+            // V170: POC line width + style (solid / dash / dot) configurable
+            ctx.lineWidth = (isFinite(+vpCfg.pocWidth) && +vpCfg.pocWidth > 0)
+                ? +vpCfg.pocWidth : RENDER_CONSTANTS.POC_LINE_WIDTH_PX;
+            ctx.setLineDash(vpCfg.pocStyle === 'dash' ? [7, 5]
+                : vpCfg.pocStyle === 'dot' ? [2, 3] : []);
             ctx.beginPath();
             ctx.moveTo(layout.plotLeft, pocY);
             ctx.lineTo(layout.axisYX, pocY);
@@ -35425,8 +35468,11 @@ class VolumeProfileRenderer {
 
             if (pocPoints.length > 2) {
                 ctx.strokeStyle = vpCfg.pocDevelopColor || 'rgba(255,255,255,0.3)';
-                ctx.lineWidth = RENDER_CONSTANTS.POC_DEVELOP_LINE_PX;
-                ctx.setLineDash([2, 3]);
+                // V170: developing-POC width + style (dash default / solid / dot)
+                ctx.lineWidth = (isFinite(+vpCfg.pocDevelopWidth) && +vpCfg.pocDevelopWidth > 0)
+                    ? +vpCfg.pocDevelopWidth : RENDER_CONSTANTS.POC_DEVELOP_LINE_PX;
+                ctx.setLineDash(vpCfg.pocDevelopStyle === 'solid' ? []
+                    : vpCfg.pocDevelopStyle === 'dot' ? [1.5, 3] : [2, 3]);
                 ctx.beginPath();
                 ctx.moveTo(pocPoints[0], pocPoints[1]);
                 for (let i = 2; i < pocPoints.length; i += 2) {
@@ -35905,6 +35951,15 @@ function shouldDrawXAxisLabels(axisXMode) {
 }
 
 
+// V169: volume-bar predicates for the two-pass draw order (bars after lines).
+// A volume series = bar-type series whose id is 'vol' or that lives on the
+// volume overlay axis / vol panel — the same match VolumeProfileRenderer uses.
+function _isVolSeries(id, cfg) {
+    return cfg && cfg.type === 'bar' &&
+        (id === 'vol' || cfg.id === 'vol' || cfg.yAxis === 'volume' || cfg.panelId === 'vol');
+}
+function _isNotVolSeries(id, cfg) { return !_isVolSeries(id, cfg); }
+
 class MainRenderer {
     constructor(ctx, panelLabelRenderer) { this.ctx = ctx; this._csc = null; this._labelRenderer = panelLabelRenderer; }
 
@@ -35915,8 +35970,14 @@ class MainRenderer {
         this._separator(c, layout, strokeRound);
         this._presetPanelAccents(c, layout, config, strokeRound);
         this._axisLabels(c, layout, xScale, yScales, ticks, yColW, yFormatters, fillRound, config, indicatorManager);
-        this._series(c, layout, slice, xScale, yScales, intervalMs, fillRound, strokeRound);
+        // V169: volume bars moved AFTER the indicators pass — indicator lines
+        // used to be painted OVER the volume bars; the user wants the bars to
+        // cover the lines («линии … рисуются поверх баров объема. Надо чтобы
+        // бары их закрывали»). Pass 1 = everything except volume bars,
+        // then indicators, then pass 2 = volume bars only.
+        this._series(c, layout, slice, xScale, yScales, intervalMs, fillRound, strokeRound, _isNotVolSeries);
         this._indicators(c, layout, slice, xScale, yScales, indicatorManager);
+        this._series(c, layout, slice, xScale, yScales, intervalMs, fillRound, strokeRound, _isVolSeries);
         this._overlayDeadZones(c, layout, config);
         this._volumeProfile(c, layout, slice, xScale, yScales, config, yColW, yFormatters, fillRound, strokeRound);
         this._minMaxLabels(c, layout, slice, xScale, yScales, yColW, yFormatters, fillRound, strokeRound, config);
@@ -36358,12 +36419,17 @@ class MainRenderer {
         }
     }
 
-    _series(ctx, layout, slice, xScale, yScales, intervalMs, fillRound, strokeRound) {
+    _series(ctx, layout, slice, xScale, yScales, intervalMs, fillRound, strokeRound, filter) {
         const visibleRange = [0, slice.count - 1];
         for (const id in slice.seriesSlices) {
             const ss      = slice.seriesSlices[id];
             // Skip hidden series (e.g. vol series hidden when AO is displayed)
             if (ss.config.visible === false) continue;
+            // V169: system-hidden (Main Candles 👁 off) — skipped for DRAWING
+            // only; the Y auto-fit still reads the data so the scale stays sane.
+            if (ss.config._sysHidden === true) continue;
+            // V169: optional series filter (volume two-pass draw order)
+            if (filter && !filter(id, ss.config)) continue;
             const pId     = ss.config.panelId;
             const panel   = layout.panels[pId];
             if (!panel || panel.height <= 0) continue;  // skip collapsed panels
@@ -36488,6 +36554,7 @@ class MainRenderer {
         for (const id in slice.seriesSlices) {
             const ss = slice.seriesSlices[id];
             if (ss.config.visible === false) continue;
+            if (ss.config._sysHidden === true) continue;   // V169: Main Candles 👁 off
             const normalized = normalizeMinMaxConfig(ss.config.showMinMax);
             if (!normalized) continue;
             const { show: showWhat, color: colorCfg, line: lineCfg } = normalized;
@@ -37156,7 +37223,7 @@ class OverlayRenderer {
             if (flags.label) yPill(pId2, py, val, color);
         };
 
-        const seriesForPanel = this.config.series.filter(s => s.panelId === pId && s.visible !== false);
+        const seriesForPanel = this.config.series.filter(s => s.panelId === pId && s.visible !== false && s._sysHidden !== true);
         // ── Marks for regular series on this panel ──
         for (const sCfg of seriesForPanel) {
             if (sCfg.type === 'bar') continue;
@@ -53239,9 +53306,31 @@ class OverlayUIController {
             const obj = this.api.hitTestOverlay(px, py, 8);
             if (obj) {
                 this._ctxObjKey = obj._key;
+                // V170: update the Alert item for THIS drawing — a ● badge
+                // when an alert already exists; dimmed+hint for objects that
+                // cannot carry alerts (vertical lines, labels, …).
+                try {
+                    const alertItem = this.ovCtx && this.ovCtx.querySelector('[data-act="alert"]');
+                    if (alertItem) {
+                        let t = null;
+                        if (obj instanceof ZoneObject) t = 'zone';
+                        else if (obj instanceof TrendLineObject) t = 'trend';
+                        else if (obj instanceof LineObject) t = obj.orientation === 'horizontal' ? 'hline' : null;
+                        if (t) {
+                            const has = window.ChartAlerts && window.ChartAlerts.hasFor(obj);
+                            alertItem.textContent = has ? '🔔 Alert ●' : '🔔 Alert…';
+                            alertItem.title = has ? 'An alert is already armed for this drawing' : 'Create an alert for this drawing (touch / cross / margin)';
+                            alertItem.style.opacity = '1';
+                        } else {
+                            alertItem.textContent = '🔔 Alert';
+                            alertItem.title = 'Alerts work on horizontal lines, trend lines/rays and zones';
+                            alertItem.style.opacity = '.35';
+                        }
+                    }
+                } catch (_) {}
                 if (this.ovCtx) {
                     // Clamp position so context menu stays within viewport
-                    const menuW = 180, menuH = 160;  // approximate menu size
+                    const menuW = 180, menuH = 185;  // approximate menu size (5 items incl. 🔔 Alert)
                     let left = e.clientX;
                     let top  = e.clientY;
                     if (left + menuW > window.innerWidth)  left = window.innerWidth - menuW - 8;
@@ -53269,6 +53358,19 @@ class OverlayUIController {
                     case 'dup': {
                         const orig = this.api.getObject(this._ctxObjKey);
                         if (orig) { const c = orig.toConfig(); c.name = (c.name || '') + ' copy'; this.api.addObject(c); this.updateCount(); }
+                        break;
+                    }
+                    case 'alert': {
+                        // V170: open the ChartAlerts modal for this drawing.
+                        const o = this.api.getObject(this._ctxObjKey);
+                        const eligible = o && ((typeof ZoneObject !== 'undefined' && o instanceof ZoneObject)
+                            || (typeof TrendLineObject !== 'undefined' && o instanceof TrendLineObject)
+                            || (typeof LineObject !== 'undefined' && o instanceof LineObject && o.orientation === 'horizontal'));
+                        if (eligible && window.ChartAlerts) {
+                            window.ChartAlerts.openForObject(o);
+                        } else {
+                            console.info('[Alerts] only horizontal lines, trend lines/rays and zones can carry alerts');
+                        }
                         break;
                     }
                     case 'del': this.api.removeObject(this._ctxObjKey); this.updateCount(); break;
@@ -64977,21 +65079,70 @@ class ToolbarController {
                 _safeStorage.setItem('chartEngine_layoutMirror', isRtl ? 'rtl' : 'ltr');
             } catch (err) {}
         });
-        // V103: Volume Profile width cycle
-        this._on(this._el('btn-vp-width'), 'click', (e) => {
-            const engine = window._chart?.engine;
-            if (!engine?.config?.settings?.volumeProfile) return;
-            const vp = engine.config.settings.volumeProfile;
-            const widths = [10, 15, 20, 25, 30, 35, 40, 50];
-            const cur = vp.widthPercent || 25;
-            const idx = widths.indexOf(cur);
-            const next = widths[(idx + 1) % widths.length];
-            vp.widthPercent = next;
-            e.target.textContent = `VP Width: ${next}%`;
-            try { _safeStorage.setItem('chartEngine_vpWidth', String(next)); } catch(_) {}
-            engine.dirty?.setAll?.();
-            engine.requestRender?.();
-        });
+        // V103: Volume Profile width cycle — REMOVED in V169 (moved into the
+        //   Indicators modal → Volume Profile system card → ⚙ width). The
+        //   persisted chartEngine_vpWidth value is still honored at boot.
+        // V169: restore the system-entry visibility flags (Volume Bars /
+        //   Volume Profile) + the VP width. These are set from the Indicators
+        //   modal's system cards and survive reloads via localStorage.
+        try {
+            const eng = this.api?._ctx?.engine || window._chart?.engine;
+            if (eng && eng.config) {
+                if (_safeStorage.getItem('chartEngine_volHidden') === '1') {
+                    const sCfg = (eng.config.series || []).find(s => s.id === 'vol');
+                    if (sCfg) sCfg.visible = false;
+                    // Mirror into the live DataStore (the seriesMap config IS
+                    // the config.series entry, shared by reference).
+                }
+                if (eng.config.settings?.volumeProfile) {
+                    const _vpCfgRestore = () => {
+                        // V170: full VP settings backup (colors/POC/bins/VA zone)
+                        try {
+                            const raw = _safeStorage.getItem('chartEngine_vpCfg');
+                            if (raw) { const o = JSON.parse(raw); if (o && typeof o === 'object') Object.assign(eng.config.settings.volumeProfile, o); }
+                        } catch (_) {}
+                    };
+                    _vpCfgRestore();
+                    if (_safeStorage.getItem('chartEngine_vpHidden') === '1') {
+                        eng.config.settings.volumeProfile.hidden = true;
+                    }
+                    const vpW = parseInt(_safeStorage.getItem('chartEngine_vpWidth') || '', 10);
+                    if (isFinite(vpW) && vpW >= 5 && vpW <= 60) eng.config.settings.volumeProfile.widthPercent = vpW;
+                }
+            }
+        } catch (_) {}
+        // V169: the StatePersistence restore runs AFTER this constructor and
+        //   can rebuild parts of the config — re-apply the system-entry flags
+        //   once the boot restore settles (source:connected +1.5s, 6s fallback;
+        //   both idempotent, they only ever re-assert the stored choice).
+        const _reapplySysVis = () => {
+            try {
+                const eng = (window._chart && window._chart.engine) || this.api?._ctx?.engine;
+                if (!eng || !eng.config) return;
+                if (_safeStorage.getItem('chartEngine_volHidden') === '1') {
+                    const sCfg = (eng.config.series || []).find(s => s.id === 'vol');
+                    if (sCfg) sCfg.visible = false;
+                }
+                const vp = eng.config.settings && eng.config.settings.volumeProfile;
+                if (vp) {
+                    try {
+                        const raw = _safeStorage.getItem('chartEngine_vpCfg');
+                        if (raw) { const o = JSON.parse(raw); if (o && typeof o === 'object') Object.assign(vp, o); }
+                    } catch (_) {}
+                    if (_safeStorage.getItem('chartEngine_vpHidden') === '1') vp.hidden = true;
+                    const vpW = parseInt(_safeStorage.getItem('chartEngine_vpWidth') || '', 10);
+                    if (isFinite(vpW) && vpW >= 5 && vpW <= 60) vp.widthPercent = vpW;
+                }
+                try { eng.requestRender && eng.requestRender(); } catch (_) {}
+            } catch (_) {}
+        };
+        try {
+            const _bus169 = window._chart && window._chart.bus;
+            if (_bus169 && typeof _bus169.on === 'function') {
+                _bus169.on('source:connected', () => setTimeout(_reapplySysVis, 1500));
+            }
+        } catch (_) {}
+        setTimeout(_reapplySysVis, 6000);
         // Restore persisted state
         try {
             const stored = _safeStorage.getItem('chartEngine_headerPos');
@@ -65007,7 +65158,7 @@ class ToolbarController {
                 }
             }
         } catch (err) {}
-        // V103: restore VP width
+        // V103: restore VP width (button removed in V169 — value applied above)
         try {
             const vpW = _safeStorage.getItem('chartEngine_vpWidth');
             if (vpW) {
@@ -65015,8 +65166,6 @@ class ToolbarController {
                 if (engine?.config?.settings?.volumeProfile) {
                     engine.config.settings.volumeProfile.widthPercent = parseInt(vpW, 10) || 25;
                 }
-                const btn = this._el('btn-vp-width');
-                if (btn) btn.textContent = `VP Width: ${vpW}%`;
             }
         } catch (_) {}
         // V121-layout-mirror: restore persisted RTL state
@@ -69591,9 +69740,8 @@ class ChartFactory {
         // V51-timezone: timezone selector button
         _addMenuBtn(['btn-timezone',    'TZ: ' + (getTimezone() === 'local' ? 'Local' : getTimezone()), {}]);
         _addMenuSep();
-        // V103: Volume Profile width
-        _addMenuLabel('Volume Profile');
-        _addMenuBtn(['btn-vp-width',    'VP Width: 25%', {}]);
+        // V103/V169: Volume Profile width moved into the Indicators modal
+        //   (Volume Profile system card → ⚙). No VP section here anymore.
 
         // ─── Data & Cache ───
         _addMenuLabel('Data & Cache');
@@ -69673,7 +69821,7 @@ class ChartFactory {
             btn.className = 'theme-btn' + (key === currentThemeKey ? ' active' : '');
             btn.dataset.theme = key;
             btn.title = theme.name;
-            btn.style.cssText = `padding:5px 8px;border-radius:4px;border:1px solid var(--border);background:${theme.bgSecondary};color:${theme.text};font-size:10px;cursor:pointer;flex:1;min-width:80px;`;
+            btn.style.cssText = `padding:5px 8px;border-radius:4px;border:1px solid var(--border);background:${theme.bgSecondary};color:${theme.text};font-size:10px;cursor:pointer;flex:1 1 100%;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`;
             // Color swatches
             const swatch = document.createElement('span');
             swatch.style.cssText = `display:inline-block;width:8px;height:8px;border-radius:50%;background:${theme.accent};margin-right:4px;vertical-align:middle;`;
@@ -70257,6 +70405,9 @@ class ChartFactory {
                 <div class="ci" data-act="edit" role="menuitem" tabindex="0">Edit in manager</div>
                 <div class="ci" data-act="toggle" role="menuitem" tabindex="0">Toggle visibility</div>
                 <div class="ci" data-act="dup" role="menuitem" tabindex="0">Duplicate</div>
+                <!-- V170: per-drawing alerts — opens the ChartAlerts modal;
+                     a ● badge marks drawings that already have an alert -->
+                <div class="ci" data-act="alert" role="menuitem" tabindex="0">🔔 Alert</div>
                 <div class="ci dng" data-act="del" role="menuitem" tabindex="0">Delete</div>
             </div>
         `;
@@ -70738,15 +70889,49 @@ class ChartFactory {
             const mcDown = (mcHub && mcHub.downColor) || themeNow.down || '#f85149';
             const sysStripe = 'linear-gradient(180deg,' + mcUp + ' 50%,' + mcDown + ' 50%)';
             const LOCK_SVG = '<span class="ind-sys-lock" title="System element — cannot be removed"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 1 1 6 0v3H9z"/></svg></span>';
+            // V169: the system section now lists THREE locked entries — Main
+            // Candles (hideable via the hub), Volume Bars and Volume Profile
+            // (the VP width setting moved here from toolbar Settings). Each is
+            // non-removable but has an eye toggle + a gear.
+            const volSeriesCfg = (api.config?.series || []).find(s => s.id === 'vol') || null;
+            const volHidden = volSeriesCfg ? volSeriesCfg.visible === false : false;
+            const vpCfg = (api.config?.settings?.volumeProfile) || null;
+            const vpHidden = vpCfg ? vpCfg.hidden === true : false;
+            const mcHidden = mcHub ? mcHub.hidden === true : false;
             const sysCardHtml =
-                '<div class="ind-card ind-card-system" data-sys="maincandles" title="Base chart candles — always present, cannot be removed">' +
+                '<div class="ind-card ind-card-system' + (mcHidden ? ' hidden-ind' : '') + '" data-sys="maincandles" title="Base chart candles — always present, cannot be removed">' +
                     '<div class="ind-card-color" style="background:' + sysStripe + '"></div>' +
                     '<div class="ind-card-info">' +
                         '<div class="ind-card-name">Main Candles ' + LOCK_SVG + '</div>' +
                         '<div class="ind-card-meta">' + esc(mcMetaBits.join(' · ')) + ' · always on chart · not removable</div>' +
                     '</div>' +
                     '<div class="ind-card-actions">' +
-                        '<button class="ind-card-btn ind-cfg-btn" data-sys-cfg="maincandles" title="Configure">⚙</button>' +
+                        '<button class="ind-card-btn mc-vis-btn' + (mcHidden ? ' hidden' : '') + '" title="' + (mcHidden ? 'Show' : 'Hide') + ' main candles">👁</button>' +
+                        '<button class="ind-card-btn sys-cfg-btn" data-sys-cfg="maincandles" title="Configure">⚙</button>' +
+                    '</div>' +
+                '</div>';
+            const volBarsCardHtml =
+                '<div class="ind-card ind-card-system' + (volHidden ? ' hidden-ind' : '') + '" data-sys="volbars" title="Volume bars of the main panel — cannot be removed">' +
+                    '<div class="ind-card-color" style="background:linear-gradient(180deg,#3fb95055 50%,#f8514955 50%)"></div>' +
+                    '<div class="ind-card-info">' +
+                        '<div class="ind-card-name">Volume Bars ' + LOCK_SVG + '</div>' +
+                        '<div class="ind-card-meta">' + (volHidden ? 'hidden' : 'main panel · overlay axis') + ' · not removable</div>' +
+                    '</div>' +
+                    '<div class="ind-card-actions">' +
+                        '<button class="ind-card-btn vol-vis-btn' + (volHidden ? ' hidden' : '') + '" title="' + (volHidden ? 'Show' : 'Hide') + ' volume bars">👁</button>' +
+                        '<button class="ind-card-btn sys-cfg-btn" data-sys-cfg="volbars" title="Configure">⚙</button>' +
+                    '</div>' +
+                '</div>';
+            const vpCardHtml =
+                '<div class="ind-card ind-card-system' + (vpHidden ? ' hidden-ind' : '') + '" data-sys="volprofile" title="Volume Profile of the main panel — cannot be removed">' +
+                    '<div class="ind-card-color" style="background:linear-gradient(90deg,rgba(255,255,255,.25),rgba(180,180,180,.15))"></div>' +
+                    '<div class="ind-card-info">' +
+                        '<div class="ind-card-name">Volume Profile ' + LOCK_SVG + '</div>' +
+                        '<div class="ind-card-meta">' + (vpHidden ? 'hidden' : ('width ' + ((vpCfg && vpCfg.widthPercent) || 25) + '% · right side')) + ' · not removable</div>' +
+                    '</div>' +
+                    '<div class="ind-card-actions">' +
+                        '<button class="ind-card-btn vp-vis-btn' + (vpHidden ? ' hidden' : '') + '" title="' + (vpHidden ? 'Show' : 'Hide') + ' volume profile">👁</button>' +
+                        '<button class="ind-card-btn sys-cfg-btn" data-sys-cfg="volprofile" title="Configure">⚙</button>' +
                     '</div>' +
                 '</div>';
 
@@ -70774,8 +70959,10 @@ class ChartFactory {
 
             const sysSectionHtml =
                 '<div class="ind-group-system">' +
-                    '<div class="ind-group-label"><span>Main Chart' + (mainInds.length ? ' (' + (mainInds.length + 1) + ')' : '') + '</span><span class="ind-sys-badge">system</span></div>' +
+                    '<div class="ind-group-label"><span>Main Chart' + (mainInds.length ? ' (' + (mainInds.length + 3) + ')' : '') + '</span><span class="ind-sys-badge">system</span></div>' +
                     sysCardHtml +
+                    volBarsCardHtml +
+                    vpCardHtml +
                     (mainInds.length
                         ? '<div class="ind-sys-overlays-label">overlays</div>' +
                           mainInds.map(renderCard).join('')
@@ -70917,14 +71104,55 @@ class ChartFactory {
             backdrop.querySelector('.ind-modal-close').onclick = closeModal;
             backdrop.querySelector('.ind-add-fullwidth').onclick = openPicker;
 
-            // V128: system card → Main Candles settings. The whole card is
+            // V128: system cards → their settings views. The whole card is
             //   clickable (same as its gear button); there is deliberately NO
-            //   delete and NO hide button — this element is part of the chart
-            //   itself and cannot be removed.
-            const sysCard = backdrop.querySelector('.ind-card-system');
-            if (sysCard) sysCard.onclick = () => { if (openMainCandles) openMainCandles(); };
-            const sysCfgBtn = backdrop.querySelector('[data-sys-cfg]');
-            if (sysCfgBtn) sysCfgBtn.onclick = (ev) => { ev.stopPropagation(); if (openMainCandles) openMainCandles(); };
+            //   delete button — these elements are part of the chart itself.
+            //   V169: each card now also carries an 👁 toggle (Main Candles /
+            //   Volume Bars / Volume Profile — hide, never remove).
+            const _openSysCfg = (kind) => {
+                if (kind === 'maincandles' && openMainCandles) openMainCandles();
+                else if (kind === 'volbars') _renderVolumeBarsSettings(backdrop, api, engine, rerender);
+                else if (kind === 'volprofile') _renderVolumeProfileSettings(backdrop, api, engine, rerender);
+            };
+            backdrop.querySelectorAll('.ind-card-system').forEach(card => {
+                card.onclick = (ev) => {
+                    if (ev.target.closest && ev.target.closest('.ind-card-btn')) return;   // buttons handle themselves
+                    _openSysCfg(card.dataset.sys);
+                };
+            });
+            backdrop.querySelectorAll('[data-sys-cfg]').forEach(b => {
+                b.onclick = (ev) => { ev.stopPropagation(); _openSysCfg(b.getAttribute('data-sys-cfg')); };
+            });
+            const mcVisBtn = backdrop.querySelector('.mc-vis-btn');
+            if (mcVisBtn) mcVisBtn.onclick = (ev) => {
+                ev.stopPropagation();
+                const hub = (typeof CE_MAIN_CANDLES !== 'undefined') ? CE_MAIN_CANDLES : null;
+                if (!hub) return;
+                hub.hidden = !(hub.hidden === true);
+                if (typeof saveMainCandlesCfg === 'function') saveMainCandlesCfg();
+                try { api.markAllDirtyAndRender(); } catch (_) { try { api.requestRender(); } catch (_) {} }
+                rerender();
+            };
+            const volVisBtn = backdrop.querySelector('.vol-vis-btn');
+            if (volVisBtn) volVisBtn.onclick = (ev) => {
+                ev.stopPropagation();
+                const sCfg = (api.config?.series || []).find(s => s.id === 'vol');
+                const nowHidden = sCfg ? sCfg.visible === false : false;
+                api.setSeriesVisible('vol', nowHidden);   // toggle back ON
+                try { _safeStorage.setItem('chartEngine_volHidden', nowHidden ? '0' : '1'); } catch (_) {}
+                rerender();
+            };
+            const vpVisBtn = backdrop.querySelector('.vp-vis-btn');
+            if (vpVisBtn) vpVisBtn.onclick = (ev) => {
+                ev.stopPropagation();
+                const eng = engine || (window._chart && window._chart.engine);
+                const vp = eng && eng.config && eng.config.settings && eng.config.settings.volumeProfile;
+                if (!vp) return;
+                vp.hidden = !(vp.hidden === true);
+                try { _safeStorage.setItem('chartEngine_vpHidden', vp.hidden ? '1' : '0'); } catch (_) {}
+                try { eng.requestRender && eng.requestRender(); } catch (_) {}
+                rerender();
+            };
 
             // V50: wire eye-toggle (visibility) buttons.
             backdrop.querySelectorAll('.ind-vis-btn').forEach(b => {
@@ -71248,6 +71476,292 @@ class ChartFactory {
                 apply();
                 _renderMainCandlesSettings(backdrop, api, engine, backToMgr);
             };
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // V169: Volume Bars — system entry settings (Indicators modal).
+        // Non-removable; here it can be hidden and its display mode switched
+        // (coins / dollars). Persistence: chartEngine_volHidden (visibility)
+        // via localStorage, display mode lives in config.settings.volume.
+        // ─────────────────────────────────────────────────────────────────────
+        function _renderVolumeBarsSettings(backdrop, api, engine, backToMgr) {
+            const eng = engine || (window._chart && window._chart.engine);
+            const volCfg = (api.config?.series || []).find(s => s.id === 'vol');
+            if (!volCfg || !eng) { if (backToMgr) backToMgr(); return; }
+            const isHidden = volCfg.visible === false;
+            const mode = (api.config.settings?.volume?.displayMode === 'dollars') ? 'dollars' : 'coins';
+            const applyMode = (m) => {
+                if (!api.config.settings.volume) api.config.settings.volume = {};
+                api.config.settings.volume.displayMode = m;
+                try { eng.requestRender && eng.requestRender(); } catch (_) {}
+                try { eng.dirty && eng.dirty.setAll && eng.dirty.setAll(); } catch (_) {}
+            };
+            const applyVis = (hidden) => {
+                api.setSeriesVisible('vol', !hidden);
+                try { _safeStorage.setItem('chartEngine_volHidden', hidden ? '1' : '0'); } catch (_) {}
+            };
+            backdrop.innerHTML =
+                '<div class="ind-modal">' +
+                    '<div class="ind-modal-header">' +
+                        '<h3>Volume Bars — Main Panel</h3>' +
+                        '<button class="ind-modal-close">&times;</button>' +
+                    '</div>' +
+                    '<div class="s-modal-body">' +
+                        '<div class="s-area">' +
+                            '<div class="s-title">Volume Bars</div>' +
+                            '<div class="s-desc">The per-candle volume histogram at the bottom of the main chart — a system element that cannot be removed. It can be hidden with the eye toggle; hidden state survives page reloads.</div>' +
+                            '<div class="s-section-div">' +
+                                '<div class="s-section-label">Display</div>' +
+                                '<div class="s-check-row"><input type="checkbox" class="s-check" data-vb-vis' + (isHidden ? '' : ' checked') + '><span class="s-check-label">Show volume bars</span></div>' +
+                                '<div class="s-row"><span class="s-row-label">Units</span><div class="s-dd" data-vb-mode></div></div>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="ind-modal-footer">' +
+                        '<button class="ind-btn ind-btn-back">Back</button>' +
+                    '</div>' +
+                '</div>';
+            backdrop.querySelector('.ind-modal-close').onclick = backToMgr;
+            backdrop.querySelector('.ind-btn-back').onclick = backToMgr;
+            backdrop.onclick = (e) => { if (e.target === backdrop) backToMgr(); };
+            const vis = backdrop.querySelector('[data-vb-vis]');
+            if (vis) vis.addEventListener('change', () => { applyVis(!vis.checked); });
+            const modeDd = backdrop.querySelector('[data-vb-mode]');
+            if (modeDd) {
+                _initCDropdown(modeDd, [{ label: null, items: [
+                    { value: 'coins', label: 'Coins (base currency)', tag: 'COIN' },
+                    { value: 'dollars', label: 'Dollars (quote currency)', tag: '$' },
+                ]}], mode, {
+                    onChange: (v) => { applyMode(v === 'dollars' ? 'dollars' : 'coins'); },
+                });
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // V169: Volume Profile — system entry settings (Indicators modal).
+        // Non-removable; hideable; the WIDTH setting moved here from the
+        // toolbar Settings menu (chartEngine_vpWidth). Hidden state persists
+        // via chartEngine_vpHidden; both write config.settings.volumeProfile.
+        // ─────────────────────────────────────────────────────────────────────
+        // V170: full Volume Profile settings — the deep configuration the
+        // renderer honors: display + width; histogram (mode, bins, buy/sell
+        // colors + alpha inside AND outside the Value Area); Value Area
+        // (bright/dim gate, VA %, shaded VA zone band with its own color +
+        // alpha); POC line (show / color / style solid-dash-dot / width);
+        // developing POC line (same). Every field lives on
+        // config.settings.volumeProfile (snapshotted by StatePersistence)
+        // and is mirrored to localStorage 'chartEngine_vpCfg', restored at
+        // boot and re-applied after StatePersistence rebuilds the config.
+        function _vpParseColor(str, fbHex, fbA) {
+            try {
+                const s = String(str == null ? '' : str).trim();
+                const m = s.match(/^rgba?\(([^)]+)\)$/i);
+                if (m) {
+                    const p = m[1].split(',').map(x => parseFloat(x));
+                    const c = [0, 1, 2].map(i => Math.max(0, Math.min(255, Math.round(p[i] || 0))));
+                    const hx = '#' + c.map(v => v.toString(16).padStart(2, '0')).join('');
+                    return { hex: hx, a: (p.length > 3 && isFinite(p[3])) ? p[3] : 1 };
+                }
+                if (/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(s)) {
+                    let h = s.slice(1);
+                    if (h.length === 3) h = h.split('').map(c => c + c).join('');
+                    if (h.length === 8) return { hex: '#' + h.slice(0, 6), a: parseInt(h.slice(6), 16) / 255 };
+                    return { hex: '#' + h, a: 1 };
+                }
+            } catch (_) {}
+            return { hex: fbHex, a: fbA };
+        }
+        function _vpCompose(hex, a) {
+            let h = String(hex || '#ffffff').replace('#', '');
+            if (h.length === 3) h = h.split('').map(c => c + c).join('');
+            const r = parseInt(h.slice(0, 2), 16) || 0;
+            const g = parseInt(h.slice(2, 4), 16) || 0;
+            const b = parseInt(h.slice(4, 6), 16) || 0;
+            return 'rgba(' + r + ',' + g + ',' + b + ',' + (Math.round(a * 100) / 100) + ')';
+        }
+        function _renderVolumeProfileSettings(backdrop, api, engine, backToMgr) {
+            const eng = engine || (window._chart && window._chart.engine);
+            const vp = eng && eng.config && eng.config.settings && eng.config.settings.volumeProfile;
+            if (!vp) { if (backToMgr) backToMgr(); return; }
+            const isHidden = vp.hidden === true;
+            const width = (isFinite(+vp.widthPercent) && +vp.widthPercent > 0) ? +vp.widthPercent : 25;
+            const bins = (isFinite(+vp.nodeCount) && +vp.nodeCount >= 8) ? +vp.nodeCount : 64;
+            const vaPct = (isFinite(+vp.vaPercent) && +vp.vaPercent > 0) ? +vp.vaPercent : 70;
+            const flush = () => {
+                try { _safeStorage.setItem('chartEngine_vpCfg', JSON.stringify(vp)); } catch (_) {}
+                try { eng.dirty && eng.dirty.setAll && eng.dirty.setAll(); } catch (_) {}
+                try { eng.requestRender && eng.requestRender(); } catch (_) {}
+            };
+            const applyWidth = (w) => {
+                vp.widthPercent = w;
+                try { _safeStorage.setItem('chartEngine_vpWidth', String(w)); } catch (_) {}
+                flush();
+            };
+            const applyVis = (hidden) => {
+                vp.hidden = hidden;
+                try { _safeStorage.setItem('chartEngine_vpHidden', hidden ? '1' : '0'); } catch (_) {}
+                flush();
+            };
+            // color + alpha row: <input type=color> + <input type=range> + %
+            const colorRow = (label, field, fbHex, fbA) => {
+                const cur = _vpParseColor(vp[field], fbHex, fbA);
+                return '<div class="s-row"><span class="s-row-label">' + label + '</span>' +
+                    '<span style="display:inline-flex;align-items:center;gap:6px;flex:1;min-width:0;">' +
+                    '<input type="color" class="s-input" data-vpc="' + field + '" value="' + cur.hex + '" style="width:34px;height:22px;padding:0 2px;cursor:pointer;background:#161b22;border:1px solid #30363d;">' +
+                    '<input type="range" class="s-range" data-vpa="' + field + '" min="0" max="100" step="5" value="' + Math.round(cur.a * 100) + '" style="flex:1;min-width:60px;">' +
+                    '<span style="color:#8b949e;font-size:10px;width:32px;text-align:right;">' + Math.round(cur.a * 100) + '%</span>' +
+                    '</span></div>';
+            };
+            const styleRow = (label, attr, cur) =>
+                '<div class="s-row"><span class="s-row-label">' + label + '</span>' +
+                '<select class="s-input" ' + attr + ' style="max-width:110px;">' +
+                ['solid', 'dash', 'dot'].map(s =>
+                    '<option value="' + s + '"' + (cur === s ? ' selected' : '') + '>' + s + '</option>').join('') +
+                '</select></div>';
+            backdrop.innerHTML =
+                '<div class="ind-modal">' +
+                    '<div class="ind-modal-header">' +
+                        '<h3>Volume Profile — Main Panel</h3>' +
+                        '<button class="ind-modal-close">&times;</button>' +
+                    '</div>' +
+                    '<div class="s-modal-body">' +
+                        '<div class="s-area">' +
+                            '<div class="s-title">Volume Profile</div>' +
+                            '<div class="s-desc">The horizontal volume histogram on the right of the main chart (POC / value area) — a system element that cannot be removed. It can be hidden with the eye toggle; all settings survive page reloads.</div>' +
+                            '<div class="s-section-div">' +
+                                '<div class="s-section-label">Display</div>' +
+                                '<div class="s-check-row"><input type="checkbox" class="s-check" data-vp-vis' + (isHidden ? '' : ' checked') + '><span class="s-check-label">Show volume profile</span></div>' +
+                                '<div class="s-row"><span class="s-row-label">Width (% of plot)</span><input type="number" class="s-input" data-vp-width value="' + width + '" min="5" max="60" step="5"></div>' +
+                                '<div class="s-row"><span class="s-row-label">Width slider</span><input type="range" class="s-range" data-vp-wslider min="5" max="60" step="5" value="' + width + '" style="flex:1;"></div>' +
+                            '</div>' +
+                            '<div class="s-section-div">' +
+                                '<div class="s-section-label">Histogram</div>' +
+                                '<div class="s-row"><span class="s-row-label">Mode</span><select class="s-input" data-vp-mode style="max-width:150px;">' +
+                                    '<option value="buySell"' + ((vp.mode || 'buySell') === 'buySell' ? ' selected' : '') + '>Buy / Sell (stacked)</option>' +
+                                    '<option value="buy"' + (vp.mode === 'buy' ? ' selected' : '') + '>Buy only</option>' +
+                                    '<option value="sell"' + (vp.mode === 'sell' ? ' selected' : '') + '>Sell only</option>' +
+                                    '<option value="delta"' + (vp.mode === 'delta' ? ' selected' : '') + '>Delta |buy − sell|</option>' +
+                                '</select></div>' +
+                                '<div class="s-row"><span class="s-row-label">Bins (levels)</span><input type="number" class="s-input" data-vp-bins value="' + bins + '" min="8" max="150" step="1" style="max-width:70px;"></div>' +
+                                '<div class="s-row"><span class="s-row-label">Bins slider</span><input type="range" class="s-range" data-vp-bslider min="8" max="150" step="1" value="' + bins + '" style="flex:1;"></div>' +
+                                colorRow('Buy color', 'buyColor', '#ffffff', 0.25) +
+                                colorRow('Sell color', 'sellColor', '#b4b4b4', 0.2) +
+                                colorRow('Outside-VA buy', 'outsidePocBuyColor', '#ffffff', 0.08) +
+                                colorRow('Outside-VA sell', 'outsidePocSellColor', '#b4b4b4', 0.06) +
+                            '</div>' +
+                            '<div class="s-section-div">' +
+                                '<div class="s-section-label">Value Area</div>' +
+                                '<div class="s-check-row"><input type="checkbox" class="s-check" data-vp-showva' + (vp.showVA !== false ? ' checked' : '') + '><span class="s-check-label">Bright bars inside VA, dim outside</span></div>' +
+                                '<div class="s-row"><span class="s-row-label">VA percent</span><input type="range" class="s-range" data-vp-vapct min="50" max="95" step="5" value="' + vaPct + '" style="flex:1;"><span style="color:#8b949e;font-size:10px;width:32px;text-align:right;">' + vaPct + '%</span></div>' +
+                                '<div class="s-check-row"><input type="checkbox" class="s-check" data-vp-showvazone' + (vp.showVAZone ? ' checked' : '') + '><span class="s-check-label">Show VA zone (shaded band + borders)</span></div>' +
+                                colorRow('VA zone color', 'vaZoneColor', '#58a6ff', 0.07) +
+                            '</div>' +
+                            '<div class="s-section-div">' +
+                                '<div class="s-section-label">POC line</div>' +
+                                '<div class="s-check-row"><input type="checkbox" class="s-check" data-vp-showpoc' + (vp.showPOC ? ' checked' : '') + '><span class="s-check-label">Show POC line</span></div>' +
+                                colorRow('POC color', 'pocColor', '#ffffff', 1) +
+                                styleRow('POC style', 'data-vp-pocstyle', vp.pocStyle || 'solid') +
+                                '<div class="s-row"><span class="s-row-label">POC width (px)</span><input type="number" class="s-input" data-vp-pocwidth value="' + (isFinite(+vp.pocWidth) && +vp.pocWidth > 0 ? +vp.pocWidth : 1.5) + '" min="0.5" max="8" step="0.5" style="max-width:70px;"></div>' +
+                            '</div>' +
+                            '<div class="s-section-div">' +
+                                '<div class="s-section-label">Developing POC</div>' +
+                                '<div class="s-check-row"><input type="checkbox" class="s-check" data-vp-showdev' + (vp.showPOCDevelop ? ' checked' : '') + '><span class="s-check-label">Show developing POC (running POC)</span></div>' +
+                                colorRow('Dev-POC color', 'pocDevelopColor', '#ffffff', 0.3) +
+                                styleRow('Dev-POC style', 'data-vp-devstyle', vp.pocDevelopStyle || 'dash') +
+                                '<div class="s-row"><span class="s-row-label">Dev-POC width (px)</span><input type="number" class="s-input" data-vp-devwidth value="' + (isFinite(+vp.pocDevelopWidth) && +vp.pocDevelopWidth > 0 ? +vp.pocDevelopWidth : 0.5) + '" min="0.5" max="8" step="0.5" style="max-width:70px;"></div>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="ind-modal-footer">' +
+                        '<button class="ind-btn ind-btn-back">Back</button>' +
+                    '</div>' +
+                '</div>';
+            backdrop.querySelector('.ind-modal-close').onclick = backToMgr;
+            backdrop.querySelector('.ind-btn-back').onclick = backToMgr;
+            backdrop.onclick = (e) => { if (e.target === backdrop) backToMgr(); };
+            const vis = backdrop.querySelector('[data-vp-vis]');
+            if (vis) vis.addEventListener('change', () => { applyVis(!vis.checked); });
+            const on = (sel, fn) => { const el = backdrop.querySelector(sel); if (el) el.addEventListener('input', fn); };
+            on('[data-vp-width]', (e) => {
+                const v = parseFloat(e.target.value);
+                if (isFinite(v) && v >= 5 && v <= 60) {
+                    applyWidth(v);
+                    const sl = backdrop.querySelector('[data-vp-wslider]'); if (sl) sl.value = String(v);
+                }
+            });
+            on('[data-vp-wslider]', (e) => {
+                const v = parseFloat(e.target.value);
+                if (isFinite(v) && v >= 5 && v <= 60) {
+                    applyWidth(v);
+                    const inp = backdrop.querySelector('[data-vp-width]'); if (inp) inp.value = String(v);
+                }
+            });
+            // ── V170 wiring: histogram mode + bins ──
+            on('[data-vp-mode]', (e) => { vp.mode = e.target.value || 'buySell'; flush(); });
+            on('[data-vp-bins]', (e) => {
+                const v = Math.round(parseFloat(e.target.value));
+                if (isFinite(v) && v >= 8 && v <= 150) {
+                    vp.nodeCount = v; flush();
+                    const sl = backdrop.querySelector('[data-vp-bslider]'); if (sl) sl.value = String(v);
+                }
+            });
+            on('[data-vp-bslider]', (e) => {
+                const v = Math.round(parseFloat(e.target.value));
+                if (isFinite(v) && v >= 8 && v <= 150) {
+                    vp.nodeCount = v; flush();
+                    const inp = backdrop.querySelector('[data-vp-bins]'); if (inp) inp.value = String(v);
+                }
+            });
+            // ── V170 wiring: Value Area ──
+            on('[data-vp-showva]', (e) => { vp.showVA = !!e.target.checked; flush(); });
+            on('[data-vp-vapct]', (e) => {
+                const v = parseFloat(e.target.value);
+                if (isFinite(v)) {
+                    vp.vaPercent = v; flush();
+                    const pct = e.target.parentElement.querySelector('span:last-child');
+                    if (pct) pct.textContent = Math.round(v) + '%';
+                }
+            });
+            on('[data-vp-showvazone]', (e) => { vp.showVAZone = !!e.target.checked; flush(); });
+            // ── V170 wiring: POC + developing POC ──
+            on('[data-vp-showpoc]', (e) => { vp.showPOC = !!e.target.checked; flush(); });
+            on('[data-vp-pocstyle]', (e) => { vp.pocStyle = e.target.value || 'solid'; flush(); });
+            on('[data-vp-pocwidth]', (e) => {
+                const v = parseFloat(e.target.value);
+                if (isFinite(v) && v >= 0.5 && v <= 8) { vp.pocWidth = v; flush(); }
+            });
+            on('[data-vp-showdev]', (e) => { vp.showPOCDevelop = !!e.target.checked; flush(); });
+            on('[data-vp-devstyle]', (e) => { vp.pocDevelopStyle = e.target.value || 'dash'; flush(); });
+            on('[data-vp-devwidth]', (e) => {
+                const v = parseFloat(e.target.value);
+                if (isFinite(v) && v >= 0.5 && v <= 8) { vp.pocDevelopWidth = v; flush(); }
+            });
+            // ── V170 wiring: color + alpha rows ──
+            const colHexOf = (field) => {
+                const ci = backdrop.querySelector('[data-vpc="' + field + '"]');
+                return ci ? ci.value : '#ffffff';
+            };
+            backdrop.querySelectorAll('[data-vpc]').forEach((ci) => {
+                ci.addEventListener('input', () => {
+                    const field = ci.getAttribute('data-vpc');
+                    const ai = backdrop.querySelector('[data-vpa="' + field + '"]');
+                    const a = ai ? (parseFloat(ai.value) || 0) / 100 : 1;
+                    vp[field] = _vpCompose(ci.value, a);
+                    if (field === 'vaZoneColor') vp.vaZoneBorderColor = _vpCompose(ci.value, Math.min(1, a * 3 + 0.1));
+                    flush();
+                });
+            });
+            backdrop.querySelectorAll('[data-vpa]').forEach((ai) => {
+                ai.addEventListener('input', () => {
+                    const field = ai.getAttribute('data-vpa');
+                    const a = (parseFloat(ai.value) || 0) / 100;
+                    const pct = ai.parentElement.querySelector('span:last-child');
+                    if (pct) pct.textContent = Math.round(a * 100) + '%';
+                    vp[field] = _vpCompose(colHexOf(field), a);
+                    if (field === 'vaZoneColor') vp.vaZoneBorderColor = _vpCompose(colHexOf(field), Math.min(1, a * 3 + 0.1));
+                    flush();
+                });
+            });
         }
 
         function _renderPicker(backdrop, api, engine, onPick, backToMgr) {
@@ -81618,9 +82132,65 @@ if (typeof URLSearchParams !== 'undefined' && new URLSearchParams(location.searc
 //     races the fetch against a 20s timeout (a timeout counts as an error →
 //     normal 15s→5min backoff retry) and the render loop carries a 90s
 //     watchdog that force-resets a stuck in-flight flag.
+//   • V169 rework: ① the «Scan: daily auto-refresh started» toast is gone
+//     (silent background re-scan). ② The scan has its OWN exchange setting
+//     (Universe group) — it no longer blindly follows the chart's source
+//     (a ratio-mode chart or an unknown srcMode silently fell back to
+//     Binance); «Auto (chart exchange)» keeps the old behavior. ③ The
+//     auto-refresh is toggleable (Auto-refresh pill, persisted) and runs
+//     every 4 HOURS instead of once a day. ④ Detection window for 1d is a
+//     ROLLING 24h: the current partial UTC-day candle is merged with the
+//     previous one for ATH/ATL/MAX/MIN + line touches, so a 00:30 scan no
+//     longer sees a 30-minute "day" and yesterday evening's extremes are
+//     still reported («данные не с начала дня, а за последние 24 часа»).
+//     ⑤ Identical pairs are not scanned (BTC coin × BTC quote = BTC/BTC ≡ 1
+//     fired a phantom ATH every run). ⑥ Result rows are mobile-friendly:
+//     the volume column is dropped, long base symbols ellipsize (capped
+//     width) — nothing sticks out past the right edge on narrow screens.
+//     ⑦ The settings panel is COLLAPSED by default with a one-click
+//     show/hide header. ⑧ The modal has a second tab «Alerts» — the future
+//     home of chart-pattern alerts/logs (line crossings etc.); the
+//     infrastructure (persistence + data access to the scan's loaded
+//     series) is in place, the UI is an honest empty state for now.
+//   • V169 chart: ⑨ header TF button height matches the coin button. ⑩
+//     Volume bars are drawn AFTER indicator lines so bars cover the lines
+//     (was: lines painted over the bars). ⑪ Volume Bars, Volume Profile and
+//     Main Candles are system entries in the Indicators modal: non-removable
+//     but hideable (👁) and configurable (⚙) — the VP width setting moved
+//     there from the toolbar Settings («VP Width»), plus the volume display
+//     mode; hiding survives reloads (localStorage). ⑫ Theme names no longer
+//     overflow the settings theme buttons (one per row + ellipsis).
 //   • Rate limiting: per-worker serial requests + min gap (per-exchange floor),
 //     concurrency 1–6 (default 3), exponential backoff on errors.
 // ═══════════════════════════════════════════════════════════════════════════════
+// V170: ① CHART ALERTS — right-click any horizontal line, trend line /
+//     segment / ray or zone → the overlay context menu has a new «🔔 Alert»
+//     item (with a ● badge when an alert already exists for that drawing).
+//     It opens an alert modal: line → touch / cross / both + a per-line
+//     margin % for touch triggering; zone → touch zone / close inside /
+//     exit zone (no margin). On RATIO charts (ETH/SOL-style divisions) the
+//     modal additionally offers a multi-select of timeframes (15m…1w, the
+//     chart's TF preselected) because a division can touch a level on one
+//     TF and not on another; USDT/USDC charts are evaluated on the chart's
+//     own TF (nothing to choose). Alerts are evaluated live every 4 s
+//     against the chart's own candles (api.getOHLCRange) and — for the
+//     extra ratio TFs — against candles fetched by the scanner's private
+//     adapters + computeRatio (90 s cache). Trigger logic is episodic
+//     (a NEW touch/cross/close-in/exit relative to the previous candle),
+//     deduped per (tf, kind, candle) and persisted; each trigger appends an
+//     event + fires a 🔔 toast. ② The Alerts tab is now the results UI:
+//     active alert cards (status: armed / paused / drawing missing / waiting
+//     for its chart, type+margin, TF chips, last events, Test / On-Off /
+//     Delete) + a merged triggered-events log; unread events are highlighted
+//     and the tab button carries an (n) badge. ③ Volume Profile settings
+//     (Indicators modal ⚙) expanded: bins (nodeCount), histogram mode,
+//     buy/sell colors + alpha (inside and outside the Value Area), the VA
+//     zone as a shaded band with its own color+alpha (showVAZone), VA %,
+//     POC line (show / color / style solid-dash-dot / width) and developing
+//     POC line (show / color / style / width) — the renderer now honors all
+//     of them. ④ Scan result rows: the coin name moved left (the collapse
+//     arrow is slimmer and the rank chip sits after the count badge).
+
 (function () {
 'use strict';
 
@@ -81719,6 +82289,8 @@ function _utcDayStart(ts) { const d = new Date(ts); return Date.UTC(d.getUTCFull
 // ─────────────────────────────────────────────────────────────────────────────
 const DEF_SETTINGS = {
     limit: 100,          // ← NEW: coin limit by 24h volume (0 = all coins)
+    exchange: '',        // V169: scan exchange ('' = auto — follow the chart's source)
+    autoRefresh: true,   // V169: periodic background re-scan on/off (every 4h)
     tf1d: true,
     tf1w: true,
     concurrency: 3,      // parallel coin workers (1..6)
@@ -81849,8 +82421,10 @@ const S = {
     eta0: 0, done0: 0,      // ETA reference
     cfgNote: '',            // settings-changed note
     expanded: new Set(),    // V161: result bases with open details (in-memory)
-    autoTimer: null,        // V164: daily auto-refresh timer handle
+    autoTimer: null,        // V164: periodic auto-refresh timer handle
     autoNext: 0,            // V164: planned next auto-refresh (ms epoch, for the UI)
+    tab: 'scan',            // V169: modal tab — 'scan' | 'alerts'
+    settingsOpen: false,    // V169: settings panel collapsed by default
 };
 
 function _pool() {
@@ -82127,18 +82701,32 @@ function detectSeriesEvents(candles, tf, quote, checks) {
     if (n < 30) return evs;
     const last = n - 1;
     const lc = candles[last];
-    const hi = lc.high, lo = lc.low, cl = lc.close;
+    // V169: ROLLING 24h observation window for 1d — the current (partial)
+    // UTC-day candle is merged with the previous one, so events cover the
+    // LAST 24 HOURS instead of «since UTC midnight». Without the merge a
+    // scan at 00:30 saw a 30-minute "day": yesterday evening's extremes and
+    // line touches were invisible until the new day's candle grew past them.
+    // Weekly candles keep the plain latest-candle semantics (they already
+    // span 7 days).
+    const merge1d = tf === '1d' && n >= 3;
+    const pv = merge1d ? candles[last - 1] : null;
+    const hi = merge1d ? Math.max(pv.high, lc.high) : lc.high;
+    const lo = merge1d ? Math.min(pv.low, lc.low) : lc.low;
+    const cl = lc.close;
     const pc = candles[last - 1].close;
-    // "today" stamp: daily candle must open today (UTC); weekly must cover now.
+    // "today" stamp: the latest daily candle must open today (UTC) so the
+    // merged window covers now; weekly must cover now.
     const now = Date.now();
     const isToday = tf === '1d'
         ? (lc._x >= _utcDayStart(now))
         : (now - lc._x < 7 * 86400000 && now >= lc._x);
     const when = isToday ? 0 : lc._x;
 
-    // ATH / ATL over the loaded window (excluding the latest candle)
+    // ATH / ATL over the loaded window (excluding the merged trailing-24h
+    // candles for 1d — both belong to the observation window)
+    const exclEnd = merge1d ? last - 1 : last;
     let mh = -Infinity, ml = Infinity;
-    for (let i = 0; i < last; i++) {
+    for (let i = 0; i < exclEnd; i++) {
         if (candles[i].high > mh) mh = candles[i].high;
         if (candles[i].low < ml) ml = candles[i].low;
     }
@@ -82149,8 +82737,9 @@ function detectSeriesEvents(candles, tf, quote, checks) {
     for (const P of _enabledPeriods()) {
         const bars = tf === '1w' ? Math.round(P * 4.348) : Math.round(P * 30.44);
         const from = Math.max(0, last - bars);
+        const to = exclEnd;   // V169: exclude the merged trailing-24h candles
         let ph = -Infinity, pl = Infinity;
-        for (let i = from; i < last; i++) {
+        for (let i = from; i < to; i++) {
             if (candles[i].high > ph) ph = candles[i].high;
             if (candles[i].low < pl) pl = candles[i].low;
         }
@@ -82249,7 +82838,12 @@ function enabledQuotes() {
 }
 
 async function buildWorklist() {
-    const ex = currentExchange();
+    // V169: the scan has its OWN exchange setting — '' follows the chart's
+    // source (old behavior), a concrete exchange overrides it. A ratio-mode
+    // chart or an unmapped srcMode used to fall back to Binance silently —
+    // now the user picks the exchange explicitly.
+    const pref = String(state.settings.exchange || '').toLowerCase();
+    const ex = (pref && ADAPTER_CLASSES[pref]) ? pref : currentExchange();
     state.exchange = ex;
     let coins = [];
     try {
@@ -82353,9 +82947,12 @@ async function runTask(ad, task) {
         const candles = await scanFetch(ad, ex, coin.sym, tf, MAX_CANDLES);
         if (!candles || candles.length < 30) throw new Error('no data');
         // Build the series set for this coin+tf: USDT + enabled ratios.
+        // V169: skip identical pairs (BTC coin × BTC quote = BTC/BTC ≡ const 1
+        // — a meaningless series that fired a phantom ATH on every run).
         const series = [{ q: 'USDT', candles }];
         for (const q of enabledQuotes()) {
             if (q === 'USDT') continue;
+            if (q === coin.base) continue;
             const base = S.baseData[q] && S.baseData[q][tf];
             if (!base || !base.length) continue;
             try {
@@ -82514,13 +83111,13 @@ function resetScan() {
     markDirty(); saveNow(); notifyUi(true);
 }
 
-// ── V164: daily auto-refresh ──
-// Once a day the scanner automatically rebuilds the worklist from the
-// current exchange (top-N by volume, current settings) and re-checks every
-// coin — in the background; the modal does not need to be open. The
-// last-run stamp lives in the persisted state (LS+IDB), so reloads never
-// reset the daily cadence.
-const AUTO_DAY = 86400000;
+// ── V164/V169: periodic auto-refresh ──
+// Every 4 HOURS (V169: was once a day) the scanner automatically rebuilds the
+// worklist from the configured exchange (top-N by volume, current settings)
+// and re-checks every coin — in the background; the modal does not need to be
+// open. Toggleable via settings.autoRefresh (V169). The last-run stamp lives
+// in the persisted state (LS+IDB), so reloads never reset the cadence.
+const AUTO_EVERY = 4 * 3600000;      // V169: 4h cadence (was AUTO_DAY = 24h)
 const AUTO_BOOT_DELAY = 25000;       // first-ever run shortly after boot
 const AUTO_OVERDUE_DELAY = 12000;    // overdue run ~12s after (re)boot
 const AUTO_RETRY_DELAY = 30 * 60000; // worklist/list failure → retry later
@@ -82528,19 +83125,28 @@ const AUTO_RETRY_DELAY = 30 * 60000; // worklist/list failure → retry later
 function autoDelayMs() {
     const last = (state.auto && state.auto.last) || 0;
     if (!last) return AUTO_BOOT_DELAY;
-    const due = last + AUTO_DAY - Date.now();
+    const due = last + AUTO_EVERY - Date.now();
     return due > 0 ? due : AUTO_OVERDUE_DELAY;
 }
-function armAuto(ms) {
+function disarmAuto() {   // V169: auto-refresh toggle off → tear the timer down
     if (S.autoTimer) { clearTimeout(S.autoTimer); S.autoTimer = null; }
+    S.autoNext = 0;
+}
+function armAuto(ms) {
+    disarmAuto();
     S.autoNext = Date.now() + ms;
     S.autoTimer = setTimeout(() => { S.autoTimer = null; try { runAutoScan(); } catch (_) {} }, Math.max(1000, ms));
 }
-function scheduleAutoScan() { armAuto(autoDelayMs()); }
+function scheduleAutoScan() {
+    // V169: honor the on/off toggle — when off, stay disarmed.
+    if (state.settings.autoRefresh === false) { disarmAuto(); return; }
+    armAuto(autoDelayMs());
+}
 
-/** One automatic daily full re-scan (fresh worklist + re-check everything). */
+/** One automatic periodic full re-scan (fresh worklist + re-check everything). */
 async function runAutoScan() {
     try {
+        if (state.settings.autoRefresh === false) return;   // V169: toggled off
         if (state.status === 'running') {
             // A scan is already in progress — it IS the refresh; stamp + reschedule.
             state.auto.last = Date.now();
@@ -82548,8 +83154,8 @@ async function runAutoScan() {
             scheduleAutoScan(); notifyUi(true);
             return;
         }
-        console.info(MODULE, 'daily auto-refresh: rebuilding the worklist, re-checking all coins');
-        _toast('Scan: daily auto-refresh started');
+        // V169: no toast — the re-scan is silent background maintenance.
+        console.info(MODULE, 'auto-refresh: rebuilding the worklist, re-checking all coins');
         S.cfgNote = '';
         const ok = await buildWorklist();
         if (!ok) {   // network / list failure → retry later, don't stamp
@@ -82589,13 +83195,16 @@ function _fmtIn(ms) {
     return d + ' d' + (rh ? ' ' + rh + ' h' : '');
 }
 function _autoStatusText() {
+    if (state.settings.autoRefresh === false) {
+        return 'Auto-refresh: off — enable it in Settings to re-scan every 4 h automatically.';
+    }
     const last = state.auto && state.auto.last;
     if (!last) {
-        return 'Daily auto-refresh: on — the first full re-scan starts automatically ' +
+        return 'Auto-refresh: on (every 4 h) — the first full re-scan starts automatically ' +
             (S.autoNext ? 'in ' + _fmtIn(S.autoNext - Date.now()) : 'shortly after boot') + '.';
     }
-    const nextIn = S.autoNext ? S.autoNext - Date.now() : (last + AUTO_DAY - Date.now());
-    return 'Daily auto-refresh: on — last full re-scan ' + _fmtWhen(last) + ', next in ' + _fmtIn(nextIn) + '.';
+    const nextIn = S.autoNext ? S.autoNext - Date.now() : (last + AUTO_EVERY - Date.now());
+    return 'Auto-refresh: on (every 4 h) — last full re-scan ' + _fmtWhen(last) + ', next in ' + _fmtIn(nextIn) + '.';
 }
 
 // Auto-resume 10s after boot when a scan was running before the reload.
@@ -82827,17 +83436,60 @@ function render(backdrop) {
     hd.appendChild(x);
     box.appendChild(hd);
 
+    // ── V169: tab bar — Scan | Alerts ──
+    // The Alerts tab is the future home of chart-pattern alerts/logs («если
+    // линию на графике пересекли и т.д.»). The infrastructure (persistent
+    // store + access to the scan's loaded series) already exists — see
+    // ScanAlerts below; the tab renders an honest empty state for now.
+    const tabs = document.createElement('div');
+    tabs.style.cssText = 'display:flex;gap:6px;margin-bottom:8px;';
+    for (const [tabId, tabLbl] of [['scan', '📊 Scan'], ['alerts', '🔔 Alerts']]) {
+        const tb = document.createElement('button');
+        // V170: the Alerts tab button carries an (n) badge with the number of
+        // unseen triggered events.
+        const _caUnread = (tabId === 'alerts') ? ChartAlerts.unread() : 0;
+        tb.textContent = tabLbl + (_caUnread ? ' (' + _caUnread + ')' : '');
+        tb.style.cssText = CSS.btn + (S.tab === tabId
+            ? 'background:#1f2937;border-color:#58a6ff55;color:#58a6ff;font-weight:600;'
+            : 'color:#8b949e;') + (_caUnread ? 'border-color:#58a6ff88;' : '');
+        tb.title = tabId === 'scan'
+            ? 'Coin scan statistics (ATH/ATL/Max/Min, indicator touches)'
+            : 'Alerts on drawn lines/rays/zones — active alerts + triggered events log';
+        tb.onclick = () => { S.tab = tabId; try { render(backdrop); } catch (_) {} };
+        tabs.appendChild(tb);
+    }
+    box.appendChild(tabs);
+
+    // V169: the Alerts tab replaces the whole scan body.
+    if (S.tab === 'alerts') { _renderAlertsTab(box); return; }
+
     // ── Settings (V164: labelled grid rows + pill toggles) ──
     const sp = document.createElement('div');
-    sp.style.cssText = CSS.panel;
+    sp.style.cssText = CSS.panel + 'padding:8px;';
     const st = state.settings;
+
+    // V169: the whole settings grid collapses behind one header row —
+    // COLLAPSED BY DEFAULT so the modal opens straight to Start/progress.
+    const spHead = document.createElement('div');
+    spHead.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;';
+    spHead.title = 'Show/hide all scan settings';
+    spHead.innerHTML = '<span style="color:#8b949e;font-size:10px;width:12px;text-align:center;">' +
+        (S.settingsOpen ? '▾' : '▸') + '</span>' +
+        '<span style="color:#8b949e;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;">Settings</span>' +
+        '<span style="flex:1;border-bottom:1px dashed #21262d;"></span>';
+    spHead.onclick = () => { S.settingsOpen = !S.settingsOpen; try { render(backdrop); } catch (_) {} };
+    sp.appendChild(spHead);
+    const spBody = document.createElement('div');
+    spBody.style.display = S.settingsOpen ? '' : 'none';
+    sp.appendChild(spBody);
 
     // One labelled group row: small-caps label in a fixed left column, pill
     // grid on the right — checkboxes align cleanly instead of free-wrapping.
+    // V169: rows attach to spBody (the collapsible container), not sp.
     function _grp(label, title) {
         const r = document.createElement('div');
         r.style.cssText = 'display:grid;grid-template-columns:118px minmax(0,1fr);gap:5px 12px;align-items:center;padding:6px 0;' +
-            (sp.childElementCount ? 'border-top:1px solid #1b2129;' : '');
+            (spBody.childElementCount ? 'border-top:1px solid #1b2129;' : '');
         if (title) r.title = title;
         const l = document.createElement('div');
         l.style.cssText = 'color:#8b949e;font-size:9.5px;text-transform:uppercase;letter-spacing:.6px;';
@@ -82848,8 +83500,31 @@ function render(backdrop) {
         return { row: r, cell: c };
     }
 
-    // Universe: coin limit + parallel workers
+    // Universe: exchange + coin limit + parallel workers
     const g0 = _grp('Universe', 'Which and how many coins are scanned');
+    const exWrap = document.createElement('label');
+    exWrap.style.cssText = 'display:inline-flex;align-items:center;gap:6px;color:#8b949e;font-size:11px;';
+    exWrap.title = 'Which exchange the scan loads its coin list and candles from.\n«Auto» follows the main chart\u2019s current source; a concrete exchange pins the scan to it.';
+    exWrap.innerHTML = '<span>Exchange</span>';
+    const exSel = document.createElement('select');
+    exSel.style.cssText = CSS.sel + 'padding:2px 6px;max-width:150px;';
+    const autoOpt = document.createElement('option');
+    autoOpt.value = ''; autoOpt.textContent = 'Auto (chart exchange)';
+    if (!st.exchange) autoOpt.selected = true;
+    exSel.appendChild(autoOpt);
+    for (const ek of Object.keys(ADAPTER_CLASSES)) {
+        const o = document.createElement('option'); o.value = ek; o.textContent = EXCH_NAMES[ek] || ek;
+        if (st.exchange === ek) o.selected = true;
+        exSel.appendChild(o);
+    }
+    exSel.addEventListener('change', () => {
+        st.exchange = exSel.value;
+        S.cfgNote = st.exchange ? ('Scan exchange: ' + (EXCH_NAMES[st.exchange] || st.exchange) + ' — press Start to load it.')
+                                : 'Scan follows the chart exchange — press Start to apply.';
+        markDirty(); scheduleSave(); notifyUi(true);
+    });
+    exWrap.appendChild(exSel);
+    g0.cell.appendChild(exWrap);
     const limWrap = document.createElement('label');
     limWrap.style.cssText = 'display:inline-flex;align-items:center;gap:6px;color:#8b949e;font-size:11px;';
     limWrap.title = 'Scan only the top-N coins by 24h quote volume (0 = all coins)';
@@ -82879,13 +83554,22 @@ function render(backdrop) {
     concSel.addEventListener('change', () => { st.concurrency = Number(concSel.value); S.cfgNote = 'Settings changed — press Start to apply them to a new scan.'; markDirty(); scheduleSave(); });
     concWrap.appendChild(concSel);
     g0.cell.appendChild(concWrap);
-    sp.appendChild(g0.row);
+    spBody.appendChild(g0.row);
+
+    // V169: auto-refresh on/off (every 4 h) — persisted with the scan state
+    const gAuto = _grp('Auto-refresh', 'Automatically rebuild the worklist and re-check every coin every 4 hours');
+    gAuto.cell.appendChild(_pill('Every 4 h: ' + (st.autoRefresh === false ? 'off' : 'on'), st.autoRefresh !== false, v => {
+        st.autoRefresh = v; markDirty(); scheduleSave();
+        if (v) scheduleAutoScan(); else disarmAuto();
+        notifyUi(true);
+    }, false, 'Background re-scan every 4 hours (works with the modal closed)'));
+    spBody.appendChild(gAuto.row);
 
     // Timeframes
     const gTf = _grp('Timeframes', 'Candle timeframes to scan');
     gTf.cell.appendChild(_pill('1d', st.tf1d !== false, v => { st.tf1d = v; if (!v && st.tf1w !== true) { st.tf1w = true; } S.cfgNote = 'Settings changed — press Start to apply.'; markDirty(); scheduleSave(); notifyUi(true); }));
     gTf.cell.appendChild(_pill('1w', st.tf1w === true, v => { st.tf1w = v; if (!v && st.tf1d !== true) { st.tf1d = true; } S.cfgNote = 'Settings changed — press Start to apply.'; markDirty(); scheduleSave(); notifyUi(true); }));
-    sp.appendChild(gTf.row);
+    spBody.appendChild(gTf.row);
 
     // Ratio series
     const gRat = _grp('Ratio series', 'Scan the coin against these denominators in addition to USDT');
@@ -82895,14 +83579,14 @@ function render(backdrop) {
             st.quotes[q] = v; S.cfgNote = 'Settings changed — press Start to apply.'; markDirty(); scheduleSave(); notifyUi(true);
         }));
     }
-    sp.appendChild(gRat.row);
+    spBody.appendChild(gRat.row);
 
     // Max/Min periods
     const gPer = _grp('Max/min periods', 'Look-back windows for period highs/lows');
     for (const p of PERIODS) {
         gPer.cell.appendChild(_pill(P_MO[p], st.periods[p] !== false, v => { st.periods[p] = v; markDirty(); scheduleSave(); }));
     }
-    sp.appendChild(gPer.row);
+    spBody.appendChild(gPer.row);
 
     // Indicators from the chart
     const checks = collectChecks(true);
@@ -82917,7 +83601,7 @@ function render(backdrop) {
                 false, ck.kind === 'line' ? 'Price vs line touch/cross on the last candle' : 'Oscillator level crossing on the last candle'));
         }
     }
-    sp.appendChild(gInd.row);
+    spBody.appendChild(gInd.row);
 
     // Event-type score filter (applies to sorting INSTANTLY)
     const gEv = _grp('Count in score', 'Which event types count into the coin score (instant re-sort)');
@@ -82926,7 +83610,7 @@ function render(backdrop) {
         gEv.cell.appendChild(_pill(EV_LBL[t], state.settings.evSort[t] !== false,
             v => { state.settings.evSort[t] = v; markDirty(); scheduleSave(); notifyUi(true); }));
     }
-    sp.appendChild(gEv.row);
+    spBody.appendChild(gEv.row);
     box.appendChild(sp);
 
     // ── Controls ──
@@ -83022,7 +83706,10 @@ function render(backdrop) {
         const r = state.results[base];
         // V167: isPerp must be carried into the render entry — openCoinOnChart
         // needs the market flag to emit source:param{isPerp} before {symbol}.
-        return { base, sym: r.sym, vol: r.vol || 0, isPerp: r.isPerp, ev: r.ev || [], n: coinScore(r) };
+        // V169: legacy persisted identical-pair events (BTC coin × BTC quote)
+        // are dropped at render time — the scanner no longer produces them.
+        const evs = (r.ev || []).filter(e => !e.q || e.q === 'USDT' || e.q !== base);
+        return { base, sym: r.sym, vol: r.vol || 0, isPerp: r.isPerp, ev: evs, n: coinScore({ ev: evs }) };
     }).filter(r => r.n > 0 || r.ev.length);
     entries.sort((a, b) => (b.n - a.n) || (b.vol - a.vol));
     const anyExpanded = S.expanded.size > 0;
@@ -83058,25 +83745,33 @@ function render(backdrop) {
             const isOpen = S.expanded.has(r.base);
             const row = document.createElement('div');
             row.className = 'scan-row';
-            row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:6px;cursor:pointer;flex-shrink:0;background:' + (idx % 2 ? '#10151c' : 'transparent') + ';';
+            // V170: the coin name moved LEFT — the collapse arrow is slimmer
+            // (10px) and the rank number sits AFTER the count badge instead
+            // of occupying ~34px between the arrow and the name.
+            row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;cursor:pointer;flex-shrink:0;background:' + (idx % 2 ? '#10151c' : 'transparent') + ';';
             row.title = 'Click to ' + (isOpen ? 'hide' : 'show') + ' the per-series details';
             const arrow = document.createElement('span');
-            arrow.style.cssText = 'color:#8b949e;width:12px;text-align:center;flex-shrink:0;font-size:10px;';
+            arrow.style.cssText = 'color:#8b949e;width:10px;text-align:center;flex-shrink:0;font-size:10px;';
             arrow.textContent = isOpen ? '▾' : '▸';
             row.appendChild(arrow);
             const rank = document.createElement('span');
-            rank.style.cssText = 'color:#8b949e;width:26px;text-align:right;flex-shrink:0;';
+            rank.style.cssText = 'color:#8b949e;width:24px;text-align:right;flex-shrink:0;font-size:10px;';
             rank.textContent = String(idx + 1);
             const sym = document.createElement('span');
-            sym.style.cssText = 'font-weight:700;min-width:86px;flex-shrink:0;color:#e6edf3;';
+            // V169 mobile: cap the symbol width and ellipsize — long bases
+            // (1000000MOG…) used to push the badge/chips/button off-screen.
+            sym.style.cssText = 'font-weight:700;min-width:48px;max-width:27vw;flex-shrink:0;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
             sym.textContent = r.base;
-            const vol = document.createElement('span');
-            vol.style.cssText = 'color:#8b949e;min-width:64px;flex-shrink:0;font-size:11px;';
-            vol.textContent = _fmtCompact(r.vol);
+            sym.title = r.base + (r.vol ? ' · vol ' + _fmtCompact(r.vol) : '');
             const nBadge = document.createElement('span');
             nBadge.style.cssText = `background:${r.n > 0 ? '#238636' : '#30363d'};color:#fff;border-radius:12px;padding:1px 8px;font-weight:700;flex-shrink:0;`;
             nBadge.textContent = String(r.n);
-            row.appendChild(rank); row.appendChild(sym); row.appendChild(vol); row.appendChild(nBadge);
+            // V169: the volume column is GONE from the row (mobile) — the
+            // 24h volume only feeds the sort order and the symbol tooltip.
+            // V170: order is arrow → NAME → badge → rank → chips — the name
+            // starts right after the 10px arrow instead of the old
+            // arrow+rank block (54px → 16px of dead space on the left).
+            row.appendChild(sym); row.appendChild(nBadge); row.appendChild(rank);
             const chips = document.createElement('span');
             chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;overflow:hidden;max-height:38px;flex:1;min-width:0;';
             const mev = _mergeEvents(r.ev);   // V165: same-price MAX/MIN → one chip
@@ -83184,6 +83879,698 @@ function render(backdrop) {
         rp.appendChild(tbl);
     }
     box.appendChild(rp);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V169: Alerts tab — infrastructure for chart-pattern alerts/logs
+// («логи/алерты для поставленных фигур на графиках, типа если линию на
+// графике пересекли и т.д.»). The UI is an honest empty state for now, but
+// the plumbing is real and mirrors the Scan tab's architecture:
+//   • ScanAlerts — a persisted store (localStorage 'ce_scan_alerts_v1',
+//     same safeStorage path) with add/remove/clear and a JSON export shape
+//     the future alert engines can write into;
+//   • data access — an alert check will read the SAME series the scanner
+//     loads (state.coins worklist + per-coin candles through scanFetch) and
+//     the chart's indicator checks (collectChecks), so no duplicate loaders.
+// Public surface: window.ScanAlerts (also reachable via window.ScanStats).
+// ─────────────────────────────────────────────────────────────────────────────
+const ALERTS_LS_KEY = 'ce_scan_alerts_v1';
+const ScanAlerts = {
+    _items: (function () {
+        try { const raw = _ls() && _ls().getItem(ALERTS_LS_KEY); const arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr : []; }
+        catch (_) { return []; }
+    })(),
+    list() { return this._items.slice(); },
+    add(a) {
+        try {
+            const it = Object.assign({ id: 'al-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), created: Date.now() }, a || {});
+            this._items.push(it); this._save(); return it;
+        } catch (_) { return null; }
+    },
+    remove(id) { const i = this._items.findIndex(x => x.id === id); if (i >= 0) { this._items.splice(i, 1); this._save(); } },
+    clear() { this._items.length = 0; this._save(); },
+    _save() {
+        try { _ls() && _ls().setItem(ALERTS_LS_KEY, JSON.stringify(this._items)); } catch (_) {}
+    },
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V170: ChartAlerts — alerts on DRAWINGS (horizontal lines, trend lines /
+// rays, zones). Right-click a drawing → «🔔 Alert» in the overlay context
+// menu (● badge when an alert already exists) → a per-drawing modal:
+//   • line: Touch / Cross / Both + a per-line margin % for touch triggering;
+//   • zone: Touch of zone / Close inside / Exit from zone (no margin);
+//   • RATIO charts (ETH/SOL-style divisions) additionally get a TF
+//     multi-select (15m…1w, chart TF preselected): a division can touch a
+//     level on one TF and not on another. USDT/USDC charts are evaluated
+//     on the chart's own TF — nothing to choose.
+// Evaluation runs every 4 s while the chart shows the alert's symbol:
+//   the chart's own candles via api.getOHLCRange; extra ratio TFs via the
+//   scanner's private adapters + computeRatio (90 s cache, per-symbol
+//   adapters so scanFetch's ad.symbol mutations never race). Triggers are
+//   EPISODIC (a NEW touch/cross/close-in relative to the previous candle)
+//   and deduped per (tf, kind, candle open time) in alert.lastFired.
+// Persisted in localStorage 'ce_chart_alerts_v1'; the drawing is matched
+// LIVE by (constructor type + createdAt) so dragging/moving it moves the
+// alert level, and a deleted drawing shows as «drawing not found».
+// ─────────────────────────────────────────────────────────────────────────────
+const CA_LS_KEY = 'ce_chart_alerts_v1';
+const CA_SEEN_KEY = 'ce_chart_alerts_seen_v1';
+const CA_TF_MS = { '1m': 6e4, '5m': 3e5, '15m': 9e5, '30m': 18e5, '1h': 36e5, '2h': 72e5, '4h': 144e5, '1d': 864e5, '1w': 6048e5 };
+const CA_TFS = ['15m', '1h', '4h', '1d', '1w'];
+
+/** Drawing type usable for alerts — by constructor name (the overlay
+ *  classes live in another module scope; instanceof is unavailable here).
+ *  Vertical lines carry no price level → no alerts. */
+function _caTypeOf(obj) {
+    try {
+        if (!obj) return null;
+        const cn = obj.constructor && obj.constructor.name;
+        if (cn === 'ZoneObject') return 'zone';
+        if (cn === 'TrendLineObject') return 'trend';
+        if (cn === 'LineObject') return obj.orientation === 'horizontal' ? 'hline' : null;
+    } catch (_) {}
+    return null;
+}
+
+function _caSymLabel(ctx) {
+    try {
+        if (ctx.isRatio && ctx.rc && ctx.rc.numerator && ctx.rc.denominator) {
+            const strip = s => String(s).replace(/(USDT|USDC|USD)$/i, '');
+            return strip(ctx.rc.numerator) + '/' + strip(ctx.rc.denominator);
+        }
+        return String(ctx.sym || '').replace(/USDT$/, '/USDT').replace(/USDC$/, '/USDC');
+    } catch (_) { return (ctx && ctx.sym) || ''; }
+}
+
+const ChartAlerts = {
+    _items: (function () {
+        try { const raw = _ls() && _ls().getItem(CA_LS_KEY); const a = raw ? JSON.parse(raw) : []; return Array.isArray(a) ? a : []; }
+        catch (_) { return []; }
+    })(),
+    _ads: {},          // scanner-private leg adapters, key ex|perp|sym
+    _legCache: {},     // key ex|num|den|np|dp|tf → { t, candles }
+    _timer: null,
+
+    list() { return this._items.slice(); },
+    save() { try { _ls() && _ls().setItem(CA_LS_KEY, JSON.stringify(this._items)); } catch (_) {} this._rerender(); },
+    add(a) {
+        const it = Object.assign({ id: 'ca-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), created: Date.now(), enabled: true, trigCount: 0, events: [], lastFired: {} }, a);
+        this._items.push(it); this.save(); return it;
+    },
+    get(id) { return this._items.find(x => x.id === id) || null; },
+    remove(id) { const i = this._items.findIndex(x => x.id === id); if (i >= 0) { this._items.splice(i, 1); this.save(); } },
+    update(id, patch) { const it = this.get(id); if (it) { Object.assign(it, patch); this.save(); } return it; },
+    forDrawing(oCreated, otype) { return this._items.find(a => a.oCreated === oCreated && a.otype === otype) || null; },
+    hasFor(obj) { const t = _caTypeOf(obj); return !!(t && this.forDrawing(obj.createdAt, t)); },
+    clearEvents() { for (const a of this._items) { a.events = []; } this.save(); },
+
+    unread() {
+        let seen = 0;
+        try { seen = parseInt((_ls() && _ls().getItem(CA_SEEN_KEY)) || '0', 10) || 0; } catch (_) {}
+        let n = 0;
+        for (const a of this._items) for (const e of (a.events || [])) if ((e.t || 0) > seen) n++;
+        return n;
+    },
+    markSeen() { try { _ls() && _ls().setItem(CA_SEEN_KEY, String(Date.now())); } catch (_) {} },
+
+    allEvents() {
+        const out = [];
+        for (const a of this._items) for (const e of (a.events || [])) out.push(Object.assign({ alertId: a.id, symLabel: a.symLabel }, e));
+        out.sort((x, y) => (y.t || 0) - (x.t || 0));
+        return out;
+    },
+
+    _rerender() {
+        try {
+            if (_modalEl && typeof S !== 'undefined' && S.tab === 'alerts' && typeof render === 'function') render(_modalEl);
+        } catch (_) {}
+    },
+
+    // ── chart context (symbol / TF / srcMode / ratio legs) ──
+    _ctx() {
+        try {
+            const ch = window._chart;
+            const orch = ch && (ch.orchestrator || (ch.engine && ch.engine._orchestrator));
+            if (!orch) return null;
+            const src = orch.srcMode || '';
+            const rc = orch._ratioConfig || null;
+            const isRatio = src === 'ratio';
+            let ex = '';
+            if (isRatio) ex = (orch._preRatioSource && ADAPTER_CLASSES[orch._preRatioSource]) ? orch._preRatioSource : 'binance';
+            else if (ADAPTER_CLASSES[src]) ex = src;
+            return { sym: orch.symbol || '', tf: orch.timeframe || '1d', src, isRatio, rc, ex };
+        } catch (_) { return null; }
+    },
+
+    // ── live drawing lookup (stable identity = createdAt + type) ──
+    _objOf(a) {
+        try {
+            const api = window._chart && window._chart.api;
+            const all = api && typeof api.getAllObjects === 'function' ? api.getAllObjects() : null;
+            if (!all) return null;
+            return all.find(o => o && o.createdAt === a.oCreated && _caTypeOf(o) === a.otype) || null;
+        } catch (_) { return null; }
+    },
+
+    // ── levels from the live drawing (falls back to the stored snapshot) ──
+    _levelsOf(a, obj) {
+        try {
+            if (a.otype === 'hline') {
+                let v = null;
+                if (obj) {
+                    if (obj.staticValue != null && isFinite(obj.staticValue)) v = obj.staticValue;
+                    else if (obj.anchorName && window._chart && window._chart.api && typeof window._chart.api.resolveAnchor === 'function') {
+                        try { v = window._chart.api.resolveAnchor(obj.anchorName); } catch (_) { v = null; }
+                    }
+                } else if (a.snap && isFinite(a.snap.level)) v = a.snap.level;
+                return (v != null && isFinite(v)) ? { kind: 'line', level: v } : null;
+            }
+            if (a.otype === 'trend') {
+                const g = obj || a.snap;
+                if (!g) return null;
+                const x1 = g.x1, y1 = g.y1, x2 = g.x2, y2 = g.y2;
+                if (![x1, y1, x2, y2].every(isFinite)) return null;
+                const extend = obj ? ((obj.style && obj.style.extend) || 'none') : ((a.snap && a.snap.extend) || 'none');
+                if (extend === 'vertical') return null;               // vertical line — no price level
+                return { kind: 'trend', x1, y1, x2, y2, extend };
+            }
+            if (a.otype === 'zone') {
+                const g = obj || a.snap;
+                if (!g || !isFinite(g.y1) || !isFinite(g.y2)) return null;
+                return { kind: 'zone', top: Math.max(g.y1, g.y2), bot: Math.min(g.y1, g.y2) };
+            }
+        } catch (_) {}
+        return null;
+    },
+
+    _trendVal(L, x) {
+        if (!L || L.x2 === L.x1) return null;                    // vertical — no value
+        if (L.extend === 'none') {
+            const lo = Math.min(L.x1, L.x2), hi = Math.max(L.x1, L.x2);
+            if (x < lo || x > hi) return null;                   // segment ended — no line there
+        }
+        return L.y1 + (L.y2 - L.y1) * (x - L.x1) / (L.x2 - L.x1);
+    },
+
+    _snapOf(obj, t) {
+        try {
+            if (t === 'hline') {
+                let v = null;
+                if (obj.staticValue != null && isFinite(obj.staticValue)) v = obj.staticValue;
+                else if (obj.anchorName && window._chart && window._chart.api) { try { v = window._chart.api.resolveAnchor(obj.anchorName); } catch (_) {} }
+                return { level: isFinite(v) ? v : null };
+            }
+            if (t === 'trend') return { x1: obj.x1, y1: obj.y1, x2: obj.x2, y2: obj.y2, extend: (obj.style && obj.style.extend) || 'none' };
+            if (t === 'zone') return { y1: obj.y1, y2: obj.y2 };
+        } catch (_) {}
+        return {};
+    },
+
+    _fmtP(v) {
+        if (!isFinite(v)) return '—';
+        const av = Math.abs(v);
+        if (av >= 1000) return v.toFixed(2);
+        if (av >= 1) return v.toFixed(4);
+        if (av >= 0.001) return v.toFixed(6);
+        return v.toExponential(3);
+    },
+
+    _kindText(kind) {
+        return { touch: 'touched', cross: 'crossed', touchzone: 'entered zone', closein: 'closed inside zone', exit: 'exited zone' }[kind] || kind;
+    },
+    _typeLabel(a) {
+        if (a.otype === 'zone') return { touchzone: 'Touch of zone', closein: 'Close inside', exit: 'Exit from zone' }[a.type] || a.type;
+        return { touch: 'Touch line', cross: 'Cross line', both: 'Touch + cross' }[a.type] || a.type;
+    },
+
+    // ── episodic evaluation over an ascending candle array [{x,o,h,l,c}] ──
+    _evalAlert(a, tf, candles) {
+        const obj = this._objOf(a);
+        const L = this._levelsOf(a, obj);
+        if (!L || !candles || candles.length < 2) return [];
+        const fired = [];
+        const isZone = L.kind === 'zone';
+        const m = (!isZone && isFinite(+a.marginPct)) ? Math.max(0, +a.marginPct) / 100 : 0;
+
+        const cond = (c, prev) => {
+            if (L.kind === 'line') {
+                const Lv = L.level;
+                const touch = (c.l <= Lv * (1 + m)) && (c.h >= Lv * (1 - m));
+                let cross = false;
+                if (prev) {
+                    const d0 = prev.c - Lv, d1 = c.c - Lv;
+                    cross = (d0 > 0 && d1 < 0) || (d0 < 0 && d1 > 0);
+                }
+                return { touch, cross, level: Lv };
+            }
+            if (L.kind === 'trend') {
+                const Lv = this._trendVal(L, c.x);
+                if (!isFinite(Lv)) return { touch: false, cross: false };
+                const Lp = prev ? this._trendVal(L, prev.x) : null;
+                const touch = (c.l <= Lv * (1 + m)) && (c.h >= Lv * (1 - m));
+                let cross = false;
+                if (prev && isFinite(Lp)) {
+                    const d0 = prev.c - Lp, d1 = c.c - Lv;
+                    cross = (d0 > 0 && d1 < 0) || (d0 < 0 && d1 > 0);
+                }
+                return { touch, cross, level: Lv };
+            }
+            const touch = (c.h >= L.bot) && (c.l <= L.top);
+            const closein = (c.c >= L.bot) && (c.c <= L.top);
+            const exit = !!(prev && (prev.c >= L.bot && prev.c <= L.top) && !closein);
+            return { touch, closein, exit, level: (L.top + L.bot) / 2 };
+        };
+
+        const want = a.type;
+        // V170-fix: never fire on candles OLDER than the alert itself — the
+        // first evaluation used to backfill EVERY historical crossing/touch
+        // in the 60-candle window (4 events at once). The watermark is the
+        // candle that contains the creation moment (the forming candle at
+        // creation time), so the current candle is still evaluated.
+        const ivMs = CA_TF_MS[tf] || 864e5;
+        const sinceX = a.created ? Math.floor(a.created / ivMs) * ivMs : 0;
+        const n = candles.length;
+        for (let i = 1; i < n; i++) {
+            const c = candles[i], prev = candles[i - 1];
+            const r = cond(c, prev);
+            const rp = cond(prev, candles[i - 2]);
+            let kind = null;
+            if (isZone) {
+                if (want === 'touchzone' && r.touch && !rp.touch) kind = 'touchzone';
+                else if (want === 'closein' && r.closein && !rp.closein) kind = 'closein';
+                else if (want === 'exit' && r.exit) kind = 'exit';
+            } else {
+                const touchHit = (want === 'touch' || want === 'both') && r.touch && !rp.touch;
+                const crossHit = (want === 'cross' || want === 'both') && r.cross;
+                if (crossHit) kind = 'cross';
+                else if (touchHit) kind = 'touch';
+            }
+            if (!kind) continue;
+            if (sinceX && c.x < sinceX) continue;                // pre-creation history
+            const key = tf + '|' + kind;
+            const lastX = a.lastFired ? a.lastFired[key] : undefined;
+            if (isFinite(lastX) && c.x <= lastX) continue;       // dedup per candle
+            if (!a.lastFired) a.lastFired = {};
+            a.lastFired[key] = c.x;
+            const price = this._fmtP(isFinite(r.level) ? r.level : c.c);
+            const msg = (a.symLabel || a.symbol) + ' ' + this._kindText(kind) + ' ' + price + ' (' + tf + ')';
+            const ev = { t: Date.now(), tf, kind, price: c.c, level: r.level, msg };
+            (a.events = a.events || []).unshift(ev);
+            if (a.events.length > 100) a.events.length = 100;
+            a.trigCount = (a.trigCount || 0) + 1;
+            fired.push(ev);
+        }
+        return fired;
+    },
+
+    // ── chart candles (live TF) ──
+    // NOTE: the public api.getOHLCRange() helper is unreliable (it reads
+    // _ctx.dataPort.dataStore which does not exist on this build → always
+    // null) — the WORKING path is the dataPort query GET_OHLC_RANGE.
+    _chartCandles(tf, want) {
+        try {
+            const api = window._chart && window._chart.api;
+            if (!api) return null;
+            const dr = typeof api.getDataRange === 'function' ? api.getDataRange() : null;
+            if (!dr || !isFinite(dr.lastX)) return null;
+            const iv = CA_TF_MS[tf] || 864e5;
+            const span = Math.max(want || 60, 30) * iv;
+            let r = null;
+            try {
+                if (api._ctx && api._ctx.dataPort && typeof api._ctx.dataPort.query === 'function') {
+                    r = api._ctx.dataPort.query({ type: 'GET_OHLC_RANGE', payload: { xMin: dr.lastX - span, xMax: dr.lastX + iv } });
+                }
+            } catch (_) { r = null; }
+            if ((!r || !r.candles || !r.candles.length) && typeof api.getOHLCRange === 'function') {
+                try { r = api.getOHLCRange(dr.lastX - span, dr.lastX + iv); } catch (_) { r = null; }
+            }
+            return (r && r.candles && r.candles.length >= 2) ? r.candles : null;
+        } catch (_) { return null; }
+    },
+
+    // ── extra-TF ratio candles (scanner-private adapters, 90 s cache) ──
+    _ad(ex, perp, sym) {
+        const k = ex + (perp ? ':p:' : ':s:') + sym;
+        if (this._ads[k]) return this._ads[k];
+        try {
+            const Cls = ADAPTER_CLASSES[ex] || window.BinanceAdapter;
+            const ad = new Cls({ symbol: sym, timeframe: '1d', isPerp: !!perp, fetchLimit: 300, minRequestInterval: 150, sourceId: 'alerts-' + k });
+            try { ad.dataCache = null; } catch (_) {}
+            this._ads[k] = ad;
+            return ad;
+        } catch (_) { return null; }
+    },
+    async _ratioCandles(a, tf) {
+        if (!a.ratio || !a.ratio.num) return null;
+        const key = [a.ex, a.ratio.num, a.ratio.den, a.ratio.numPerp ? 1 : 0, a.ratio.denPerp ? 1 : 0, tf].join('|');
+        const c = this._legCache[key];
+        if (c && Date.now() - c.t < 90000) return c.candles;
+        try {
+            const adN = this._ad(a.ex, a.ratio.numPerp, a.ratio.num);
+            const adD = this._ad(a.ex, a.ratio.denPerp, a.ratio.den);
+            if (!adN || !adD) return null;
+            const res = await Promise.all([
+                scanFetch(adN, a.ex, a.ratio.num, tf, 150),
+                scanFetch(adD, a.ex, a.ratio.den, tf, 150),
+            ]);
+            const nc = res[0], dc = res[1];
+            if (!nc || !nc.length || !dc || !dc.length) return null;
+            const ratio = computeRatio(nc, dc).slice(-60).map(k => ({ x: k._x, o: k.open, h: k.high, l: k.low, c: k.close }));
+            if (ratio.length) this._legCache[key] = { t: Date.now(), candles: ratio };
+            return ratio.length ? ratio : null;
+        } catch (_) { return null; }
+    },
+
+    async evaluate() {
+        const ctx = this._ctx();
+        let live = null, liveTried = false;
+        const firedAll = [];
+        for (const a of this._items) {
+            try {
+                if (a.enabled === false) continue;
+                if (!ctx || a.symbol !== ctx.sym || a.srcMode !== ctx.src) continue;   // waits for its chart
+                if (!this._objOf(a)) continue;                                          // drawing deleted → orphan
+                if (!liveTried) { live = this._chartCandles(ctx.tf, 60) || []; liveTried = true; }
+                const tfs = a.isRatio ? ((a.tfs && a.tfs.length) ? a.tfs : [ctx.tf]) : [ctx.tf];
+                const fired = [];
+                for (const tf of tfs) {
+                    let candles = null;
+                    if (!a.isRatio || tf === ctx.tf) candles = live;
+                    else candles = await this._ratioCandles(a, tf);
+                    if (candles && candles.length >= 2) {
+                        for (const ev of this._evalAlert(a, tf, candles)) fired.push(ev);
+                    }
+                }
+                a.lastCheck = Date.now();
+                if (fired.length) {
+                    this.save();
+                    for (const ev of fired.slice(0, 2)) _toast('🔔 ' + ev.msg);
+                    for (const ev of firedAll.concat(fired)) { if (firedAll.indexOf(ev) < 0) firedAll.push(ev); }
+                }
+            } catch (_) {}
+        }
+        return firedAll.length;
+    },
+
+    start() {
+        if (this._timer) return;
+        this._timer = setInterval(() => { try { this.evaluate(); } catch (_) {} }, 4000);
+        try {
+            const bus = window._chart && window._chart.bus;
+            if (bus && typeof bus.on === 'function') {
+                bus.on('source:connected', () => setTimeout(() => { try { this.evaluate(); } catch (_) {} }, 1200));
+            }
+        } catch (_) {}
+    },
+
+    // ── modal (opened from the overlay context menu) ──
+    openForObject(obj) {
+        const t = _caTypeOf(obj);
+        if (!t) return;
+        const ctx = this._ctx() || { sym: '', tf: '1d', src: '', isRatio: false, rc: null, ex: '' };
+        const existing = this.forDrawing(obj.createdAt, t);
+        _caOpenModal(obj, t, ctx, existing);
+    },
+};
+window.ChartAlerts = ChartAlerts;
+ChartAlerts.start();
+
+// V170: Alerts tab — the results UI for ChartAlerts: active alert cards
+// (status, type+margin, TF chips, last events, Test/On-Off/Delete) plus a
+// merged triggered-events log; unread events are highlighted and the tab
+// button carries an (n) badge. Rendering marks events as seen.
+function _renderAlertsTab(box) {
+    const wrap = document.createElement('div');
+    const ctx = ChartAlerts._ctx();
+    const items = ChartAlerts.list().slice().reverse();   // newest first
+    const seenTs = (function () { try { return parseInt((_ls() && _ls().getItem(CA_SEEN_KEY)) || '0', 10) || 0; } catch (_) { return 0; } })();
+
+    const head = document.createElement('div');
+    head.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;';
+    head.appendChild(Object.assign(document.createElement('div'), {
+        textContent: '🔔 Chart alerts — lines, rays & zones',
+        style: CSS.lbl + 'margin-bottom:0;flex:1;font-size:10px;',
+    }));
+    const chkBtn = document.createElement('button');
+    chkBtn.textContent = '⟳ Check now';
+    chkBtn.style.cssText = CSS.btn + 'padding:2px 8px;font-size:10px;';
+    chkBtn.title = 'Evaluate all alerts immediately (they also run every 4 s in the background)';
+    chkBtn.onclick = async () => {
+        chkBtn.disabled = true;
+        try { const n = await ChartAlerts.evaluate(); if (!n) _toast('No alert conditions met'); } catch (_) {}
+        chkBtn.disabled = false;
+    };
+    head.appendChild(chkBtn);
+    wrap.appendChild(head);
+
+    // ── Active alerts ──
+    const secA = document.createElement('div');
+    secA.style.cssText = CSS.lbl;
+    secA.textContent = 'Active alerts — ' + items.length;
+    wrap.appendChild(secA);
+    if (!items.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'color:#8b949e;font-size:11.5px;line-height:1.6;padding:10px 6px;';
+        empty.innerHTML =
+            '<div style="font-size:20px;text-align:center;margin-bottom:6px;">🔔</div>' +
+            '<div style="text-align:center;font-weight:600;color:#c9d1d9;margin-bottom:6px;">No chart alerts yet</div>' +
+            'Right-click a <b>horizontal line</b>, <b>trend line / segment / ray</b> or a <b>zone</b> on the chart → <b>🔔 Alert</b> in the menu.<br>' +
+            'Lines can trigger on touch (± margin %), on a close-through cross, or both; zones on touch, close-inside or exit. ' +
+            'On ratio charts (e.g. ETH/SOL) you also pick the timeframe(s) to watch, since a division may touch a level on one TF and not on another.';
+        wrap.appendChild(empty);
+    }
+    for (const a of items) {
+        const card = document.createElement('div');
+        card.style.cssText = 'border:1px solid #21262d;border-radius:8px;background:#10151c;padding:7px 9px;margin-bottom:5px;';
+        // status
+        let st = 'armed', stColor = '#3fb950';
+        if (a.enabled === false) { st = 'paused'; stColor = '#8b949e'; }
+        else if (!ctx || a.symbol !== ctx.sym || a.srcMode !== ctx.src) { st = 'waiting for its chart'; stColor = '#d29922'; }
+        else if (!ChartAlerts._objOf(a)) { st = 'drawing not found'; stColor = '#f85149'; }
+        const L = ChartAlerts._levelsOf(a, null);   // display levels from the snapshot
+        let lvTxt = '';
+        if (L && L.kind === 'line') lvTxt = 'level ' + ChartAlerts._fmtP(L.level);
+        else if (L && L.kind === 'trend') lvTxt = ChartAlerts._fmtP(L.y1) + ' → ' + ChartAlerts._fmtP(L.y2) + (L.extend && L.extend !== 'none' ? ' · ' + L.extend : '');
+        else if (L && L.kind === 'zone') lvTxt = 'zone ' + ChartAlerts._fmtP(L.bot) + ' … ' + ChartAlerts._fmtP(L.top);
+        const r1 = document.createElement('div');
+        r1.style.cssText = 'display:flex;align-items:center;gap:7px;min-width:0;';
+        r1.innerHTML =
+            '<span style="width:8px;height:8px;border-radius:50%;background:' + stColor + ';flex-shrink:0;" title="' + _esc(st) + '"></span>' +
+            '<span style="color:#e6edf3;font-weight:700;font-size:12px;flex-shrink:0;">' + _esc(a.symLabel || a.symbol || '?') + '</span>' +
+            '<span style="color:#c9d1d9;font-size:11px;flex-shrink:0;">' + _esc(ChartAlerts._typeLabel(a)) + '</span>' +
+            (isFinite(+a.marginPct) && a.otype !== 'zone' ? '<span style="color:#8b949e;font-size:10px;flex-shrink:0;">±' + a.marginPct + '%</span>' : '') +
+            '<span style="color:#8b949e;font-size:10px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + _esc(a.oLabel || '') + '">' + _esc(lvTxt) + '</span>' +
+            '<span style="color:' + stColor + ';font-size:10px;flex-shrink:0;">' + _esc(st) + '</span>';
+        card.appendChild(r1);
+        // meta: TFs + created + triggers
+        const meta = document.createElement('div');
+        meta.style.cssText = 'display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:4px;';
+        const tfs = (a.isRatio && Array.isArray(a.tfs)) ? a.tfs : [];
+        for (const tf of tfs) {
+            const chip = document.createElement('span');
+            chip.textContent = tf;
+            chip.style.cssText = 'background:#161b22;border:1px solid #30363d;border-radius:9px;padding:0 7px;color:#58a6ff;font-size:9.5px;';
+            meta.appendChild(chip);
+        }
+        meta.appendChild(Object.assign(document.createElement('span'), {
+            textContent: (a.ex ? (EXCH_NAMES[a.ex] || a.ex) : '') + (a.isRatio ? ' · ratio' : '') + ' · trig ' + (a.trigCount || 0),
+            style: 'color:#8b949e;font-size:9.5px;',
+        }));
+        const spacer = document.createElement('span');
+        spacer.style.cssText = 'flex:1;';
+        meta.appendChild(spacer);
+        const mkBtn = (txt, css, title, fn) => {
+            const b = document.createElement('button');
+            b.textContent = txt; b.title = title || '';
+            b.style.cssText = css + 'padding:1px 7px;font-size:10px;';
+            b.onclick = fn;
+            return b;
+        };
+        meta.appendChild(mkBtn('Test', CSS.btn, 'Fire a synthetic event to check the UI', () => {
+            const a2 = ChartAlerts.get(a.id); if (!a2) return;
+            const lv2 = ChartAlerts._levelsOf(a2, null);
+            const price = lv2 && isFinite(lv2.level) ? lv2.level : (lv2 && isFinite(lv2.top) ? (lv2.top + lv2.bot) / 2 : 0);
+            (a2.events = a2.events || []).unshift({ t: Date.now(), tf: (a2.isRatio && a2.tfs && a2.tfs[0]) || (ChartAlerts._ctx() || {}).tf || '1d', kind: a2.otype === 'zone' ? 'touchzone' : 'touch', price, level: price, msg: (a2.symLabel || a2.symbol) + ' — test event', test: true });
+            if (a2.events.length > 100) a2.events.length = 100;
+            a2.trigCount = (a2.trigCount || 0) + 1;
+            ChartAlerts.save();
+            _toast('🔔 Test event fired');
+        }));
+        meta.appendChild(mkBtn(a.enabled === false ? 'Off' : 'On', CSS.btnWarn, 'Arm / pause this alert', () => {
+            ChartAlerts.update(a.id, { enabled: a.enabled === false });
+        }));
+        meta.appendChild(mkBtn('✕', CSS.btnDanger, 'Delete this alert', () => { ChartAlerts.remove(a.id); }));
+        card.appendChild(meta);
+        // last events inline (up to 3)
+        const evsA = (a.events || []).slice(0, 3);
+        for (const ev of evsA) {
+            const er = document.createElement('div');
+            const unread = (ev.t || 0) > seenTs;
+            er.style.cssText = 'display:flex;gap:6px;align-items:center;margin-top:3px;padding-left:15px;' + (unread ? 'color:#e6edf3;' : 'color:#8b949e;');
+            er.style.fontSize = '10px';
+            const d = new Date(ev.t || Date.now());
+            er.innerHTML = '<span style="flex-shrink:0;">' + d.toTimeString().slice(0, 5) + '</span>' +
+                '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + _esc(ev.msg || '') + '</span>' +
+                (ev.test ? '<span style="color:#d29922;flex-shrink:0;">test</span>' : '');
+            card.appendChild(er);
+        }
+        wrap.appendChild(card);
+    }
+
+    // ── Triggered events log ──
+    const evs = ChartAlerts.allEvents();
+    const secB = document.createElement('div');
+    secB.style.cssText = 'display:flex;align-items:center;gap:8px;margin:10px 0 4px;';
+    secB.innerHTML = '<span style="' + CSS.lbl + 'margin-bottom:0;flex:1;">Triggered events — ' + evs.length + '</span>';
+    if (evs.length) {
+        const clr = document.createElement('button');
+        clr.textContent = '🗑 Clear events'; clr.style.cssText = CSS.btnDanger + 'padding:2px 8px;font-size:10px;';
+        clr.onclick = () => { ChartAlerts.clearEvents(); };
+        secB.appendChild(clr);
+    }
+    wrap.appendChild(secB);
+    if (!evs.length) {
+        const none = document.createElement('div');
+        none.style.cssText = 'color:#8b949e;font-style:italic;font-size:11px;padding:4px 6px;';
+        none.textContent = 'No triggered events yet — the log fills up when an alert fires (a 🔔 toast appears too).';
+        wrap.appendChild(none);
+    }
+    const logBox = document.createElement('div');
+    logBox.style.cssText = 'display:flex;flex-direction:column;gap:2px;max-height:26vh;overflow-y:auto;';
+    for (const ev of evs.slice(0, 100)) {
+        const row = document.createElement('div');
+        const unread = (ev.t || 0) > seenTs;
+        row.style.cssText = 'display:flex;align-items:center;gap:7px;padding:3px 6px;border-radius:6px;flex-shrink:0;font-size:10.5px;background:' + (unread ? 'rgba(88,166,255,.08)' : '#10151c') + ';';
+        const d = new Date(ev.t || Date.now());
+        const today = d.toISOString().slice(0, 10) === new Date().toISOString().slice(0, 10);
+        const ts = today ? d.toTimeString().slice(0, 5) : d.toISOString().slice(5, 16).replace('T', ' ');
+        const kindColor = { touch: '#58a6ff', cross: '#bc8cff', touchzone: '#3fb950', closein: '#d29922', exit: '#f85149' }[ev.kind] || '#8b949e';
+        row.innerHTML =
+            '<span style="color:#8b949e;width:36px;flex-shrink:0;">' + ts + '</span>' +
+            '<span style="color:#e6edf3;font-weight:600;flex-shrink:0;">' + _esc(ev.symLabel || '') + '</span>' +
+            '<span style="color:' + kindColor + ';flex-shrink:0;">' + _esc(ChartAlerts._kindText(ev.kind) || ev.kind) + '</span>' +
+            '<span style="color:#c9d1d9;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">@ ' + _esc(ChartAlerts._fmtP(ev.level)) + '</span>' +
+            '<span style="background:#161b22;border:1px solid #30363d;border-radius:9px;padding:0 6px;color:#8b949e;flex-shrink:0;">' + _esc(ev.tf || '') + '</span>';
+        logBox.appendChild(row);
+    }
+    if (evs.length) wrap.appendChild(logBox);
+
+    // Rendered → everything currently visible counts as seen (the highlight
+    // stays until the next render so the user still sees what is new).
+    ChartAlerts.markSeen();
+    box.appendChild(wrap);
+}
+
+// V170: the per-drawing alert modal — opened from the overlay context menu
+// («🔔 Alert»): touch / cross / both + margin % for lines; touch of zone /
+// close inside / exit for zones (no margin); TF multi-select on RATIO
+// charts. Editing an existing alert pre-fills the fields; Remove deletes it.
+function _caOpenModal(obj, t, ctx, existing) {
+    const isZone = t === 'zone';
+    const back = document.createElement('div');
+    back.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:100050;display:flex;align-items:center;justify-content:center;';
+    const card = document.createElement('div');
+    card.style.cssText = 'background:#0d1117;border:1px solid #30363d;border-radius:10px;width:min(440px,94vw);max-height:86vh;overflow-y:auto;padding:14px 16px;box-shadow:0 10px 40px rgba(0,0,0,.5);';
+    back.appendChild(card);
+    const close = () => { try { back.remove(); } catch (_) {} };
+    back.addEventListener('mousedown', (e) => { if (e.target === back) close(); });
+
+    const L = ChartAlerts._levelsOf({ otype: t, snap: null }, obj);
+    let levelTxt = '';
+    if (L && L.kind === 'line') levelTxt = ChartAlerts._fmtP(L.level);
+    else if (L && L.kind === 'trend') levelTxt = ChartAlerts._fmtP(L.y1) + ' → ' + ChartAlerts._fmtP(L.y2) + (L.extend && L.extend !== 'none' ? ' (' + L.extend + ')' : ' (segment)');
+    else if (L && L.kind === 'zone') levelTxt = ChartAlerts._fmtP(L.bot) + ' … ' + ChartAlerts._fmtP(L.top);
+    const drawLabel = obj.shortInfo || obj.name || (isZone ? 'Zone' : t === 'trend' ? 'Trend line / ray' : 'Horizontal line');
+    const curType = existing ? existing.type : (isZone ? 'touchzone' : 'touch');
+    const curMargin = existing && isFinite(+existing.marginPct) ? +existing.marginPct : 0.1;
+    const curTfs = existing && Array.isArray(existing.tfs) && existing.tfs.length ? existing.tfs : [ctx.tf];
+
+    const typeOpts = isZone
+        ? [['touchzone', 'Touch of zone'], ['closein', 'Close inside zone'], ['exit', 'Exit from zone']]
+        : [['touch', 'Touch line'], ['cross', 'Cross line'], ['both', 'Both touch + cross']];
+
+    let h = '';
+    h += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">' +
+        '<h3 style="margin:0;font-size:14px;color:#e6edf3;flex:1;">🔔 Alert — ' + _esc(drawLabel) + '</h3>' +
+        '<button data-ca-close style="background:transparent;border:none;color:#8b949e;font-size:18px;cursor:pointer;">&times;</button></div>';
+    h += '<div style="color:#8b949e;font-size:11px;margin-bottom:10px;line-height:1.5;">' +
+        _esc(levelTxt ? 'Drawing: ' + levelTxt : 'Drawing') +
+        '<br>Chart: <b style="color:#c9d1d9;">' + _esc(_caSymLabel(ctx) || ctx.sym || '?') + '</b> · ' + _esc(ctx.tf || '?') +
+        (ctx.ex ? ' · ' + _esc(EXCH_NAMES[ctx.ex] || ctx.ex) : '') + '</div>';
+    // Trigger type
+    h += '<div style="color:#8b949e;font-size:9.5px;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px;">Trigger on</div>';
+    for (const [val, lbl] of typeOpts) {
+        h += '<label style="display:flex;align-items:center;gap:8px;padding:4px 2px;color:#c9d1d9;font-size:12px;cursor:pointer;">' +
+            '<input type="radio" name="ca-type" value="' + val + '"' + (curType === val ? ' checked' : '') + '>' + lbl + '</label>';
+    }
+    // Margin (lines only)
+    if (!isZone) {
+        h += '<div style="display:flex;align-items:center;gap:8px;margin-top:8px;">' +
+            '<span style="color:#8b949e;font-size:11px;">Margin %</span>' +
+            '<input type="number" data-ca-margin value="' + curMargin + '" min="0" max="10" step="0.01" style="background:#161b22;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:3px 6px;font-size:12px;width:76px;">' +
+            '<span style="color:#8b949e;font-size:10px;">touch fires when the candle range comes within this % of the line</span></div>';
+    }
+    // TF multi-select — RATIO charts only (a division can touch on one TF
+    // and not on another; USDT/USDC pairs do not need this).
+    if (ctx.isRatio) {
+        h += '<div style="color:#8b949e;font-size:9.5px;text-transform:uppercase;letter-spacing:.6px;margin:12px 0 5px;">Watch timeframes (ratio chart)</div>';
+        h += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
+        for (const tf of CA_TFS) {
+            const on = curTfs.indexOf(tf) >= 0;
+            h += '<label style="display:inline-flex;align-items:center;gap:5px;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:3px 8px;color:#c9d1d9;font-size:11px;cursor:pointer;">' +
+                '<input type="checkbox" data-ca-tf="' + tf + '"' + (on ? ' checked' : '') + '>' + tf +
+                (tf === ctx.tf ? ' <span style="color:#58a6ff;font-size:9px;">(chart)</span>' : '') + '</label>';
+        }
+        h += '</div>';
+        h += '<div style="color:#8b949e;font-size:10px;margin-top:5px;">A division (ETH/SOL…) can touch a level on one timeframe and not on another — the alert checks every TF you pick.</div>';
+    } else {
+        h += '<div style="color:#8b949e;font-size:10px;margin-top:12px;">Evaluated on the chart timeframe (current: ' + _esc(ctx.tf || '?') + '). Timeframe selection is only needed on ratio charts (ETH/SOL…).</div>';
+    }
+    // Buttons
+    h += '<div style="display:flex;align-items:center;gap:8px;margin-top:14px;">' +
+        (existing ? '<button data-ca-del style="background:#21262d;border:1px solid #30363d;border-radius:4px;color:#f85149;padding:4px 10px;font-size:11px;cursor:pointer;">🗑 Remove alert</button>' : '') +
+        '<span style="flex:1;"></span>' +
+        '<button data-ca-cancel style="background:#21262d;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:4px 10px;font-size:11px;cursor:pointer;">Cancel</button>' +
+        '<button data-ca-save style="background:#238636;border:1px solid #2ea043;border-radius:4px;color:#fff;padding:4px 14px;font-size:11px;font-weight:600;cursor:pointer;">' + (existing ? 'Save' : 'Create alert') + '</button>' +
+        '</div>';
+    card.innerHTML = h;
+
+    card.querySelector('[data-ca-close]').onclick = close;
+    card.querySelector('[data-ca-cancel]').onclick = close;
+    const delBtn = card.querySelector('[data-ca-del]');
+    if (delBtn) delBtn.onclick = () => { if (existing) ChartAlerts.remove(existing.id); close(); };
+    card.querySelector('[data-ca-save]').onclick = () => {
+        const typeEl = card.querySelector('input[name="ca-type"]:checked');
+        const selType = typeEl ? typeEl.value : (isZone ? 'touchzone' : 'touch');
+        let marginVal = null;
+        if (!isZone) {
+            const mEl = card.querySelector('[data-ca-margin]');
+            const mv = parseFloat(mEl && mEl.value);
+            marginVal = isFinite(mv) && mv >= 0 ? Math.min(10, mv) : 0.1;
+        }
+        const tfs = [];
+        if (ctx.isRatio) {
+            card.querySelectorAll('[data-ca-tf]').forEach((cb) => { if (cb.checked) tfs.push(cb.getAttribute('data-ca-tf')); });
+            if (!tfs.length) tfs.push(ctx.tf);
+        }
+        const rec = {
+            otype: t, oCreated: obj.createdAt,
+            oName: obj.name || '', oLabel: drawLabel,
+            snap: ChartAlerts._snapOf(obj, t),
+            symbol: ctx.sym, srcMode: ctx.src, ex: ctx.ex,
+            symLabel: _caSymLabel(ctx),
+            isRatio: !!ctx.isRatio,
+            ratio: (ctx.isRatio && ctx.rc) ? { num: ctx.rc.numerator, den: ctx.rc.denominator, numPerp: !!ctx.rc.numeratorIsPerp, denPerp: !!ctx.rc.denominatorIsPerp } : null,
+            tfs: ctx.isRatio ? tfs : (existing && Array.isArray(existing.tfs) ? existing.tfs : []),
+            type: selType, marginPct: marginVal,
+        };
+        if (existing) ChartAlerts.update(existing.id, rec);
+        else ChartAlerts.add(rec);
+        _toast('🔔 Alert ' + (existing ? 'updated' : 'created') + ': ' + (rec.symLabel || rec.symbol || ''));
+        close();
+    };
+    document.body.appendChild(back);
 }
 
 // V167: open a scanned coin on the main chart — replays the CoinPicker
@@ -83377,6 +84764,9 @@ window.ScanStats = {
     _computeRatio: computeRatio,
     _scanFetch: scanFetch,
 };
+// V169: alerts infrastructure — the future chart-pattern alert/log engine
+// registers here; the Alerts tab renders from this store.
+window.ScanAlerts = ScanAlerts;
 })();
 
 </script>
