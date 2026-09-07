@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Chart Engine v49p — series.js v6 foundation · V170 chart alerts (lines/rays/zones → 🔔 Alert menu → modal → live evaluation → Alerts tab) · volume profile deep settings (POC/dev-POC/bins/VA zone/buy-sell colors+alpha) · scan row shift</title>
+    <title>Chart Engine v49p — series.js v6 foundation · V171 ByBit category-adoption toast removed (silent switch, «Cat: …» button stays the feedback)</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -65495,13 +65495,16 @@ class DataSourceOrchestrator {
     /**
      * V143-ui-sync: ByBitAdapter adopted the OTHER market category (the
      *   active one is dead for this symbol — delivered perp / spot-only
-     *   listing). Mirror it into the orchestrator state, notify the UI so
-     *   the category button label matches the market actually streaming,
-     *   and show a toast so the silent switch is not mistaken for a bug
-     *   ("the coin trades fine — why is my chart frozen?"). The next
-     *   StatePersistence autosave reads this.bybitCategory (72977), so the
-     *   saved state now boots directly on the live market instead of
-     *   re-visiting the dead one on every reload.
+     *   listing). Mirror it into the orchestrator state and notify the UI
+     *   so the category button label matches the market actually streaming
+     *   (that label sync IS the user feedback — the switch is visible in
+     *   the header). V171: the companion toast («ByBit SYM: spot market
+     *   has no data — switched to linear») is REMOVED per user request —
+     *   it fired on every such coin and added noise; the synced category
+     *   button tells the same story silently. The next StatePersistence
+     *   autosave reads this.bybitCategory (72977), so the saved state now
+     *   boots directly on the live market instead of re-visiting the dead
+     *   one on every reload.
      *   Deliberately does NOT emit source:param{bybitCategory}: that routes
      *   through _onParam → adapter.switchAsset → a full history reload +
      *   WS reconnect, which the adoption has already performed on its own.
@@ -65511,10 +65514,6 @@ class DataSourceOrchestrator {
         this.bybitCategory = cat;
         try {
             this.bus.emit('ui:bybit-cat-sync', { category: cat }, 'DataSourceOrchestrator');
-            if (this.srcMode === 'bybit') {
-                const from = cat === 'spot' ? 'linear' : 'spot';
-                showToast(`ByBit ${this.symbol || ''}: ${from} market has no data — switched to ${cat}`);
-            }
         } catch (_) { /* best-effort */ }
     }
 
@@ -82190,6 +82189,12 @@ if (typeof URLSearchParams !== 'undefined' && new URLSearchParams(location.searc
 //     POC line (show / color / style / width) — the renderer now honors all
 //     of them. ④ Scan result rows: the coin name moved left (the collapse
 //     arrow is slimmer and the rank chip sits after the count badge).
+// V171: the «ByBit SYM: spot market has no data — switched to linear»
+//     toast is removed (user request). The automatic category adoption
+//     itself stays — the adapter still switches to the market that has
+//     data and the orchestrator still mirrors it into the «Cat: …» cycle
+//     button + persisted state; that label sync is now the only feedback,
+//     no toast noise on coins whose spot/linear listing is one-sided.
 
 (function () {
 'use strict';
