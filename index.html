@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Chart Engine v49p — series.js v6 foundation · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
+    <title>Chart Engine v49p — series.js v6 foundation · V181 ratio-chart boot-guard (hlines with alerts no longer wiped on reload of a synthetic pair), working «Apply to future lines» (persisted), alert default = Both touch + cross, click an alert card → open its chart · V180 Elliott rule texts in English (violation list, OK chip, tool settings) + top-left rule panel dropped below the source label · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -40079,6 +40079,12 @@ function computeImpulseProjection(pts, isLog) {
 
 const IMPULSE5_VIOL_COLOR = { rule: '#f23645', warn: '#ff9800' };
 
+// V180: the top-left rule list / OK chip starts BELOW the panel's source
+// label ("BTCUSDT · BINANCE 1h WS · …" — PanelLabelRenderer draws it in the
+// same corner, bold 10px at roughly 3..15px from the panel top), so the two
+// no longer overlap. The tools-popup inset (ins) stacks on top of this drop.
+const IMPULSE5_VIOL_PANEL_DROP = 20;
+
 /**
  * V150: evaluate the Elliott impulse rules on the placed points.
  * @param {Array}  pts — data points [{x,y}, …] (2..6; the last one may be a
@@ -40100,7 +40106,7 @@ function computeImpulseViolations(pts, isLog) {
     for (let i = 1; i < n; i++) {
         if (Number.isFinite(pts[i].x) && Number.isFinite(pts[i - 1].x) && pts[i].x < pts[i - 1].x) {
             out.push({ wave: i, ptIdx: i, severity: 'rule', badge: 'T<',
-                       text: 'Точка ' + i + ' по времени раньше предыдущей' });
+                       text: 'Point ' + i + ' is earlier in time than the previous one' });
         }
     }
     if (n < 3) return out;                       // need W2 to check anything
@@ -40126,42 +40132,42 @@ function computeImpulseViolations(pts, isLog) {
 
     // ── W2 (needs ≥3 pts): must retrace against W1, never >100% of it ──
     if (dir * (pts[2].y - pts[1].y) >= 0) {
-        push(2, 2, 'rule', 'W2 dir', 'Волна 2 не откатывает против волны 1');
+        push(2, 2, 'rule', 'W2 dir', 'Wave 2 does not retrace against wave 1');
     }
     if (dir * (pts[2].y - pts[0].y) < -eps) {
-        push(2, 2, 'rule', 'W2>100%', 'Волна 2 заходит за начало волны 1 (>100%)');
+        push(2, 2, 'rule', 'W2>100%', 'Wave 2 goes beyond the start of wave 1 (>100%)');
     }
     // ── W3 (needs ≥4 pts): with the trend and beyond the end of W1 ──
     if (n >= 4) {
         if (dir * (pts[3].y - pts[2].y) <= 0) {
-            push(3, 3, 'rule', 'W3 dir', 'Волна 3 направлена против тренда');
+            push(3, 3, 'rule', 'W3 dir', 'Wave 3 moves against the trend');
         }
         if (dir * (pts[3].y - pts[1].y) < eps) {
-            push(3, 3, 'rule', 'W3≤W1', 'Волна 3 не пробила конец волны 1');
+            push(3, 3, 'rule', 'W3≤W1', 'Wave 3 fails to exceed the end of wave 1');
         }
     }
     // ── W4 (needs ≥5 pts): retrace against W3 + no W1 overlap ──
     if (n >= 5) {
         if (dir * (pts[4].y - pts[3].y) >= 0) {
-            push(4, 4, 'rule', 'W4 dir', 'Волна 4 не откатывает против волны 3');
+            push(4, 4, 'rule', 'W4 dir', 'Wave 4 does not retrace against wave 3');
         }
         if (dir * (pts[4].y - pts[1].y) < -eps) {
-            push(4, 4, 'rule', 'W4×W1', 'Перекрытие: волна 4 зашла в зону волны 1');
+            push(4, 4, 'rule', 'W4×W1', 'Overlap: wave 4 enters wave 1 territory');
         }
     }
     // ── W5 + length rules (needs all 6 pts) ──
     if (n >= 6) {
         if (dir * (pts[5].y - pts[4].y) <= 0) {
-            push(5, 5, 'rule', 'W5 dir', 'Волна 5 направлена против тренда');
+            push(5, 5, 'rule', 'W5 dir', 'Wave 5 moves against the trend');
         }
         if (dir * (pts[5].y - pts[3].y) < eps) {
-            push(5, 5, 'warn', 'W5 trunc', 'Усечённая волна 5 (не превысила волну 3)');
+            push(5, 5, 'warn', 'W5 trunc', 'Truncated wave 5 (fails to exceed wave 3)');
         }
         const l1 = seg(1), l3 = seg(3), l5 = seg(5);
         if (l3 < l1 - epsLen && l3 < l5 - epsLen) {
-            push(3, 3, 'rule', 'W3 min', 'Волна 3 — самая короткая из волн 1, 3, 5');
+            push(3, 3, 'rule', 'W3 min', 'Wave 3 is the shortest of waves 1, 3, 5');
         } else if (l3 < l1 - epsLen || l3 < l5 - epsLen) {
-            push(3, 3, 'warn', 'W3\u2260max', 'Волна 3 не самая длинная (гайдлайн)');
+            push(3, 3, 'warn', 'W3\u2260max', 'Wave 3 is not the longest (guideline)');
         }
     }
     return out;
@@ -40390,14 +40396,16 @@ function _impulse5DrawViolations(ctx, viol, ptsPx, pb, opts) {
         ctx.restore();
         return;
     }
-    const px0 = pb.left + 4, py0 = pb.top + 4 + ins;
+    // V180: + IMPULSE5_VIOL_PANEL_DROP — start BELOW the panel's top-left
+    // source label instead of covering the exchange name.
+    const px0 = pb.left + 4, py0 = pb.top + 4 + ins + IMPULSE5_VIOL_PANEL_DROP;
     if (viol.length) {
         const rows = viol.slice(0, 6);
         const extra = viol.length - rows.length;
         ctx.font = '9px monospace';
-        let pw = ctx.measureText('Нарушения правил: ' + viol.length).width;
+        let pw = ctx.measureText('Rule violations: ' + viol.length).width;
         for (const v of rows) pw = Math.max(pw, 16 + ctx.measureText(v.text).width);
-        if (extra > 0) pw = Math.max(pw, 16 + ctx.measureText('+' + extra + ' ещё').width);
+        if (extra > 0) pw = Math.max(pw, 16 + ctx.measureText('+' + extra + ' more').width);
         pw = Math.min(pw + 14, pb.right - pb.left - 8);
         const ph = 12 + (rows.length + (extra > 0 ? 2 : 1)) * 12;
         const worst = viol.some(v => v.severity === 'rule') ? 'rule' : 'warn';
@@ -40414,7 +40422,7 @@ function _impulse5DrawViolations(ctx, viol, ptsPx, pb, opts) {
         ctx.textAlign = 'left';
         ctx.font = 'bold 9px monospace';
         ctx.fillStyle = IMPULSE5_VIOL_COLOR[worst];
-        ctx.fillText('Нарушения правил: ' + viol.length, px0 + 7, py0 + 9);
+        ctx.fillText('Rule violations: ' + viol.length, px0 + 7, py0 + 9);
         ctx.font = '9px monospace';
         let yy = py0 + 21;
         for (const v of rows) {
@@ -40424,11 +40432,11 @@ function _impulse5DrawViolations(ctx, viol, ptsPx, pb, opts) {
         }
         if (extra > 0) {
             ctx.fillStyle = 'rgba(139,148,158,0.9)';
-            ctx.fillText('+' + extra + ' ещё', px0 + 7, yy);
+            ctx.fillText('+' + extra + ' more', px0 + 7, yy);
         }
     } else if (ptsPx.length >= 3) {
         ctx.font = 'bold 9px monospace';
-        const txt = '\u2713 Правила соблюдены';
+        const txt = '\u2713 Rules respected';
         const pw = ctx.measureText(txt).width + 12;
         ctx.fillStyle = 'rgba(22, 35, 58, 0.55)';
         ctx.fillRect(px0, py0, pw, 18);
@@ -41162,7 +41170,7 @@ function computeElliottViolations(pts, pk, isLog) {
     for (let i = 1; i < n; i++) {
         if (Number.isFinite(pts[i].x) && Number.isFinite(pts[i - 1].x) && pts[i].x < pts[i - 1].x) {
             push(i, i, 'rule', 'T<',
-                 'Точка ' + i + ' (' + (L[i - 1] || i) + ') по времени раньше предыдущей');
+                 'Point ' + i + ' (' + (L[i - 1] || i) + ') is earlier in time than the previous one');
         }
     }
     if (n < 3) return out;
@@ -41181,7 +41189,7 @@ function computeElliottViolations(pts, pk, isLog) {
         const dCur = Math.sign(pts[i].y - pts[i - 1].y);
         if (dPrev && dCur && dCur === dPrev) {
             push(i, i, 'rule', (L[i - 1] || i) + ' dir',
-                 'Волна ' + (L[i - 1] || i) + ' не чередуется с ' + (L[i - 2] || (i - 1)));
+                 'Wave ' + (L[i - 1] || i) + ' does not alternate with ' + (L[i - 2] || (i - 1)));
         }
     }
     if (spec.key === 'tri') {
@@ -41191,15 +41199,15 @@ function computeElliottViolations(pts, pk, isLog) {
             if (!d) continue;
             if (d * (pts[i].y - pts[i - 2].y) > eps) {
                 push(i, i, 'rule', L[i - 1] + '>' + L[i - 3],
-                     'Волна ' + L[i - 1] + ' заходит за конец ' + L[i - 3]
-                     + ' — треугольник не сужается');
+                     'Wave ' + L[i - 1] + ' overshoots the end of ' + L[i - 3]
+                     + ' — the triangle is not contracting');
             }
         }
         // Guideline: each wave should shrink.
         for (let i = 3; i < n; i++) {
             if (seg(i) > seg(i - 1) + epsLen) {
                 push(i, i, 'warn', L[i - 1] + '\u2191',
-                     'Волна ' + L[i - 1] + ' длиннее предыдущей — сужения нет');
+                     'Wave ' + L[i - 1] + ' is longer than the previous one — no contraction');
             }
         }
     } else {
@@ -41211,20 +41219,20 @@ function computeElliottViolations(pts, pk, isLog) {
         if (n >= 3) {
             if (d1 * (pts[2].y - pts[0].y) < -eps) {
                 push(2, 2, 'warn', b2 + '>100%',
-                     'Волна ' + b2 + ' за начало ' + w1 + ' (>100%)'
-                     + (isAbc ? ' — похоже на растянутый флэт' : ''));
+                     'Wave ' + b2 + ' goes beyond the start of ' + w1 + ' (>100%)'
+                     + (isAbc ? ' — looks like an expanded flat' : ''));
             }
         }
         if (n >= 4) {
             // Truncated: C/Y stops short of the end of A/W.
             if (d1 * (pts[3].y - pts[1].y) < -eps) {
                 push(3, 3, 'warn', c3 + ' trunc',
-                     'Волна ' + c3 + ' не превысила конец ' + w1 + ' (усечённая)');
+                     'Wave ' + c3 + ' fails to exceed the end of ' + w1 + ' (truncated)');
             }
             // Weak: shorter than 38.2% of wave 1.
             if (seg(3) < 0.382 * seg(1) - epsLen) {
                 push(3, 3, 'warn', c3 + ' weak',
-                     'Волна ' + c3 + ' короче 38.2% волны ' + w1);
+                     'Wave ' + c3 + ' is shorter than 38.2% of wave ' + w1);
             }
         }
     }
@@ -46120,22 +46128,42 @@ class SourceAPI {
         if (overlay && overlay.history) {
             const oldTicker = this._prevTicker || null;
             const newTicker = this._sourceInfo.symbol || null;
-            if (oldTicker && oldTicker !== newTicker) {
+            // V181-boot-guard: resolve the boot state BEFORE touching buckets.
+            // The V177 flag is now consumed ONLY on a ticker match (it used to
+            // be deleted up-front, so a two-step ratio boot lost its own
+            // protection on step one). While the guard is armed and the
+            // restored ticker has not reported yet, this call is a BOOT
+            // INTERIM step: neither save the restored global set into the
+            // interim ticker's bucket (pollution) nor load that stale bucket
+            // over the freshly restored drawings (the reported wipe).
+            const skip = window.__ceSkipNextBucketLoad || null;
+            const guardActive = Date.now() < (window.__ceBootGuardUntil || 0);
+            const bootInterim = guardActive && skip && skip.ticker !== newTicker;
+            if (skip && skip.ticker === newTicker) {
+                // boot reached the restored ticker — consume flag + guard;
+                // everything after this is user-driven and uses buckets.
+                try { delete window.__ceSkipNextBucketLoad; } catch (_) { window.__ceSkipNextBucketLoad = null; }
+                try { delete window.__ceBootGuardUntil; } catch (_) { window.__ceBootGuardUntil = 0; }
+            } else if (skip && !guardActive && Date.now() - (skip.ts || 0) > 30000) {
+                // expired without a match — lazy cleanup
+                try { delete window.__ceSkipNextBucketLoad; } catch (_) { window.__ceSkipNextBucketLoad = null; }
+            }
+            if (oldTicker && oldTicker !== newTicker && !bootInterim) {
                 overlay.saveToStorage(oldTicker);
             }
             overlay.history.setActiveTicker(newTicker);
             if (newTicker && oldTicker !== newTicker) {
-                // V177-boot-race: consume the one-shot skip armed by
-                // ChartStatePersistence's global overlay restore (step 3b).
-                // The FIRST ticker change after a restore targets the boot
-                // symbol when a late-connecting adapter finally reports in;
-                // loading the stale bucket then wiped the restored
-                // drawings. Any LATER switch (user-initiated) runs the
-                // normal bucket load as before.
-                const skip = window.__ceSkipNextBucketLoad || null;
-                if (skip) { try { delete window.__ceSkipNextBucketLoad; } catch (_) { window.__ceSkipNextBucketLoad = null; } }
                 if (skip && skip.ticker && skip.ticker === newTicker) {
+                    // V177-boot-race: consume the one-shot skip armed by
+                    // ChartStatePersistence's global overlay restore (step 3b).
+                    // The FIRST ticker change after a restore targets the boot
+                    // symbol when a late-connecting adapter finally reports in;
+                    // loading the stale bucket then wiped the restored
+                    // drawings. Any LATER switch (user-initiated) runs the
+                    // normal bucket load as before.
                     debugLog('[ChartAPI.updateSourceInfo] V177: skip post-restore bucket load for ' + newTicker + ' (global overlays are at least as fresh)');
+                } else if (bootInterim) {
+                    debugLog('[ChartAPI.updateSourceInfo] V181: boot-guard — skip bucket save/load for interim ticker ' + newTicker);
                 } else {
                     overlay.loadFromStorage(newTicker);
                 }
@@ -47215,6 +47243,44 @@ let TRENDLINE_BASE_STYLE = {
     lineColor: TOOL_LINE_COLOR, lineStyle: 'solid', lineWidth: 1.5, lineAlpha: 0.9,
 };
 
+// V181: "Apply to future lines" — persisted defaults. The style modal writes
+// them here + to 'ce_line_style_defaults_v1'; the ToolBase commit merges the
+// live values over each spec's frozen style snapshot, so new lines pick the
+// styling up immediately AND after a reload (previously the modal mutated
+// TRENDLINE_BASE_STYLE but the TOOL_SPECS styles were already spread-copied
+// at module init — the checkbox visibly did nothing).
+(function _seedLineDefaults() {
+    try {
+        const LS = window._safeStorage || window.localStorage;
+        const raw = LS && LS.getItem('ce_line_style_defaults_v1');
+        if (!raw) return;
+        const d = JSON.parse(raw);
+        if (d && typeof d === 'object') {
+            if (typeof d.lineColor === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(d.lineColor)) TRENDLINE_BASE_STYLE.lineColor = d.lineColor;
+            if (typeof d.lineStyle === 'string' && ['solid', 'dash', 'dot', 'dashdot'].indexOf(d.lineStyle) >= 0) TRENDLINE_BASE_STYLE.lineStyle = d.lineStyle;
+            if (isFinite(+d.lineWidth) && +d.lineWidth > 0 && +d.lineWidth <= 20) TRENDLINE_BASE_STYLE.lineWidth = +d.lineWidth;
+            if (isFinite(+d.lineAlpha) && +d.lineAlpha >= 0 && +d.lineAlpha <= 1) TRENDLINE_BASE_STYLE.lineAlpha = +d.lineAlpha;
+        }
+    } catch (_) {}
+})();
+window._saveLineDefaults = function () {
+    try {
+        const LS = window._safeStorage || window.localStorage;
+        LS.setItem('ce_line_style_defaults_v1', JSON.stringify({
+            lineColor: TRENDLINE_BASE_STYLE.lineColor,
+            lineStyle: TRENDLINE_BASE_STYLE.lineStyle,
+            lineWidth: TRENDLINE_BASE_STYLE.lineWidth,
+            lineAlpha: TRENDLINE_BASE_STYLE.lineAlpha,
+        }));
+    } catch (_) {}
+};
+// V181: BRIDGE — the V103 settings modal lives in the ce-engine module, this
+// binding in ce-engine-shell; a bare identifier in the modal silently
+// resolved to 'undefined' (the typeof guard masked it), so "Apply to future
+// lines" never touched the real base style. The modal now goes through
+// window._trendlineBaseStyle (the live object, same reference).
+window._trendlineBaseStyle = TRENDLINE_BASE_STYLE;
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function _toolPanelBounds(layout, panelId) {
     const panel = layout.panels[panelId];
@@ -47692,7 +47758,21 @@ class ToolBase extends Tool {
                     type: this._spec.objectType,
                     panelId: this._panelId,
                     ...coords,
-                    ...(this._spec.style ? { style: { ...this._spec.style } } : {}),
+                    ...(this._spec.style ? { style: {
+                        ...this._spec.style,
+                        // V181: "Apply to future lines" — the LIVE defaults
+                        // (TRENDLINE_BASE_STYLE, modal-editable + persisted)
+                        // win over the spec's spread-copied module-init
+                        // snapshot for the trendline family (hline/vline/
+                        // hray/vray/free/ray/trend). Per-tool extras
+                        // (extend, axisLabel, inlineLabel) stay untouched.
+                        ...(this._spec.objectType === 'trendline' ? {
+                            lineColor: TRENDLINE_BASE_STYLE.lineColor,
+                            lineStyle: TRENDLINE_BASE_STYLE.lineStyle,
+                            lineWidth: TRENDLINE_BASE_STYLE.lineWidth,
+                            lineAlpha: TRENDLINE_BASE_STYLE.lineAlpha,
+                        } : {}),
+                    } } : {}),
                 });
             }
         }
@@ -55900,8 +55980,8 @@ class Engine {
             && (typeof IMPULSE5_VIEW !== 'undefined');
         if (isImp5 || isElliottPat) {
             title.textContent = isImp5
-                ? 'Настройки 5W — импульс Эллиотта'
-                : 'Настройки волн Эллиотта (' + (obj.spec ? obj.spec.btnLabel : 'ABC') + ')';
+                ? '5W settings — Elliott impulse'
+                : 'Elliott wave settings (' + (obj.spec ? obj.spec.btnLabel : 'ABC') + ')';
             const applyView = () => {
                 if (typeof _impulse5SaveView === 'function') _impulse5SaveView();
                 this.dirty?.setAll?.();
@@ -55956,17 +56036,17 @@ class Engine {
                 row.appendChild(box);
                 return row;
             };
-            sect.appendChild(cbRow('Fib-подписи у точек', 'fibLabels'));
-            sect.appendChild(cbRow('Номера волн', 'waveNums'));
-            sect.appendChild(cbRow('Квады проекции', 'quads'));
-            sect.appendChild(cbRow('Подписи на осях', 'axisCallouts'));
-            sect.appendChild(cbRow('Линия W4→W1', 'w4Guide'));
-            sect.appendChild(cbRow('Нарушения правил', 'violations'));
-            sect.appendChild(stepperRow('Шрифт подписей', 1,
+            sect.appendChild(cbRow('Fib labels at points', 'fibLabels'));
+            sect.appendChild(cbRow('Wave numbers', 'waveNums'));
+            sect.appendChild(cbRow('Projection quads', 'quads'));
+            sect.appendChild(cbRow('Axis callouts', 'axisCallouts'));
+            sect.appendChild(cbRow('W4→W1 guide', 'w4Guide'));
+            sect.appendChild(cbRow('Rule violations', 'violations'));
+            sect.appendChild(stepperRow('Label font', 1,
                 () => IMPULSE5_VIEW.labelFont,
                 (v) => { IMPULSE5_VIEW.labelFont = v; },
                 () => IMPULSE5_VIEW.labelFont + 'px'));
-            sect.appendChild(stepperRow('Прозрачность подписей', 0.1,
+            sect.appendChild(stepperRow('Label opacity', 0.1,
                 () => IMPULSE5_VIEW.labelAlpha,
                 (v) => { IMPULSE5_VIEW.labelAlpha = v; },
                 () => Math.round(IMPULSE5_VIEW.labelAlpha * 100) + '%'));
@@ -56116,13 +56196,25 @@ class Engine {
                 _lastValidA = a;
             }
             obj.style.lineStyle = styleSelect.value;
-            // V103: also apply to future lines if checkbox is on
+            // V103: also apply to future lines if checkbox is on.
+            // V181: reach the base style through the window bridge — this
+            // module (ce-engine) cannot see the ce-engine-shell binding, the
+            // old `typeof TRENDLINE_BASE_STYLE` guard was always undefined
+            // here and the whole block silently no-op'd (the checkbox never
+            // worked). The bridge object IS the live binding reference.
             if (futureCb.checked) {
-                if (typeof TRENDLINE_BASE_STYLE !== 'undefined') {
-                    TRENDLINE_BASE_STYLE.lineColor = colorInput.value;
-                    if (isFinite(w) && w > 0) TRENDLINE_BASE_STYLE.lineWidth = w;
-                    if (isFinite(a) && a >= 0 && a <= 1) TRENDLINE_BASE_STYLE.lineAlpha = a;
-                    TRENDLINE_BASE_STYLE.lineStyle = styleSelect.value;
+                const _base = (typeof TRENDLINE_BASE_STYLE !== 'undefined')
+                    ? TRENDLINE_BASE_STYLE : window._trendlineBaseStyle;
+                if (_base) {
+                    _base.lineColor = colorInput.value;
+                    if (isFinite(w) && w > 0) _base.lineWidth = w;
+                    if (isFinite(a) && a >= 0 && a <= 1) _base.lineAlpha = a;
+                    _base.lineStyle = styleSelect.value;
+                    // V181: persist so the defaults survive a reload — they are
+                    // re-seeded into TRENDLINE_BASE_STYLE at module init and
+                    // merged into every new trendline-family drawing by the
+                    // ToolBase commit.
+                    if (typeof window._saveLineDefaults === 'function') window._saveLineDefaults();
                 }
             }
             this.dirty?.setAll?.();
@@ -79384,6 +79476,19 @@ const ChartStatePersistence = (() => {
                         ticker: (state.source && state.source.symbol) || null,
                         ts: Date.now(),
                     };
+                    // V181-boot-guard: a restored RATIO chart reaches its ticker
+                    // in TWO updateSourceInfo steps — the bootstrap mono source
+                    // reports FIRST, the composite ("SOLUSDT/ETHUSDT") only
+                    // after source:switch + ratioConfig land. The V177 one-shot
+                    // flag was consumed (deleted) by that FIRST step before any
+                    // comparison, so the second step ran loadFromStorage() and
+                    // REPLACED the restored drawings with the stale per-ticker
+                    // bucket: recently drawn lines vanished while older ones
+                    // that happened to sit in the bucket survived. The guard
+                    // keeps the whole boot sequence bucket-free — no bucket
+                    // save NOR load until the restored ticker reports in
+                    // (flag match) or 30 s elapse, whichever comes first.
+                    window.__ceBootGuardUntil = Date.now() + 30000;
                 } catch (_) {}
             } catch (e) {
                 console.warn('[StatePersistence] overlays restore failed:', e?.message || e);
@@ -85393,9 +85498,14 @@ function _renderAlertsTab(box) {
         else if (L && L.kind === 'zone') lvTxt = 'zone ' + ChartAlerts._fmtP(L.bot) + ' … ' + ChartAlerts._fmtP(L.top);
         const r1 = document.createElement('div');
         r1.style.cssText = 'display:flex;align-items:center;gap:7px;min-width:0;';
+        // V181: click the title row → open the alert's chart. The buttons in
+        // the meta row keep their own handlers (r1 is a separate node).
+        r1.style.cursor = 'pointer';
+        r1.title = 'Open the ' + (a.symLabel || a.symbol || '?') + ' chart this alert belongs to';
+        r1.onclick = (e) => { e.stopPropagation(); _caOpenOnChart(ChartAlerts.get(a.id) || a); };
         r1.innerHTML =
             '<span style="width:8px;height:8px;border-radius:50%;background:' + stColor + ';flex-shrink:0;" title="' + _esc(st) + '"></span>' +
-            '<span style="color:#e6edf3;font-weight:700;font-size:12px;flex-shrink:0;">' + _esc(a.symLabel || a.symbol || '?') + '</span>' +
+            '<span style="color:#58a6ff;text-decoration:underline dotted;font-weight:700;font-size:12px;flex-shrink:0;">' + _esc(a.symLabel || a.symbol || '?') + '</span>' +
             '<span style="color:#c9d1d9;font-size:11px;flex-shrink:0;">' + _esc(ChartAlerts._typeLabel(a)) + '</span>' +
             (isFinite(+a.marginPct) && a.otype !== 'zone' ? '<span style="color:#8b949e;font-size:10px;flex-shrink:0;">±' + a.marginPct + '%</span>' : '') +
             '<span style="color:#8b949e;font-size:10px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + _esc(a.oLabel || '') + '">' + _esc(lvTxt) + '</span>' +
@@ -85533,7 +85643,7 @@ function _caOpenModal(obj, t, ctx, existing) {
         isPerp: !!ctx.isPerp,
     };
     const foreign = existing && existing.symbol && ctx.sym && existing.symbol !== ctx.sym;
-    const curType = existing ? existing.type : (isZone ? 'touchzone' : 'touch');
+    const curType = existing ? existing.type : (isZone ? 'touchzone' : 'both');   // V181: new line alerts default to Both touch + cross
     const curMargin = existing && isFinite(+existing.marginPct) ? +existing.marginPct : 0.1;
     const curTfs = existing && Array.isArray(existing.tfs) && existing.tfs.length ? existing.tfs : [ctx.tf];
     const curSide = (existing && existing.side) || '';   // V175: '' | 'above' | 'below'
@@ -85617,7 +85727,7 @@ function _caOpenModal(obj, t, ctx, existing) {
     if (delBtn) delBtn.onclick = () => { if (existing) ChartAlerts.remove(existing.id); close(); };
     card.querySelector('[data-ca-save]').onclick = () => {
         const typeEl = card.querySelector('input[name="ca-type"]:checked');
-        const selType = typeEl ? typeEl.value : (isZone ? 'touchzone' : 'touch');
+        const selType = typeEl ? typeEl.value : (isZone ? 'touchzone' : 'both');   // V181: matches the new-alert default
         let marginVal = null;
         if (!isZone) {
             const mEl = card.querySelector('[data-ca-margin]');
@@ -85672,7 +85782,7 @@ function _caOpenModal(obj, t, ctx, existing) {
 // isPerp comes from the persisted scan result (market flag of the coin's
 // display market); when absent (old persisted records) the chart's current
 // spot/perp mode is kept — only the symbol is switched.
-function openCoinOnChart(sym, isPerp, ex) {
+function openCoinOnChart(sym, isPerp, ex, forceMono) {
     try {
         const ch = window._chart;
         const orch = ch && (ch.orchestrator || (ch.engine && ch.engine._orchestrator));
@@ -85709,9 +85819,12 @@ function openCoinOnChart(sym, isPerp, ex) {
         };
 
         // 3. Ratio mode: the scanned coin becomes the ratio NUMERATOR.
+        // V181: forceMono skips this branch — an alert created on a MONO
+        // chart must return to that mono chart even when a quote currency
+        // is globally set (the scan result branch keeps its old behavior).
         let savedQuote = null;
         try { savedQuote = window._safeStorage ? window._safeStorage.getItem('chartEngine_quoteCurrency') : null; } catch (_) {}
-        if (savedQuote && savedQuote !== 'USDT') {
+        if (!forceMono && savedQuote && savedQuote !== 'USDT') {
             const denom = savedQuote + 'USDT';
             if (symBtn) { try { window._cpSetSymLabel(symBtn, sym.replace(/USDT$/, '') + '/' + savedQuote); } catch (_) {} }
             bus.emit('source:param', { param: 'ratioConfig', value: { numerator: sym, denominator: denom, numeratorIsPerp: !!isPerp } }, 'ScanStats');
@@ -85742,6 +85855,46 @@ function openCoinOnChart(sym, isPerp, ex) {
         bus.emit('source:switch', { src: ex }, 'ScanStats');
         const unsub = bus.on('source:connected', () => { try { unsub(); } catch (_) {} setTimeout(applyOnce, 300); });
         setTimeout(() => { try { unsub(); } catch (_) {} applyOnce(); }, 5000);
+    } catch (e) { try { _toast('Open failed: ' + (e && e.message)); } catch (_) {} }
+}
+
+// V181: open the chart an alert belongs to — click on its card in the
+// Alerts tab. Ratio alerts re-enter ratio mode with THEIR FULL stored config
+// (numerator, denominator, perp flags — not the globally saved quote), mono
+// alerts reuse the openCoinOnChart recipe (exchange switch + isPerp +
+// symbol + UI sync), forced mono so the quote-currency branch cannot
+// hijack a mono alert into ratio mode.
+function _caOpenOnChart(a) {
+    try {
+        if (!a) return;
+        if (a.isRatio && a.ratio && a.ratio.num && a.ratio.den) {
+            const ch = window._chart;
+            const orch = ch && (ch.orchestrator || (ch.engine && ch.engine._orchestrator));
+            const bus = orch && orch.bus;
+            if (!bus) { _toast('Chart bus not available'); return; }
+            // Close the modal so the switch is immediately visible (same as
+            // openCoinOnChart step 1 — the Alerts tab lives inside it).
+            try {
+                if (_modalEl) { _modalEl.remove(); _modalEl = null; S.ui = null; }
+                if (_scanEsc) { try { document.removeEventListener('keydown', _scanEsc); } catch (_) {} _scanEsc = null; }
+            } catch (_) {}
+            const num = String(a.ratio.num), den = String(a.ratio.den);
+            bus.emit('source:param', { param: 'ratioConfig', value: {
+                numerator: num, denominator: den,
+                numeratorIsPerp: !!a.ratio.numPerp, denominatorIsPerp: !!a.ratio.denPerp,
+            } }, 'ScanStats');
+            bus.emit('source:switch', { src: 'ratio' }, 'ScanStats');
+            try {
+                const sui = window._sourceUIController;
+                if (sui) { sui._symbol = num; sui._pendingSymbol = true; }
+                const symBtn = document.querySelector('[data-role="btn-symbol"]');
+                if (symBtn) window._cpSetSymLabel(symBtn, num.replace(/USDT$/, '') + '/' + den.replace(/USDT$/, ''));
+                try { const popup = document.querySelector('.coin-info-popup'); if (popup) popup.remove(); } catch (_) {}
+            } catch (_) {}
+            // V168 style: no success toast — the chart switching IS the feedback.
+        } else {
+            openCoinOnChart(a.symbol, (typeof a.isPerp === 'boolean') ? a.isPerp : undefined, a.ex, true);
+        }
     } catch (e) { try { _toast('Open failed: ' + (e && e.message)); } catch (_) {} }
 }
 
