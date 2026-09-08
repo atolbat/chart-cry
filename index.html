@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Chart Engine v49p — series.js v6 foundation · V181 ratio-chart boot-guard (hlines with alerts no longer wiped on reload of a synthetic pair), working «Apply to future lines» (persisted), alert default = Both touch + cross, click an alert card → open its chart · V180 Elliott rule texts in English (violation list, OK chip, tool settings) + top-left rule panel dropped below the source label · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
+    <title>Chart Engine v49p — series.js v6 foundation · V182 alerts + scan detection computed in a Web Worker, Events tab (events → one click to the chart, day separators), alerts grouped by coin collapsed by default · V181 ratio-chart boot-guard (hlines with alerts no longer wiped on reload of a synthetic pair), working «Apply to future lines» (persisted), alert default = Both touch + cross, click an alert card → open its chart · V180 Elliott rule texts in English (violation list, OK chip, tool settings) + top-left rule panel dropped below the source label · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -83218,7 +83218,8 @@ const S = {
     expanded: new Set(),    // V161: result bases with open details (in-memory)
     autoTimer: null,        // V164: periodic auto-refresh timer handle
     autoNext: 0,            // V164: planned next auto-refresh (ms epoch, for the UI)
-    tab: 'scan',            // V169: modal tab — 'scan' | 'alerts'
+    tab: 'scan',            // V169: modal tab — 'scan' | 'alerts' | 'events'
+    caGroupsOpen: new Set(), // V182: alert coin-groups currently expanded (in-memory — default collapsed)
     settingsOpen: false,    // V169: settings panel collapsed by default
 };
 
@@ -83761,9 +83762,18 @@ async function runTask(ad, task) {
         }
         // Checks: chart indicators; anchored ones only on their anchor TF.
         const checks = collectChecks().filter(ck => !ck.anchorTf || ck.anchorTf === tf);
+        // V182: the indicator math + event detection run in the compute
+        // worker (CACompute.detectScan) — the main thread only fetches and
+        // merges. Any worker failure resolves null → the ORIGINAL inline
+        // loop below is the byte-identical fallback, so results never
+        // depend on the worker's health.
         let evs = [];
-        for (const sr of series) {
-            try { evs = evs.concat(detectSeriesEvents(sr.candles, tf, sr.q, checks)); } catch (_) {}
+        const wEvs = await CACompute.detectScan(series, tf, checks, _enabledPeriods());
+        if (wEvs) { evs = wEvs; }
+        else {
+            for (const sr of series) {
+                try { evs = evs.concat(detectSeriesEvents(sr.candles, tf, sr.q, checks)); } catch (_) {}
+            }
         }
         // Merge into per-coin result
         let res = state.results[coin.base];
@@ -84236,22 +84246,27 @@ function render(backdrop) {
     // линию на графике пересекли и т.д.»). The infrastructure (persistent
     // store + access to the scan's loaded series) already exists — see
     // ScanAlerts below; the tab renders an honest empty state for now.
+    // V182: THREE tabs — the triggered events moved to their own ⚡ Events
+    // tab (each event is a button that jumps to the event's chart, with day
+    // separators); the Alerts tab lists the alerts themselves, grouped by
+    // coin and collapsed by default.
     const tabs = document.createElement('div');
     tabs.style.cssText = 'display:flex;gap:6px;margin-bottom:8px;';
-    for (const [tabId, tabLbl] of [['scan', '📊 Scan'], ['alerts', '🔔 Alerts']]) {
+    for (const [tabId, tabLbl] of [['scan', '📊 Scan'], ['alerts', '🔔 Alerts'], ['events', '⚡ Events']]) {
         const tb = document.createElement('button');
-        // V170: the Alerts tab button carries an (n) badge with the number of
-        // unseen triggered events.
-        const _caUnread = (tabId === 'alerts') ? ChartAlerts.unread() : 0;
+        // V170/V182: the (n) unread-events badge + pulse glow now live on
+        // the Events tab (that is where the events are listed).
+        const _caUnread = (tabId === 'events') ? ChartAlerts.unread() : 0;
         tb.textContent = tabLbl + (_caUnread ? ' (' + _caUnread + ')' : '');
-        // V175: the Alerts tab button pulses (glow) while events are unread.
-        if (tabId === 'alerts' && _caUnread) tb.classList.add('ce-alert-glow');
+        if (tabId === 'events' && _caUnread) tb.classList.add('ce-alert-glow');
         tb.style.cssText = CSS.btn + (S.tab === tabId
             ? 'background:#1f2937;border-color:#58a6ff55;color:#58a6ff;font-weight:600;'
             : 'color:#8b949e;') + (_caUnread ? 'border-color:#58a6ff88;' : '');
         tb.title = tabId === 'scan'
             ? 'Coin scan statistics (ATH/ATL/Max/Min, indicator touches)'
-            : 'Alerts on drawn lines/rays/zones — active alerts + triggered events log';
+            : tabId === 'alerts'
+            ? 'Alerts on drawn lines/rays/zones — grouped by coin (click a group to expand)'
+            : 'Triggered alert events — click an event to open its coin\'s chart; separated by day';
         tb.onclick = () => { S.tab = tabId; try { render(backdrop); } catch (_) {} };
         tabs.appendChild(tb);
     }
@@ -84259,6 +84274,8 @@ function render(backdrop) {
 
     // V169: the Alerts tab replaces the whole scan body.
     if (S.tab === 'alerts') { _renderAlertsTab(box); return; }
+    // V182: the Events tab — the triggered-events log with day separators.
+    if (S.tab === 'events') { _renderEventsTab(box); return; }
 
     // ── Settings (V164: labelled grid rows + pill toggles) ──
     const sp = document.createElement('div');
@@ -84771,6 +84788,292 @@ const ScanAlerts = {
 // LIVE by (constructor type + createdAt) so dragging/moving it moves the
 // alert level, and a deleted drawing shows as «drawing not found».
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// V182: OFF-THREAD COMPUTE — alerts + scanning run in a Web Worker.
+// The user asked: «Сделай чтобы все алерты и сканнинг в обоих табах
+// вычислялись в воркере». The pure numeric kernels move to a Blob worker:
+//   • alert evaluation — _caDetectCore (the episodic touch/cross/zone loop,
+//     previously inline in ChartAlerts._evalAlert);
+//   • scan task detection — detectSeriesEvents + computeCheck + mkOhlc,
+//     running against the SAME brick machinery the chart uses (classes are
+//     stringified from window exports; MA_SPECS / OSCILLATOR_SPECS are
+//     sliced VERBATIM from the page's own script text so the worker computes
+//     byte-identical indicator values; only identifiers that actually
+//     execute with manager=null are shipped — the Derived/series.js paths
+//     are manager-gated and never run there).
+// The main thread keeps fetches, adapter budgets, state mutations and the
+// UI; it also keeps the ORIGINAL functions as a byte-identical fallback for
+// when Worker/Blob is unavailable or a job errors — so a worker failure can
+// never change results, only where they are computed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** V182: pure episodic-detection kernel for ONE alert on ONE TF.
+ *  Runs on the main thread (fallback) and inside the compute worker
+ *  (stringified) — therefore it references NO outer identifiers: everything
+ *  arrives via arguments and the whole match history is returned.
+ *  cfg  — { type, side, marginPct, created, lastFired } (plain data copy);
+ *  L    — levels from ChartAlerts._levelsOf: {kind:'line',level} |
+ *         {kind:'trend',x1,y1,x2,y2,extend} | {kind:'zone',top,bot};
+ *  ivMs — candle interval of tf (CA_TF_MS[tf] resolved by the caller);
+ *  candles — ascending [{x,o,h,l,c}].
+ *  Returns { fired:[{x,kind,level,price}], lastFired, probe } — the caller
+ *  merges lastFired into the alert, formats messages and bumps counters. */
+function _caDetectCore(cfg, L, tf, ivMs, candles) {
+    const fired = [];
+    if (!L || !candles || candles.length < 2) return { fired, lastFired: (cfg && cfg.lastFired) || {}, probe: false };
+    const type = cfg.type, aSide = cfg.side || '';
+    const isZone = L.kind === 'zone';
+    const m = (!isZone && isFinite(+cfg.marginPct)) ? Math.max(0, +cfg.marginPct) / 100 : 0;
+    const created = cfg.created || 0;
+    const lastFired = Object.assign({}, cfg.lastFired || {});
+    // half-candle tolerance for trend segments (V173 semantics)
+    const tol = Math.abs(candles[candles.length - 1].x - candles[candles.length - 2].x) / 2;
+    const _opp = (a, b) => (a > 0 && b < 0) || (a < 0 && b > 0);
+    const trendVal = (T, x, t2) => {
+        if (!T || T.x2 === T.x1) return null;
+        if (T.extend === 'none') {
+            const lo = Math.min(T.x1, T.x2), hi = Math.max(T.x1, T.x2);
+            if (x < lo || x > hi) {
+                const t3 = (isFinite(t2) && t2 > 0) ? t2 : 0;
+                if (x < lo - t3 || x > hi + t3) return null;
+                x = Math.min(Math.max(x, lo), hi);
+            }
+        }
+        return T.y1 + (T.y2 - T.y1) * (x - T.x1) / (T.x2 - T.x1);
+    };
+    const cond = (c, prev) => {
+        if (L.kind === 'line') {
+            const Lv = L.level;
+            const touch = (c.l <= Lv * (1 + m)) && (c.h >= Lv * (1 - m));
+            let cross = false;
+            if (prev) cross = _opp(prev.c - Lv, c.c - Lv);
+            if (!cross) cross = _opp(c.o - Lv, c.c - Lv);
+            return { touch, cross, level: Lv };
+        }
+        if (L.kind === 'trend') {
+            const Lv = trendVal(L, c.x, tol);
+            if (!isFinite(Lv)) return { touch: false, cross: false };
+            const Lp = prev ? trendVal(L, prev.x, tol) : null;
+            const touch = (c.l <= Lv * (1 + m)) && (c.h >= Lv * (1 - m));
+            let cross = false;
+            if (prev && isFinite(Lp)) cross = _opp(prev.c - Lp, c.c - Lv);
+            if (!cross) cross = _opp(c.o - Lv, c.c - Lv);
+            return { touch, cross, level: Lv };
+        }
+        const touch = (c.h >= L.bot) && (c.l <= L.top);
+        const closein = (c.c >= L.bot) && (c.c <= L.top);
+        const exit = !!(prev && (prev.c >= L.bot && prev.c <= L.top) && !closein);
+        return { touch, closein, exit, level: (L.top + L.bot) / 2 };
+    };
+    const sideOk = (kind, cn, Lv) => {
+        if (!aSide) return true;
+        if (kind === 'touch') return aSide === 'above' ? (cn.c >= Lv) : (cn.c <= Lv);
+        return aSide === 'above' ? (cn.c < Lv) : (cn.c > Lv);
+    };
+    const want = type;
+    let probe = false;
+    const n = candles.length;
+    for (let i = 1; i < n; i++) {
+        const c = candles[i], prev = candles[i - 1];
+        const baseline = !!(created && c.x <= created && created < c.x + ivMs);
+        const r = cond(c, prev);
+        if (!probe) {
+            if (isZone) { if (c.h >= L.bot && c.l <= L.top) probe = true; }
+            else if (isFinite(r.level)) {
+                if (c.l <= r.level * (1 + m) && c.h >= r.level * (1 - m)) probe = true;
+            }
+        }
+        const rp = cond(prev, candles[i - 2]);
+        let kind = null;
+        if (isZone) {
+            if (want === 'touchzone' && r.touch && (!rp.touch || baseline)) kind = 'touchzone';
+            else if (want === 'closein' && r.closein && (!rp.closein || baseline)) kind = 'closein';
+            else if (want === 'exit' && r.exit) kind = 'exit';
+        } else {
+            const touchHit = (want === 'touch' || want === 'both') && r.touch && (!rp.touch || baseline) && sideOk('touch', c, r.level);
+            const crossHit = (want === 'cross' || want === 'both') && r.cross && sideOk('cross', c, r.level);
+            if (crossHit) kind = 'cross';
+            else if (touchHit) kind = 'touch';
+        }
+        if (!kind) continue;
+        if (created && c.x + ivMs <= created) continue;
+        const key = tf + '|' + kind;
+        const lastX = lastFired[key];
+        if (isFinite(lastX) && c.x <= lastX) continue;
+        lastFired[key] = c.x;
+        fired.push({ x: c.x, kind, level: r.level, price: c.c });
+    }
+    return { fired, lastFired, probe };
+}
+
+// V182: the compute-worker bridge. Lazily builds ONE Blob worker hosting
+// both kernels (alert detection + scan detection), tracks pending jobs and
+// degrades to the byte-identical main-thread implementations on ANY failure
+// (no Worker / Blob URL blocked / job error / timeout).
+const CACompute = {
+    _w: null,            // the Worker instance (null = not built yet)
+    _broken: false,      // a hard failure (no Worker support / init error)
+    _seq: 0,
+    _jobs: new Map(),    // id → { resolve, reject, timer }
+
+    // Verbatim script-text slice between two unique markers — used for the
+    // MA_SPECS / OSCILLATOR_SPECS / _emaSrcKey blocks whose function-valued
+    // fields cannot be serialized by structured clone or toString tricks.
+    _slice(startMarker, endMarker) {
+        try {
+            let all = '';
+            for (const s of document.scripts) { if (!s.src) all += s.textContent + '\n'; }
+            const i = all.indexOf(startMarker);
+            if (i < 0) throw new Error('slice start not found: ' + startMarker);
+            const j = all.indexOf(endMarker, i + startMarker.length);
+            if (j < 0) throw new Error('slice end not found: ' + endMarker);
+            return all.slice(i, j);
+        } catch (e) { throw e; }
+    },
+
+    _src() {
+        const W = window;
+        const cls = (n) => {
+            const c = W[n];
+            if (typeof c !== 'function') throw new Error('worker bundle missing: ' + n);
+            return c.toString();
+        };
+        const parts = [];
+        parts.push('"use strict";');
+        parts.push('self.window = self;');                       // computeCheck reads window.brickRegistry
+        // brick infrastructure (window-exported classes; verbatim sources)
+        for (const nm of ['BrickParam', 'BrickInput', 'BrickOutput', 'BrickLevel', 'BrickBand',
+                          'IndicatorBase', 'IndicatorBrick', 'BrickRegistry', 'EMABufferPool',
+                          'MACDBrick', 'StochasticBrick', 'BandsBrick', 'AOBrick', 'ZScoreBrick',
+                          'OBVBrick', 'CMFBrick', 'WilliamsRBrick', 'CCIBrick', 'TRIXBrick']) {
+            parts.push(cls(nm));
+        }
+        // ma helpers executed by the spec maFn fallbacks + _emaSrcKey (slice:
+        // WeakMap + seq + the function itself — not window-exported)
+        for (const nm of ['_maSMA', '_maEMA', '_maWMA', '_maLSMA', '_maHMA', '_maJMA', '_maTEMA',
+                          '_maDEMA', '_maTMA', '_maVAMA', '_maMF', '_maEDSMA', '_maKijun',
+                          '_resolveSrc', '_darkenHex']) {
+            parts.push(cls(nm));
+        }
+        parts.push(this._slice('const _emaSrcIds = new WeakMap();', 'function _maEMA('));
+        // spec arrays VERBATIM (their maFn/compute closures are the executed path)
+        parts.push(this._slice('const MA_SPECS = [', 'function createMABrick(spec) {'));
+        parts.push(this._slice('const OSCILLATOR_SPECS = [', 'function createOscillatorBrick(spec) {'));
+        parts.push(cls('createMABrick'));
+        parts.push(cls('createOscillatorBrick'));
+        // local registry — mirrors the main-thread registrations for the types
+        // the scanner can compute standalone (LINE_TYPES ∪ OSC_TYPES).
+        // NOTE: a top-level `const` is a lexical binding, NOT a global
+        // property — computeCheck reads window.brickRegistry, so the
+        // registry must ALSO be exposed as a global property.
+        parts.push('const brickRegistry = new BrickRegistry();');
+        parts.push('for (const spec of MA_SPECS) { try { brickRegistry.register(spec.type, createMABrick(spec)); } catch (_) {} }');
+        parts.push('for (const spec of OSCILLATOR_SPECS) { try { brickRegistry.register(spec.type, createOscillatorBrick(spec)); } catch (_) {} }');
+        parts.push('try { brickRegistry.register("bollinger", BandsBrick); brickRegistry.register("bands", BandsBrick); } catch (_) {}');
+        parts.push('try { brickRegistry.register("macd", MACDBrick); brickRegistry.register("stochastic", StochasticBrick); } catch (_) {}');
+        parts.push('try { brickRegistry.register("ao", AOBrick); brickRegistry.register("zscore", ZScoreBrick); } catch (_) {}');
+        parts.push('self.brickRegistry = brickRegistry;');
+        // shims for the module-scope identifiers the stringified kernels read
+        parts.push('var S = { computeVer: 0 };');
+        parts.push('const __WK_POOL = new EMABufferPool();');
+        parts.push('function _pool() { return __WK_POOL; }');
+        parts.push('const PERIODS = [1, 2, 3, 6, 12];');
+        parts.push('let __periods = [1, 2, 3, 6, 12];');
+        parts.push('function _enabledPeriods() { return __periods; }');
+        // the kernels themselves (same sources the main thread executes)
+        parts.push(mkOhlc.toString());
+        parts.push(_utcDayStart.toString());
+        parts.push(computeCheck.toString());
+        parts.push(detectSeriesEvents.toString());
+        parts.push(_caDetectCore.toString());
+        parts.push('self.onmessage = function (e) {');
+        parts.push('  const m = e.data;');
+        parts.push('  try {');
+        parts.push('    if (m.kind === "scan") {');
+        parts.push('      __periods = Array.isArray(m.periods) ? m.periods : [1, 2, 3, 6, 12];');
+        parts.push('      const evs = [];');
+        parts.push('      for (const sr of (m.series || [])) { try { const r = detectSeriesEvents(sr.candles, m.tf, sr.q, m.checks || []); for (const x of r) evs.push(x); } catch (_) {} }');
+        parts.push('      self.postMessage({ id: m.id, ok: true, evs });');
+        parts.push('    } else if (m.kind === "alert") {');
+        parts.push('      const r = _caDetectCore(m.cfg, m.L, m.tf, m.ivMs, m.candles);');
+        parts.push('      self.postMessage({ id: m.id, ok: true, r });');
+        parts.push('    } else { self.postMessage({ id: m.id, ok: false, error: "unknown kind" }); }');
+        parts.push('  } catch (err) { self.postMessage({ id: m.id, ok: false, error: String((err && err.message) || err) }); }');
+        parts.push('};');
+        return parts.join('\n');
+    },
+
+    _ensure() {
+        if (this._w || this._broken) return this._w;
+        try {
+            if (typeof Worker === 'undefined' || typeof Blob === 'undefined' || typeof URL === 'undefined') throw new Error('no Worker');
+            const blob = new Blob([this._src()], { type: 'application/javascript' });
+            const w = new Worker(URL.createObjectURL(blob));
+            w.onmessage = (e) => {
+                const m = e.data || {};
+                const job = this._jobs.get(m.id);
+                if (!job) return;
+                this._jobs.delete(m.id);
+                clearTimeout(job.timer);
+                if (m.ok) job.resolve(m);
+                else job.reject(new Error(m.error || 'worker job failed'));
+            };
+            w.onerror = (e) => {
+                // init/parse-level failure → retire the worker for the session
+                this._broken = true;
+                this._w = null;
+                try { w.terminate(); } catch (_) {}
+                for (const [, job] of this._jobs) { clearTimeout(job.timer); job.reject(new Error('worker error')); }
+                this._jobs.clear();
+            };
+            this._w = w;
+            return w;
+        } catch (_) {
+            this._broken = true;
+            this._w = null;
+            return null;
+        }
+    },
+
+    _post(msg, fallback, timeoutMs) {
+        const w = this._ensure();
+        if (!w) return Promise.resolve(fallback());
+        const id = ++this._seq;
+        return new Promise((resolve) => {
+            const job = {
+                timer: setTimeout(() => {
+                    this._jobs.delete(id);
+                    resolve(fallback());          // timed out → compute inline
+                }, timeoutMs || 15000),
+            };
+            job.resolve = (m) => resolve(m);
+            job.reject = () => resolve(fallback()); // job error → compute inline
+            this._jobs.set(id, job);
+            try { w.postMessage(Object.assign({ id }, msg)); } catch (_) { this._jobs.delete(id); clearTimeout(job.timer); resolve(fallback()); }
+        });
+    },
+
+    // Scan detection for ONE task (all series of a coin+tf) → events | null.
+    // The caller falls back to the original inline loop when this resolves
+    // with null (worker unavailable/failed) — see runTask.
+    detectScan(series, tf, checks, periods) {
+        return this._post(
+            { kind: 'scan', series, tf, checks, periods },
+            () => null,
+            20000,
+        ).then(m => (m && m.ok && Array.isArray(m.evs)) ? m.evs : null);
+    },
+
+    // Alert detection for ONE alert on ONE TF → core result | null.
+    detectAlert(cfg, L, tf, ivMs, candles) {
+        return this._post(
+            { kind: 'alert', cfg, L, tf, ivMs, candles },
+            () => _caDetectCore(cfg, L, tf, ivMs, candles),
+            10000,
+        ).then(m => (m && m.ok && m.r) ? m.r : null);
+    },
+};
+
 const CA_LS_KEY = 'ce_chart_alerts_v1';
 const CA_SEEN_KEY = 'ce_chart_alerts_seen_v1';
 // V175: alert-sound preference ('0' = muted; ABSENT = on — the default is
@@ -84903,7 +85206,9 @@ const ChartAlerts = {
 
     _rerender() {
         try {
-            if (_modalEl && typeof S !== 'undefined' && S.tab === 'alerts' && typeof render === 'function') render(_modalEl);
+            // V182: live re-render also on the ⚡ Events tab (new events /
+            // clear-events reflect immediately while the modal is open).
+            if (_modalEl && typeof S !== 'undefined' && (S.tab === 'alerts' || S.tab === 'events') && typeof render === 'function') render(_modalEl);
         } catch (_) {}
     },
 
@@ -85057,128 +85362,41 @@ const ChartAlerts = {
     },
 
     // ── episodic evaluation over an ascending candle array [{x,o,h,l,c}] ──
-    _evalAlert(a, tf, candles) {
+    // V182: the per-candle detection loop moved to the pure kernel
+    // _caDetectCore and runs in the compute worker (CACompute); this method
+    // keeps the main-thread parts that NEED the live chart: resolving the
+    // drawing's levels, then merging the kernel result into the alert
+    // (lastFired, events, trigCount) and formatting the human message.
+    // Async now (worker round-trip); evaluate() serializes passes via
+    // _evalBusy so two overlapping ticks can never double-fire an event.
+    async _evalAlert(a, tf, candles) {
         const obj = this._objOf(a);
         const L = this._levelsOf(a, obj);
         if (!L || !candles || candles.length < 2) return [];
-        const fired = [];
-        const isZone = L.kind === 'zone';
-        const m = (!isZone && isFinite(+a.marginPct)) ? Math.max(0, +a.marginPct) / 100 : 0;
-
-        // V173: half-candle tolerance for trend segments (see _trendVal)
-        const tol = (candles.length >= 2) ? Math.abs(candles[candles.length - 1].x - candles[candles.length - 2].x) / 2 : 0;
-        const _opp = (a, b) => (a > 0 && b < 0) || (a < 0 && b > 0);   // opposite signs
-        const cond = (c, prev) => {
-            if (L.kind === 'line') {
-                const Lv = L.level;
-                const touch = (c.l <= Lv * (1 + m)) && (c.h >= Lv * (1 - m));
-                let cross = false;
-                if (prev) {
-                    const d0 = prev.c - Lv, d1 = c.c - Lv;
-                    cross = _opp(d0, d1);
-                }
-                if (!cross) cross = _opp(c.o - Lv, c.c - Lv);   // V173: candle BODY crosses the line
-                return { touch, cross, level: Lv };
-            }
-            if (L.kind === 'trend') {
-                const Lv = this._trendVal(L, c.x, tol);
-                if (!isFinite(Lv)) return { touch: false, cross: false };
-                const Lp = prev ? this._trendVal(L, prev.x, tol) : null;
-                const touch = (c.l <= Lv * (1 + m)) && (c.h >= Lv * (1 - m));
-                let cross = false;
-                if (prev && isFinite(Lp)) {
-                    const d0 = prev.c - Lp, d1 = c.c - Lv;
-                    cross = _opp(d0, d1);
-                }
-                if (!cross) cross = _opp(c.o - Lv, c.c - Lv);   // V173: candle BODY crosses the line
-                return { touch, cross, level: Lv };
-            }
-            const touch = (c.h >= L.bot) && (c.l <= L.top);
-            const closein = (c.c >= L.bot) && (c.c <= L.top);
-            const exit = !!(prev && (prev.c >= L.bot && prev.c <= L.top) && !closein);
-            return { touch, closein, exit, level: (L.top + L.bot) / 2 };
+        const cfg = {
+            type: a.type, side: a.side || '',
+            marginPct: isFinite(+a.marginPct) ? +a.marginPct : null,
+            created: a.created || 0,
+            lastFired: Object.assign({}, a.lastFired || {}),
         };
-
-        const want = a.type;
-        // V175: side of the line — «с какой стороны свеча коснулась или
-        // пересекла», defined via the CLOSE so a straddling candle is
-        // unambiguous: side 'above' = the touching candle CLOSED at/over
-        // the line (only the lower wick probed below) and a cross is a
-        // DOWNWARD one; 'below' mirrors it (closed at/under, cross UP).
-        // Zones have no side (a.side stays '').
-        const sideOk = (kind, cn, Lv) => {
-            if (!a.side) return true;
-            if (kind === 'touch') return a.side === 'above' ? (cn.c >= Lv) : (cn.c <= Lv);
-            return a.side === 'above' ? (cn.c < Lv) : (cn.c > Lv);
-        };
-        // V176: touch PROBE — true when ANY candle in the window reaches the
-        // band/zone, regardless of alert type, dedup and creation guards.
-        // evaluate() walks the alert's TFs from the largest interval down
-        // and skips the finer fetches when the coarsest window never
-        // touched: a fine candle touching the band implies its containing
-        // coarse candle touches it too (the coarse range is the union of
-        // the fine ranges), so the gate cannot hide touch/zone triggers;
-        // only a pure gap-through cross (no wick contact) can slip past —
-        // an accepted trade-off for the network savings.
-        let probe = false;
-        // V170-fix: never fire on candles OLDER than the alert itself — the
-        // first evaluation used to backfill EVERY historical crossing/touch
-        // in the 60-candle window (4 events at once). V174: the guard is
-        // ALIGNMENT-INDEPENDENT — a candle may fire only if it was still
-        // forming at creation (c.x + iv > created). floor(created/iv) used
-        // to be a THURSDAY-aligned boundary while 1w candles start MONDAY,
-        // so on weekly charts the baseline candle never matched and the
-        // alert stayed silent (1d was fine — both UTC-midnight aligned).
         const ivMs = CA_TF_MS[tf] || 864e5;
-        const created = a.created || 0;
-        const n = candles.length;
-        for (let i = 1; i < n; i++) {
-            const c = candles[i], prev = candles[i - 1];
-            // V173/V174: BASELINE — the candle CONTAINING the creation moment
-            // is a valid episode START: the user may have just drawn the line
-            // right through it, so the "previous candle outside the band"
-            // transition never happens. Without this the alert stays silent
-            // forever. Dedup keeps it to one event per candle; later candles
-            // keep the strict episodic enter rule.
-            const baseline = !!(created && c.x <= created && created < c.x + ivMs);
-            const r = cond(c, prev);
-            if (!probe) {
-                if (isZone) { if (c.h >= L.bot && c.l <= L.top) probe = true; }
-                else if (isFinite(r.level)) {
-                    if (c.l <= r.level * (1 + m) && c.h >= r.level * (1 - m)) probe = true;
-                }
-            }
-            const rp = cond(prev, candles[i - 2]);
-            let kind = null;
-            if (isZone) {
-                if (want === 'touchzone' && r.touch && (!rp.touch || baseline)) kind = 'touchzone';
-                else if (want === 'closein' && r.closein && (!rp.closein || baseline)) kind = 'closein';
-                else if (want === 'exit' && r.exit) kind = 'exit';
-            } else {
-                const touchHit = (want === 'touch' || want === 'both') && r.touch && (!rp.touch || baseline) && sideOk('touch', c, r.level);
-                const crossHit = (want === 'cross' || want === 'both') && r.cross && sideOk('cross', c, r.level);
-                if (crossHit) kind = 'cross';
-                else if (touchHit) kind = 'touch';
-            }
-            if (!kind) continue;
-            if (created && c.x + ivMs <= created) continue;      // closed before the alert existed
-            const key = tf + '|' + kind;
-            const lastX = a.lastFired ? a.lastFired[key] : undefined;
-            if (isFinite(lastX) && c.x <= lastX) continue;       // dedup per candle
-            if (!a.lastFired) a.lastFired = {};
-            a.lastFired[key] = c.x;
-            const price = this._fmtP(isFinite(r.level) ? r.level : c.c);
+        const res = await CACompute.detectAlert(cfg, L, tf, ivMs, candles);
+        if (!res || !res.fired || !res.fired.length) { this._probe = !!(res && res.probe); return []; }
+        a.lastFired = res.lastFired;
+        const fired = [];
+        for (const it of res.fired) {
+            const price = this._fmtP(isFinite(it.level) ? it.level : it.price);
             // V175: the side rides along — msg «touched ↓from above 79…» and
             // ev.side for the log rows' ↓/↑ decoration.
             const sideTxt = a.side === 'above' ? ' ↓from above' : a.side === 'below' ? ' ↑from below' : '';
-            const msg = (a.symLabel || a.symbol) + ' ' + this._kindText(kind) + (sideTxt ? sideTxt + ' ' : ' ') + price + ' (' + tf + ')';
-            const ev = { t: Date.now(), tf, kind, price: c.c, level: r.level, side: a.side || undefined, msg };
+            const msg = (a.symLabel || a.symbol) + ' ' + this._kindText(it.kind) + (sideTxt ? sideTxt + ' ' : ' ') + price + ' (' + tf + ')';
+            const ev = { t: Date.now(), tf, kind: it.kind, price: it.price, level: it.level, side: a.side || undefined, msg };
             (a.events = a.events || []).unshift(ev);
             if (a.events.length > 100) a.events.length = 100;
             a.trigCount = (a.trigCount || 0) + 1;
             fired.push(ev);
         }
-        this._probe = probe;
+        this._probe = res.probe;
         return fired;
     },
 
@@ -85297,6 +85515,13 @@ const ChartAlerts = {
     },
 
     async evaluate() {
+        // V182: single-pass guard — _evalAlert is async now (worker round-
+        // trip), so two overlapping ticks could evaluate the same alert
+        // twice with a stale lastFired and double-fire events. With the
+        // guard a slow pass simply skips ticks (the 4 s timer re-arms).
+        if (this._evalBusy) return 0;
+        this._evalBusy = true;
+        try {
         const ctx = this._ctx();
         let live = null, liveTried = false;
         const firedAll = [];
@@ -85328,7 +85553,7 @@ const ChartAlerts = {
                     else candles = await this._bgCandles(a, tf);
                     const valid = !!(candles && candles.length >= 2);
                     this._probe = false;
-                    const evs = valid ? this._evalAlert(a, tf, candles) : [];
+                    const evs = valid ? (await this._evalAlert(a, tf, candles)) : [];
                     for (const ev of evs) fired.push(ev);
                     open = valid ? this._probe : true;
                 }
@@ -85343,6 +85568,7 @@ const ChartAlerts = {
         // many alerts/events fired (the log + tab glow carry the details).
         if (firedAll.length) this._beep();
         return firedAll.length;
+        } finally { this._evalBusy = false; }
     },
 
     start() {
@@ -85396,9 +85622,11 @@ ChartAlerts.start();
 })();
 
 // V170: Alerts tab — the results UI for ChartAlerts: active alert cards
-// (status, type+margin, TF chips, last events, Test/On-Off/Delete) plus a
-// merged triggered-events log; unread events are highlighted and the tab
-// button carries an (n) badge. Rendering marks events as seen.
+// (status, type+margin, TF chips, last events, Test/On-Off/Delete).
+// V182: the alerts are GROUPED BY COIN with the groups COLLAPSED BY DEFAULT
+// (a header row per coin shows the count + armed/paused/trigger stats and
+// toggles the group); the merged triggered-events log MOVED to its own
+// ⚡ Events tab (_renderEventsTab below) where each event is a button.
 function _renderAlertsTab(box) {
     const wrap = document.createElement('div');
     const ctx = ChartAlerts._ctx();
@@ -85478,7 +85706,9 @@ function _renderAlertsTab(box) {
             'Pick the timeframe(s) to watch — the alert checks them in the background for its own coin, even when its chart is closed.';
         wrap.appendChild(empty);
     }
-    for (const a of items) {
+    // V182: card builder — one alert card (was the body of the flat loop;
+    // the grouping below feeds it per-coin).
+    const cardFor = (a) => {
         const card = document.createElement('div');
         card.style.cssText = 'border:1px solid #21262d;border-radius:8px;background:#10151c;padding:7px 9px;margin-bottom:5px;';
         // status
@@ -85562,46 +85792,176 @@ function _renderAlertsTab(box) {
                 (ev.test ? '<span style="color:#d29922;flex-shrink:0;">test</span>' : '');
             card.appendChild(er);
         }
-        wrap.appendChild(card);
+        return card;
+    };
+
+    // ── V182: alerts grouped by coin, COLLAPSED BY DEFAULT ──
+    // Group key = the coin label (SOL/USDT, SOL/ETH…). A header row shows
+    // the alert count and armed/paused/triggered stats; clicking it toggles
+    // the group. Expansion lives in S.caGroupsOpen (in-memory) so a freshly
+    // opened modal always starts collapsed — «коллапсь по умолчанию».
+    const groups = new Map();                       // sym → alerts[]
+    for (const a of items) {
+        const sym = a.symLabel || a.symbol || '?';
+        if (!groups.has(sym)) groups.set(sym, []);
+        groups.get(sym).push(a);
+    }
+    // Latest activity first: max(alert creation, last event time).
+    const _act = (g) => Math.max.apply(null, g.map(a => Math.max(a.created || 0, (a.events && a.events[0] && a.events[0].t) || 0)));
+    const groupKeys = Array.from(groups.keys()).sort((x, y) => _act(groups.get(y)) - _act(groups.get(x)));
+    for (const sym of groupKeys) {
+        const g = groups.get(sym);
+        const armed = g.filter(a => a.enabled !== false).length;
+        const trig = g.reduce((s, a) => s + (a.trigCount || 0), 0);
+        const open = !!(S.caGroupsOpen && S.caGroupsOpen.has(sym));
+        const gh = document.createElement('div');
+        gh.style.cssText = 'display:flex;align-items:center;gap:7px;padding:5px 9px;margin:3px 0 2px;border:1px solid #21262d;border-radius:8px;background:#0d1117;cursor:pointer;user-select:none;';
+        gh.title = 'Click to ' + (open ? 'collapse' : 'expand') + ' the ' + sym + ' alerts';
+        gh.innerHTML =
+            '<span style="color:#8b949e;font-size:9px;width:10px;text-align:center;flex-shrink:0;">' + (open ? '▾' : '▸') + '</span>' +
+            '<span style="color:#58a6ff;font-weight:700;font-size:11.5px;flex-shrink:0;">' + _esc(sym) + '</span>' +
+            '<span style="color:#c9d1d9;font-size:10.5px;flex-shrink:0;">' + g.length + ' alert' + (g.length > 1 ? 's' : '') + '</span>' +
+            '<span style="flex:1;min-width:0;border-bottom:1px dashed #21262d;"></span>' +
+            (armed < g.length ? '<span style="color:#d29922;font-size:9.5px;flex-shrink:0;">' + (g.length - armed) + ' paused</span>' : '') +
+            '<span style="color:' + (armed ? '#3fb950' : '#8b949e') + ';font-size:9.5px;flex-shrink:0;">' + armed + ' armed</span>' +
+            '<span style="color:#8b949e;font-size:9.5px;flex-shrink:0;">trig ' + trig + '</span>';
+        gh.onclick = () => {
+            if (!S.caGroupsOpen) S.caGroupsOpen = new Set();
+            if (S.caGroupsOpen.has(sym)) S.caGroupsOpen.delete(sym); else S.caGroupsOpen.add(sym);
+            try { ChartAlerts._rerender(); } catch (_) {}
+        };
+        wrap.appendChild(gh);
+        if (open) for (const a of g) wrap.appendChild(cardFor(a));
     }
 
-    // ── Triggered events log ──
-    const evs = ChartAlerts.allEvents();
-    const secB = document.createElement('div');
-    secB.style.cssText = 'display:flex;align-items:center;gap:8px;margin:10px 0 4px;';
-    secB.innerHTML = '<span style="' + CSS.lbl + 'margin-bottom:0;flex:1;">Triggered events — ' + evs.length + '</span>';
+    // V182: the triggered-events log LIVES in the ⚡ Events tab now —
+    // point the user there instead of duplicating the list.
+    const evHint = document.createElement('div');
+    evHint.style.cssText = 'display:flex;align-items:center;gap:8px;margin:10px 0 4px;color:#8b949e;font-size:10.5px;';
+    evHint.innerHTML = '<span style="flex:1;">Triggered events moved to the <b style="color:#58a6ff;">⚡ Events</b> tab' +
+        (ChartAlerts.unread() ? ' — ' + ChartAlerts.unread() + ' unread' : '') + '.</span>';
+    const evGo = document.createElement('button');
+    evGo.textContent = '⚡ Open events';
+    evGo.style.cssText = CSS.btn + 'padding:2px 8px;font-size:10px;';
+    evGo.title = 'Show all triggered events (one click on an event opens its chart)';
+    evGo.onclick = () => {
+        try {
+            const bd = _modalEl;
+            if (bd) { S.tab = 'events'; render(bd); }
+        } catch (_) {}
+    };
+    evHint.appendChild(evGo);
+    wrap.appendChild(evHint);
+
+    box.appendChild(wrap);
+}
+
+// V182: Events tab — every triggered event of every alert in ONE list,
+// newest first, with a SEPARATOR BEFORE EACH DAY («между событиями
+// сепаратор каждый день»: Today / Yesterday / 6 Sep 2026 …). Each event
+// row IS A BUTTON («каждое событие — кнопка, чтобы очутиться на
+// графике»): clicking it switches the chart to the event's coin via the
+// same recipe as the alert cards (_caOpenOnChart — ratio-aware). Rows show
+// time, coin, kind (touch/cross/zone… + side), the level and the TF.
+// Rendering the tab marks the events as seen (unread badge resets).
+function _renderEventsTab(box) {
+    try {
+        if (!document.getElementById('ce-ev-row-style')) {
+            const st = document.createElement('style');
+            st.id = 'ce-ev-row-style';
+            st.textContent = '.ce-ev-row:hover{background:#1a2230 !important;}';
+            document.head.appendChild(st);
+        }
+    } catch (_) {}
+    const wrap = document.createElement('div');
+    const evs = ChartAlerts.allEvents();          // newest first, alertId attached
+    const seenTs = (function () { try { return parseInt((_ls() && _ls().getItem(CA_SEEN_KEY)) || '0', 10) || 0; } catch (_) { return 0; } })();
+
+    const head = document.createElement('div');
+    head.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;';
+    head.appendChild(Object.assign(document.createElement('div'), {
+        textContent: '⚡ Triggered events — ' + evs.length,
+        style: CSS.lbl + 'margin-bottom:0;flex:1;font-size:10px;',
+    }));
     if (evs.length) {
         const clr = document.createElement('button');
         clr.textContent = '🗑 Clear events'; clr.style.cssText = CSS.btnDanger + 'padding:2px 8px;font-size:10px;';
+        clr.title = 'Delete all triggered events (the alerts themselves stay)';
         clr.onclick = () => { ChartAlerts.clearEvents(); };
-        secB.appendChild(clr);
+        head.appendChild(clr);
     }
-    wrap.appendChild(secB);
+    wrap.appendChild(head);
+
     if (!evs.length) {
         const none = document.createElement('div');
-        none.style.cssText = 'color:#8b949e;font-style:italic;font-size:11px;padding:4px 6px;';
-        none.textContent = 'No triggered events yet — the log fills up when an alert fires.';
+        none.style.cssText = 'color:#8b949e;font-size:11.5px;line-height:1.6;padding:10px 6px;text-align:center;';
+        none.innerHTML = '<div style="font-size:20px;text-align:center;margin-bottom:6px;">⚡</div>' +
+            '<div style="font-weight:600;color:#c9d1d9;margin-bottom:4px;">No triggered events yet</div>' +
+            'The log fills up when an alert fires — lines/rays/zones touching, crossing or closing through their levels. ' +
+            'Each event here is a button: tap it to jump straight to that coin\'s chart.';
         wrap.appendChild(none);
+        box.appendChild(wrap);
+        return;
     }
-    const logBox = document.createElement('div');
-    logBox.style.cssText = 'display:flex;flex-direction:column;gap:2px;max-height:26vh;overflow-y:auto;';
-    for (const ev of evs.slice(0, 100)) {
-        const row = document.createElement('div');
-        const unread = (ev.t || 0) > seenTs;
-        row.style.cssText = 'display:flex;align-items:center;gap:7px;padding:3px 6px;border-radius:6px;flex-shrink:0;font-size:10.5px;background:' + (unread ? 'rgba(88,166,255,.08)' : '#10151c') + ';';
+
+    const _dayLabel = (d) => {
+        const now = new Date();
+        const dk = (x) => x.getFullYear() * 10000 + (x.getMonth() + 1) * 100 + x.getDate();
+        if (dk(d) === dk(now)) return 'Today';
+        const yst = new Date(now.getTime() - 86400000);
+        if (dk(d) === dk(yst)) return 'Yesterday';
+        return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    };
+    const kindColor = { touch: '#58a6ff', cross: '#bc8cff', touchzone: '#3fb950', closein: '#d29922', exit: '#f85149' };
+    const MAX_ROWS = 300;
+    const list = evs.slice(0, MAX_ROWS);
+
+    const listWrap = document.createElement('div');
+    listWrap.style.cssText = 'display:flex;flex-direction:column;gap:2px;max-height:62vh;overflow-y:auto;';
+    let lastDayKey = null;
+    for (const ev of list) {
         const d = new Date(ev.t || Date.now());
-        const today = d.toISOString().slice(0, 10) === new Date().toISOString().slice(0, 10);
-        const ts = today ? d.toTimeString().slice(0, 5) : d.toISOString().slice(5, 16).replace('T', ' ');
-        const kindColor = { touch: '#58a6ff', cross: '#bc8cff', touchzone: '#3fb950', closein: '#d29922', exit: '#f85149' }[ev.kind] || '#8b949e';
+        const dayKey = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+        if (dayKey !== lastDayKey) {
+            lastDayKey = dayKey;
+            const sep = document.createElement('div');
+            sep.style.cssText = 'display:flex;align-items:center;gap:8px;margin:6px 0 2px;';
+            sep.innerHTML = '<span style="color:#58a6ff;font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.7px;flex-shrink:0;">' + _esc(_dayLabel(d)) + '</span>' +
+                '<span style="flex:1;border-bottom:1px solid #21262d;"></span>';
+            listWrap.appendChild(sep);
+        }
+        const al = ev.alertId ? ChartAlerts.get(ev.alertId) : null;
+        const unread = (ev.t || 0) > seenTs;
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:7px;padding:4px 6px;border-radius:6px;flex-shrink:0;font-size:10.5px;' +
+            (al ? 'cursor:pointer;' : 'opacity:.55;') +
+            'background:' + (unread ? 'rgba(88,166,255,.08)' : '#10151c') + ';';
+        row.className = 'ce-ev-row';
+        if (al) {
+            row.title = 'Open the ' + (al.symLabel || al.symbol || '?') + ' chart' +
+                (al.ex ? ' (' + (EXCH_NAMES[al.ex] || al.ex) + (al.isRatio ? ', ratio' : '') + ')' : '') + ' this event belongs to';
+            row.onclick = (e) => { e.stopPropagation(); _caOpenOnChart(al); };
+        } else {
+            row.title = 'The alert for this event was deleted';
+        }
+        const tsTxt = d.toTimeString().slice(0, 5);
         row.innerHTML =
-            '<span style="color:#8b949e;width:36px;flex-shrink:0;">' + ts + '</span>' +
+            '<span style="color:#8b949e;width:36px;flex-shrink:0;">' + tsTxt + '</span>' +
             '<span style="color:#e6edf3;font-weight:600;flex-shrink:0;">' + _esc(ev.symLabel || '') + '</span>' +
-            '<span style="color:' + kindColor + ';flex-shrink:0;">' + _esc((ChartAlerts._kindText(ev.kind) || ev.kind) + (ev.side === 'above' ? ' ↓' : ev.side === 'below' ? ' ↑' : '')) + '</span>' +
+            '<span style="color:' + (kindColor[ev.kind] || '#8b949e') + ';flex-shrink:0;">' + _esc((ChartAlerts._kindText(ev.kind) || ev.kind) + (ev.side === 'above' ? ' ↓' : ev.side === 'below' ? ' ↑' : '')) + '</span>' +
             '<span style="color:#c9d1d9;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">@ ' + _esc(ChartAlerts._fmtP(ev.level)) + '</span>' +
-            '<span style="background:#161b22;border:1px solid #30363d;border-radius:9px;padding:0 6px;color:#8b949e;flex-shrink:0;">' + _esc(ev.tf || '') + '</span>';
-        logBox.appendChild(row);
+            '<span style="background:#161b22;border:1px solid #30363d;border-radius:9px;padding:0 6px;color:#8b949e;flex-shrink:0;">' + _esc(ev.tf || '') + '</span>' +
+            (ev.test ? '<span style="color:#d29922;flex-shrink:0;">test</span>' : '') +
+            (al ? '<span style="color:#58a6ff;font-size:10px;flex-shrink:0;">⤷</span>' : '');
+        listWrap.appendChild(row);
     }
-    if (evs.length) wrap.appendChild(logBox);
+    wrap.appendChild(listWrap);
+    if (evs.length > MAX_ROWS) {
+        const more = document.createElement('div');
+        more.style.cssText = 'color:#8b949e;font-style:italic;font-size:10px;padding:6px;';
+        more.textContent = 'Showing the newest ' + MAX_ROWS + ' of ' + evs.length + ' events.';
+        wrap.appendChild(more);
+    }
 
     // Rendered → everything currently visible counts as seen (the highlight
     // stays until the next render so the user still sees what is new).
@@ -85996,6 +86356,10 @@ window.ScanStats = {
     _detectSeriesEvents: detectSeriesEvents,
     _computeRatio: computeRatio,
     _scanFetch: scanFetch,
+    // V182: off-thread compute — the worker bridge + the pure alert kernel
+    // (debug surface: parity checks, worker health, synthetic jobs).
+    _compute: CACompute,
+    _caDetectCore,
 };
 // V169: alerts infrastructure — the future chart-pattern alert/log engine
 // registers here; the Alerts tab renders from this store.
