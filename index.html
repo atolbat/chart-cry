@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Chart Engine v49p — series.js v6 foundation · V182 alerts + scan detection computed in a Web Worker, Events tab (events → one click to the chart, day separators), alerts grouped by coin collapsed by default · V181 ratio-chart boot-guard (hlines with alerts no longer wiped on reload of a synthetic pair), working «Apply to future lines» (persisted), alert default = Both touch + cross, click an alert card → open its chart · V180 Elliott rule texts in English (violation list, OK chip, tool settings) + top-left rule panel dropped below the source label · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
+    <title>Chart Engine v49p — series.js v6 foundation · V184 perf: debugLog gated + rAF-throttled (was per-object-per-frame 200-line innerHTML+reflow — the lag), settings poll hashes settings only, overlay resolve cached per alert tick · V183 alert list keeps its scroll on group expand/collapse; anchors now persist (bucket + global state) and swap per ticker — anchored lines no longer show the other divisor's levels or vanish after a reload · V182 alerts + scan detection computed in a Web Worker, Events tab (events → one click to the chart, day separators), alerts grouped by coin collapsed by default · V181 ratio-chart boot-guard (hlines with alerts no longer wiped on reload of a synthetic pair), working «Apply to future lines» (persisted), alert default = Both touch + cross, click an alert card → open its chart · V180 Elliott rule texts in English (violation list, OK chip, tool settings) + top-left rule panel dropped below the source label · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -6722,7 +6722,29 @@ function showToast(msg, opts = {}) {
 // V37: Debug log panel — single persistent panel below header.
 // Accumulates log lines with timestamps. Copy button copies all at once.
 let _debugLogLines = [];
+// V184 PERF: debugLog is GATED (default OFF) and its panel rebuild is
+// rAF-throttled. Previously EVERY call paid a Date allocation, 5 string
+// builds and a FULL 200-line innerHTML rebuild of #dlp-body (esc() per
+// line) + a forced layout (scrollTop=scrollHeight) — and hot call sites
+// fire it per OBJECT per FRAME: OverlayManager.render alone emits ≈144
+// calls/s with ~90 drawings on live WS ticks. CPU-profiled: _renderDebugLog
+// + esc burned ≈590 ms of every 12 s — more than the entire chart render
+// pipeline — and the constant string garbage kept the GC busy (the
+// «лаги на отдельных монетах / с течением времени» the user reported).
+// Enable via ?debug=1, localStorage ce_debug_log='1', or
+// window.setDebugLog(true). Hot call sites additionally check
+// window.__ceDebugLog so the per-object string building is skipped too.
+let _debugRafId = 0;
+(function () {
+    let on = false;
+    try {
+        on = new URLSearchParams(location.search).has('debug')
+            || (typeof localStorage !== 'undefined' && localStorage.getItem('ce_debug_log') === '1');
+    } catch (_) {}
+    window.__ceDebugLog = on;
+})();
 function debugLog(msg) {
+    if (!window.__ceDebugLog) return;          // V184: hot path = one property read
     const now = new Date();
     const ts = String(now.getHours()).padStart(2,'0') + ':' +
                String(now.getMinutes()).padStart(2,'0') + ':' +
@@ -6731,7 +6753,17 @@ function debugLog(msg) {
     _debugLogLines.push(`[${ts}] ${msg}`);
     // Keep last 200 lines
     if (_debugLogLines.length > 200) _debugLogLines.shift();
-    _renderDebugLog();
+    _scheduleDebugRender();                    // V184: ≤1 rebuild per frame (was: per call)
+}
+// V184: coalesce debug panel rebuilds — at most one innerHTML flush per
+// animation frame, and none at all while the tab is hidden (the rAF just
+// won't fire; the next enabled call after visibility re-schedules).
+function _scheduleDebugRender() {
+    if (_debugRafId) return;
+    _debugRafId = requestAnimationFrame(() => {
+        _debugRafId = 0;
+        if (window.__ceDebugLog) _renderDebugLog();
+    });
 }
 function _renderDebugLog() {
     const body = document.getElementById('dlp-body');
@@ -6777,12 +6809,31 @@ function toggleDebugLogPanel() {
     const panel = document.getElementById('debug-log-panel');
     if (panel) panel.classList.toggle('visible');
 }
+// V184: runtime switch for the debug log (persisted). Turning it ON also
+// reveals the panel so new lines are actually visible. debugLog() itself
+// gates on window.__ceDebugLog — this is the single source of truth.
+function setDebugLog(v) {
+    const on = !!v;
+    window.__ceDebugLog = on;
+    try { localStorage.setItem('ce_debug_log', on ? '1' : '0'); } catch (_) {}
+    if (on) {
+        _initDebugLogPanel();
+        const panel = document.getElementById('debug-log-panel');
+        if (panel) panel.classList.add('visible');
+        _scheduleDebugRender();
+    }
+    return on;
+}
 
 let __devMode = false;
 function toggleDevMode() {
     __devMode = !__devMode;
     // V37: no toast for state changes — use debugLog instead. Toasts are for
     // errors only. DevMode toggle is a state change, not an error.
+    // V184: debugLog is gated now — dev mode implicitly enables it (a dev
+    // who toggles this clearly wants the logs; keeps the V49n-devmode
+    // "devLog also goes to the panel" behaviour intact).
+    if (__devMode && !window.__ceDebugLog) setDebugLog(true);
     debugLog('DevMode: ' + (__devMode ? 'ON' : 'OFF'));
     // V37: auto-show debug log panel when dev mode is on
     if (__devMode) {
@@ -6841,7 +6892,7 @@ function devLog(...args) {
 // reads window.__devMode (e.g. console inspection, eval'd snippets) sees
 // the live value. devLog() already uses the closure directly, so it works
 // correctly regardless.
-Object.assign(window, { _safeStorage, CHART_ENGINE_VERSION, UP_COLOR, DOWN_COLOR, CE_MAIN_CANDLES_DEFAULTS, CE_MAIN_CANDLES, applyMainCandlesToConfig, saveMainCandlesCfg, resetMainCandlesCfg, sanitizeMainCandlesState, applyMainCandlesState, stripLegacyChFlags, DEBUG_YRANGE, scopedEl, _el, esc, _numAttr, _deepCloneWithFunctions, mergeCandlesByX, TIMEFRAME_MS_MAP, tfToMs, detectHorizontalSwipe, OVERLAY_TOOL_KEYS, _deselectOverlayTools, _endAllOverlayDrags, panelBounds, showToast, _debugLogLines, debugLog, _renderDebugLog, _initDebugLogPanel, toggleDebugLogPanel, toggleDevMode, isDevMode, devLog });
+Object.assign(window, { _safeStorage, CHART_ENGINE_VERSION, UP_COLOR, DOWN_COLOR, CE_MAIN_CANDLES_DEFAULTS, CE_MAIN_CANDLES, applyMainCandlesToConfig, saveMainCandlesCfg, resetMainCandlesCfg, sanitizeMainCandlesState, applyMainCandlesState, stripLegacyChFlags, DEBUG_YRANGE, scopedEl, _el, esc, _numAttr, _deepCloneWithFunctions, mergeCandlesByX, TIMEFRAME_MS_MAP, tfToMs, detectHorizontalSwipe, OVERLAY_TOOL_KEYS, _deselectOverlayTools, _endAllOverlayDrags, panelBounds, showToast, _debugLogLines, debugLog, _renderDebugLog, _scheduleDebugRender, _initDebugLogPanel, toggleDebugLogPanel, setDebugLog, toggleDevMode, isDevMode, devLog });
 // FIX: __lastGlobalErrorTs is a `let` binding scoped to this IIFE — exporting
 //   it via Object.assign(window, {__lastGlobalErrorTs}) only copies the value
 //   ONCE (at init time = 0). Subsequent updates (when an error fires) never
@@ -6873,7 +6924,7 @@ Object.defineProperty(window, '__devMode', {
 });
 
 // ── V39: регистрация в реестре модулей ──
-CE.registerModule('ce-preamble', [], ['_safeStorage', 'CHART_ENGINE_VERSION', 'UP_COLOR', 'DOWN_COLOR', 'CE_MAIN_CANDLES_DEFAULTS', 'CE_MAIN_CANDLES', 'applyMainCandlesToConfig', 'saveMainCandlesCfg', 'resetMainCandlesCfg', 'sanitizeMainCandlesState', 'applyMainCandlesState', 'stripLegacyChFlags', 'DEBUG_YRANGE', '__lastGlobalErrorTs', 'scopedEl', '_el', 'esc', '_numAttr', '_deepCloneWithFunctions', 'mergeCandlesByX', 'TIMEFRAME_MS_MAP', 'tfToMs', 'detectHorizontalSwipe', 'OVERLAY_TOOL_KEYS', '_deselectOverlayTools', '_endAllOverlayDrags', 'panelBounds', 'showToast', '_debugLogLines', 'debugLog', '_renderDebugLog', '_initDebugLogPanel', 'toggleDebugLogPanel', '__devMode', 'toggleDevMode', 'isDevMode', 'devLog'], 'MAIN-THREAD ONLY');
+CE.registerModule('ce-preamble', [], ['_safeStorage', 'CHART_ENGINE_VERSION', 'UP_COLOR', 'DOWN_COLOR', 'CE_MAIN_CANDLES_DEFAULTS', 'CE_MAIN_CANDLES', 'applyMainCandlesToConfig', 'saveMainCandlesCfg', 'resetMainCandlesCfg', 'sanitizeMainCandlesState', 'applyMainCandlesState', 'stripLegacyChFlags', 'DEBUG_YRANGE', '__lastGlobalErrorTs', 'scopedEl', '_el', 'esc', '_numAttr', '_deepCloneWithFunctions', 'mergeCandlesByX', 'TIMEFRAME_MS_MAP', 'tfToMs', 'detectHorizontalSwipe', 'OVERLAY_TOOL_KEYS', '_deselectOverlayTools', '_endAllOverlayDrags', 'panelBounds', 'showToast', '_debugLogLines', 'debugLog', '_renderDebugLog', '_scheduleDebugRender', '_initDebugLogPanel', 'toggleDebugLogPanel', 'setDebugLog', '__devMode', 'toggleDevMode', 'isDevMode', 'devLog'], 'MAIN-THREAD ONLY');
 })(window.CE, window);
 
 (function CE$module$ce$infra(CE, window) {
@@ -38413,6 +38464,11 @@ class AnchorStore {
     get(name)    { return this._m.get(name) || null; }
     remove(name) { return this._m.delete(name); }
     getAll()     { return Array.from(this._m.values()); }
+    // V183: drop every anchor at once — used by per-ticker bucket loads so
+    // anchor VALUES stop leaking across instruments (a static anchor saved
+    // for SOL/USDT must never resolve a line on SOL/ETH, and dynamic
+    // presets must not survive a ticker swap unscoped).
+    clearAll()   { this._m.clear(); }
 
     resolve(name, ctx) {
         const a = this._m.get(name);
@@ -38607,9 +38663,13 @@ class LineObject extends OverlayBase {
         if (!this.visible) return null;
 
         // Get value: anchor first, then static
+        // V183: if the named anchor is missing (legacy bucket restored before
+        // anchor persistence existed) or resolves to null this frame, fall
+        // back to staticValue instead of dropping the line entirely.
         let value;
         if (this.anchorName) {
             value = anchorStore.resolve(this.anchorName, ctx);
+            if (!isValidNum(value)) value = this.staticValue;
         } else if (this.staticValue != null) {
             value = this.staticValue;
         } else {
@@ -42626,7 +42686,7 @@ class GridBotObject extends OverlayBase {
         const panel = layout.panels[this.panelId];
         if (!panel) return null;
         const pb = panelBounds(panel);
-        debugLog('[GridBotObject.resolve] key=' + this._key + ' panel=' + this.panelId + ' x1=' + this.x1 + ' y1=' + this.y1 + ' x2=' + this.x2 + ' y2=' + this.y2);
+        if (window.__ceDebugLog) debugLog('[GridBotObject.resolve] key=' + this._key + ' panel=' + this.panelId + ' x1=' + this.x1 + ' y1=' + this.y1 + ' x2=' + this.x2 + ' y2=' + this.y2);
 
         const es = this._applyDynamicStyle(this.y1, ctx);
         const gridLines = Math.max(2, Math.floor(es.gridLines || 8));
@@ -42659,21 +42719,21 @@ class GridBotObject extends OverlayBase {
             let simLong = null, simShort = null;
             try {
                 const dp = ctx?.dataPort || ctx?._dataPort;
-                debugLog('[GridBotObject.resolve] sim: dp found=' + !!dp + ' hasQuery=' + (dp ? typeof dp.query === 'function' : false));
+                if (window.__ceDebugLog) debugLog('[GridBotObject.resolve] sim: dp found=' + !!dp + ' hasQuery=' + (dp ? typeof dp.query === 'function' : false));
                 if (dp && typeof dp.query === 'function') {
                     const result = dp.query({
                         type: 'GET_OHLC_RANGE',
                         payload: { xMin: xLeft_data, xMax: xRight_data },
                     });
-                    debugLog('[GridBotObject.resolve] sim: GET_OHLC_RANGE returned candles=' + (result?.candles?.length || 0));
+                    if (window.__ceDebugLog) debugLog('[GridBotObject.resolve] sim: GET_OHLC_RANGE returned candles=' + (result?.candles?.length || 0));
                     if (result && result.candles && result.candles.length > 0) {
                         simLong = this._simulate(result.candles, 'long');
                         simShort = this._simulate(result.candles, 'short');
-                        debugLog('[GridBotObject.resolve] sim long=' + JSON.stringify(simLong) + ' short=' + JSON.stringify(simShort));
+                        if (window.__ceDebugLog) debugLog('[GridBotObject.resolve] sim long=' + JSON.stringify(simLong) + ' short=' + JSON.stringify(simShort));
                     }
                 }
             } catch (e) {
-                debugLog('[GridBotObject.resolve] sim EXCEPTION: ' + e.message);
+                if (window.__ceDebugLog) debugLog('[GridBotObject.resolve] sim EXCEPTION: ' + e.message);
                 /* swallow — sim failure shouldn't crash render */
             }
             this._simCache = { long: simLong, short: simShort };
@@ -42698,10 +42758,10 @@ class GridBotObject extends OverlayBase {
 
     render(ctx, layout, r, isHovered) {
         if (!r) {
-            debugLog('[GridBotObject.render] resolve returned null, cannot render');
+            if (window.__ceDebugLog) debugLog('[GridBotObject.render] resolve returned null, cannot render');
             return;
         }
-        debugLog('[GridBotObject.render] key=' + this._key + ' px1=' + r.px1.toFixed(0) + ' pyTop=' + r.pyTop.toFixed(0) + ' px2=' + r.px2.toFixed(0) + ' pyBot=' + r.pyBot.toFixed(0) + ' sim=' + JSON.stringify(r.sim));
+        if (window.__ceDebugLog) debugLog('[GridBotObject.render] key=' + this._key + ' px1=' + r.px1.toFixed(0) + ' pyTop=' + r.pyTop.toFixed(0) + ' px2=' + r.px2.toFixed(0) + ' pyBot=' + r.pyBot.toFixed(0) + ' sim=' + JSON.stringify(r.sim));
         ctx.save();
         ctx.beginPath();
         ctx.rect(layout.plotLeft, r.pb.top, layout.plotWidth, r.pb.height);
@@ -42753,7 +42813,7 @@ class GridBotObject extends OverlayBase {
         ctx.restore();
 
         // Result pill (top-left of rectangle) — shows PnL for long/short
-        debugLog('[GridBotObject.render] result pill check: sim=' + !!r.sim + ' simLong=' + !!r.sim?.long + ' simShort=' + !!r.sim?.short + ' mode=' + r.mode);
+        if (window.__ceDebugLog) debugLog('[GridBotObject.render] result pill check: sim=' + !!r.sim + ' simLong=' + !!r.sim?.long + ' simShort=' + !!r.sim?.short + ' mode=' + r.mode);
         if (r.sim && (r.sim.long || r.sim.short)) {
             const lines = [];
             if (r.sim.long && (r.mode === 'long' || r.mode === 'both')) {
@@ -42766,7 +42826,7 @@ class GridBotObject extends OverlayBase {
                 const color = s.pnlPct >= 0 ? '#3fb950' : '#f85149';
                 lines.push({ text: `SHORT: ${s.pnlPct >= 0 ? '+' : ''}${s.pnlPct.toFixed(2)}%  (${s.trades}t)`, color });
             }
-            debugLog('[GridBotObject.render] result pill lines=' + lines.length);
+            if (window.__ceDebugLog) debugLog('[GridBotObject.render] result pill lines=' + lines.length);
             if (lines.length > 0) {
                 // Background pill
                 const padX = 6, padY = 4, lineH = 14;
@@ -43960,28 +44020,96 @@ class OverlayManager {
     get visibleCount() { return Array.from(this.objects.values()).filter(o => o.visible).length; }
 
     // V37: persistence — save/load overlays to localStorage per ticker.
+    // V183: the bucket now also carries the ANCHOR STORE. Anchors used to be
+    //   session-global and invisible to persistence: (a) anchored lines
+    //   (LineObject with anchorName — static-value or dynamic range/swing
+    //   presets) lost their anchors on reload and rendered at null;
+    //   (b) `_anchorSeq` restarted after a reload, so a NEW anchor could take
+    //   a name a restored line still referenced — the old line jumped to the
+    //   new anchor's value, i.e. «якорные линии … показать для другого
+    //   делителя» when the user switched the ratio divisor (each divisor's
+    //   bucket re-loaded its lines, but every divisor resolved the ONE
+    //   session-global anchor set). Buckets now round-trip their own anchors.
     saveToStorage(ticker) {
         const key = `chart_overlays_${ticker || 'default'}`;
         const configs = [];
         for (const obj of this.objects.values()) {
             configs.push(obj.toConfig());
         }
+        let payload;
         try {
-            _safeStorage.setItem(key, JSON.stringify(configs));
+            payload = JSON.stringify({
+                v: 1,
+                objects: configs,
+                anchors: this.anchors.getAll().map(a => a.toConfig()),
+            });
+        } catch (e) { payload = null; }
+        try {
+            // Old-format fallback (plain array) keeps quota-error handling
+            // identical to before: if the wrapper cannot serialize (rare),
+            // still try the objects-only legacy shape.
+            if (payload) _safeStorage.setItem(key, payload);
+            else _safeStorage.setItem(key, JSON.stringify(configs));
         } catch (e) { /* quota / sandbox */ }
     }
     loadFromStorage(ticker) {
         const key = `chart_overlays_${ticker || 'default'}`;
         try {
             const raw = _safeStorage.getItem(key);
-            if (!raw) return;
-            const configs = JSON.parse(raw);
-            if (!Array.isArray(configs)) return;
+            const parsed = raw ? JSON.parse(raw) : null;
+            const configs = Array.isArray(parsed)
+                ? parsed                                  // legacy bucket: objects only
+                : (parsed && Array.isArray(parsed.objects) ? parsed.objects : null);
+            const anchorCfgs = (parsed && !Array.isArray(parsed) && Array.isArray(parsed.anchors))
+                ? parsed.anchors
+                : null;
+            // V183: ALWAYS swap the in-memory set on a ticker change. The old
+            //   early-return (`if (!raw) return;`) left the PREVIOUS ticker's
+            //   objects in the map when the destination bucket did not exist
+            //   yet — they were hidden by the ticker filter but silently got
+            //   written into the wrong bucket on the next saveToStorage
+            //   (cross-instrument pollution) and could be re-linked by
+            //   alert lookups. A missing bucket means «nothing drawn here»:
+            //   clear everything and start empty.
+            this._historySuppress = true;
             this.objects.clear();
             this._seq = 0;
-            this._historySuppress = true;
-            for (const cfg of configs) {
-                this.addObject(cfg);
+            // V183: anchor scoping — drop the previous instrument's anchors
+            // before (re)building this ticker's set.
+            if (this.anchors && typeof this.anchors.clearAll === 'function') {
+                this.anchors.clearAll();
+            }
+            if (anchorCfgs) {
+                let maxSeq = this._anchorSeq || 0;
+                const AP = (typeof AnchorPresets !== 'undefined') ? AnchorPresets : null;
+                for (const ac of anchorCfgs) {
+                    try {
+                        if (!ac || !ac.name) continue;
+                        let cfg = null;
+                        if (AP && ac.preset && ac.preset !== 'custom') {
+                            cfg = AP.fromPresetKey(ac.preset, {
+                                seriesId: ac.seriesId, lookback: ac.lookback,
+                                name: ac.name, value: ac.value,
+                            });
+                        }
+                        if (!cfg) cfg = AP
+                            ? AP.staticValue(isFinite(+ac.value) ? +ac.value : 0, ac.name)
+                            : { name: ac.name, preset: 'static-value', value: isFinite(+ac.value) ? +ac.value : 0, resolver: () => (isFinite(+ac.value) ? +ac.value : 0) };
+                        this.anchors.add(cfg);
+                        const m = /^(.*?)(\d+)$/.exec(String(ac.name));
+                        if (m) {
+                            const n = parseInt(m[2], 10);
+                            if (isFinite(n) && n > maxSeq) maxSeq = n;
+                        }
+                    } catch (_) {}
+                }
+                // keep nextAnchorName() collision-free with restored names
+                this._anchorSeq = Math.max(this._anchorSeq || 0, maxSeq + 1);
+            }
+            if (configs) {
+                for (const cfg of configs) {
+                    this.addObject(cfg);
+                }
             }
             this._historySuppress = false;
             this._dirty();
@@ -44007,22 +44135,26 @@ class OverlayManager {
             currentTicker:    this._currentTicker    || null,
             currentTimeframe: this._currentTimeframe || null,
         };
-        debugLog('[OverlayManager.render] objects.size=' + this.objects.size + ' activeTool=' + activeTool + ' suppressHighlight=' + suppressHighlight + ' currentTicker=' + filterCtx.currentTicker);
+        // V184: these per-object debugLog calls fired ≈144×/s (per object per
+        // frame on live WS ticks) — each built strings AND triggered a full
+        // 200-line innerHTML rebuild of the debug panel. Gated + the string
+        // building itself is skipped (the concat is the other half of the cost).
+        if (window.__ceDebugLog) debugLog('[OverlayManager.render] objects.size=' + this.objects.size + ' activeTool=' + activeTool + ' suppressHighlight=' + suppressHighlight + ' currentTicker=' + filterCtx.currentTicker);
         let selectedBBox = null;
         let selectedObj = null;
         for (const obj of this.objects.values()) {
             if (!obj.visible) continue;
             // V37 step 13: skip objects scoped to a different ticker/timeframe.
             if (typeof obj.matchesContext === 'function' && !obj.matchesContext(filterCtx)) {
-                debugLog('[OverlayManager.render] SKIP obj ' + obj._key + ' (' + obj.constructor.name + ') — ticker/TF filter mismatch');
+                if (window.__ceDebugLog) debugLog('[OverlayManager.render] SKIP obj ' + obj._key + ' (' + obj.constructor.name + ') — ticker/TF filter mismatch');
                 continue;
             }
             const r = this._resolveForFrame(obj, xScale, yScales, layout);
             if (!r) {
-                debugLog('[OverlayManager.render] SKIP obj ' + obj._key + ' (' + obj.constructor.name + ') — resolve returned null');
+                if (window.__ceDebugLog) debugLog('[OverlayManager.render] SKIP obj ' + obj._key + ' (' + obj.constructor.name + ') — resolve returned null');
                 continue;
             }
-            debugLog('[OverlayManager.render] rendering obj ' + obj._key + ' (' + obj.constructor.name + ')');
+            if (window.__ceDebugLog) debugLog('[OverlayManager.render] rendering obj ' + obj._key + ' (' + obj.constructor.name + ')');
             const isHov = suppressHighlight ? false : ((obj._key === this.hoveredId) || (obj._key === selectedKey));
             // V154: 5th arg — isSelected (suppressed while a drawing tool is
             // active, same condition as the action panel). Impulse5 shows its
@@ -79004,6 +79136,23 @@ const ChartStatePersistence = (() => {
             }).filter(c => c !== null);
         } catch (e) { state.overlays = []; }
 
+        // ── V183: anchor store (global) ──
+        // The anchored lines (LineObject.anchorName — static-value or dynamic
+        // range/swing presets) resolve through the session-global AnchorStore,
+        // which was never persisted: after a reload every anchored line lost
+        // its anchor and went invisible, and the first NEW anchor could take a
+        // restored line's name (the seq restarted), re-binding old lines to
+        // foreign values. Persist the anchors alongside the global overlay set
+        // so the boot restore can rebuild them before the objects arrive.
+        try {
+            const _ovMgr = api.overlay || (engine && engine.overlay);
+            state.anchors = (_ovMgr && _ovMgr.anchors && typeof _ovMgr.anchors.getAll === 'function')
+                ? _ovMgr.anchors.getAll().map(a => {
+                    try { return a.toConfig(); } catch (e2) { return null; }
+                }).filter(c => c !== null)
+                : [];
+        } catch (e) { state.anchors = []; }
+
         return state;
     }
 
@@ -79448,6 +79597,42 @@ const ChartStatePersistence = (() => {
         //   has already loaded (we overwrite with the globally-saved set).
         if (Array.isArray(state.overlays) && state.overlays.length > 0) {
             try {
+                // V183: rebuild the anchor store FIRST so the anchored lines
+                // added below resolve against their own anchors instead of
+                // silently dropping (missing anchor) or — worse — binding to
+                // whatever anchor a later session creates under the same
+                // auto-generated name. The seq is bumped past every restored
+                // name so nextAnchorName() stays collision-free.
+                try {
+                    const _ovMgr = api.overlay;
+                    if (_ovMgr && _ovMgr.anchors && typeof _ovMgr.anchors.clearAll === 'function'
+                        && Array.isArray(state.anchors) && typeof window.AnchorPresets === 'object' && window.AnchorPresets) {
+                        _ovMgr.anchors.clearAll();
+                        let _maxSeq = _ovMgr._anchorSeq || 0;
+                        for (const ac of state.anchors) {
+                            try {
+                                if (!ac || !ac.name) continue;
+                                let cfg = (ac.preset && ac.preset !== 'custom')
+                                    ? window.AnchorPresets.fromPresetKey(ac.preset, {
+                                        seriesId: ac.seriesId, lookback: ac.lookback,
+                                        name: ac.name, value: ac.value,
+                                    })
+                                    : null;
+                                if (!cfg) {
+                                    const _v = isFinite(+ac.value) ? +ac.value : 0;
+                                    cfg = window.AnchorPresets.staticValue(_v, ac.name);
+                                }
+                                _ovMgr.anchors.add(cfg);
+                                const m = /^(.*?)(\d+)$/.exec(String(ac.name));
+                                if (m) {
+                                    const n = parseInt(m[2], 10);
+                                    if (isFinite(n) && n > _maxSeq) _maxSeq = n;
+                                }
+                            } catch (e2) {}
+                        }
+                        _ovMgr._anchorSeq = Math.max(_ovMgr._anchorSeq || 0, _maxSeq + 1);
+                    }
+                } catch (e2) { /* anchor restore is best-effort */ }
                 // Clear existing overlays (per-ticker load may have added some)
                 const existingObjs = api.getAllObjects();
                 for (const obj of existingObjs) {
@@ -79834,12 +80019,18 @@ const ChartStatePersistence = (() => {
 
         // Settings changes — poll every 2s for settings mutations
         // (no central settings-change event; settings are mutated in place)
+        // V184 PERF: this poll used to call the FULL serialize() every 2 s —
+        // toConfig() of every overlay object + anchors + the indicator map +
+        // viewport data-range queries — and then THREW ALL OF IT AWAY,
+        // keeping only state.settings for the change hash. A pure waste that
+        // grew with the drawing/indicator count (a recurring main-thread tax
+        // on coin charts with lots of drawings). Hash cfg.settings directly.
         let _lastSettingsHash = '';
         const settingsPoll = setInterval(() => {
             try {
-                const state = serialize();
-                if (!state || !state.settings) return;
-                const hash = JSON.stringify(state.settings);
+                const cfg = engine.config;
+                if (!cfg || !cfg.settings) return;
+                const hash = JSON.stringify(cfg.settings);
                 if (_lastSettingsHash && _lastSettingsHash !== hash) {
                     save();
                 }
@@ -84222,6 +84413,25 @@ function _pill(label, checked, onChange, disabled, title) {
 }
 
 function render(backdrop) {
+    // V183: scroll keeper — the modal body is rebuilt from scratch on every
+    // re-render (ChartAlerts._rerender on group expand/collapse, event saves,
+    // live event updates …). `box.innerHTML = ''` momentarily empties the
+    // scrollable backdrop, the browser clamps scrollTop to 0, and the list
+    // visibly JUMPS TO THE TOP («когда я раскрываю монету в алерте то список
+    // автоскроллится наверх»). Capture the position + active tab before the
+    // rebuild, restore it after — but only when the tab did NOT change, so a
+    // deliberate tab switch still starts at the top.
+    const _prevTab = S._lastRenderedTab || null;
+    const _curTab = S.tab;
+    const _scroll = backdrop ? backdrop.scrollTop : 0;
+    _renderInner(backdrop);
+    try {
+        if (backdrop) backdrop.scrollTop = (_prevTab === _curTab) ? _scroll : 0;
+        S._lastRenderedTab = _curTab;
+    } catch (_) {}
+}
+
+function _renderInner(backdrop) {
     const box = backdrop.firstChild;
     if (!box) return;
     box.innerHTML = '';
@@ -85229,10 +85439,13 @@ const ChartAlerts = {
     },
 
     // ── live drawing lookup (stable identity = createdAt + type) ──
-    _objOf(a) {
+    // V184 PERF: `all` is an optional pre-fetched getAllObjects() snapshot —
+    // evaluate() now fetches the object list ONCE per 4 s pass instead of
+    // once per alert (a fresh Array.from allocation per alert per tick).
+    _objOf(a, all) {
         try {
             const api = window._chart && window._chart.api;
-            const all = api && typeof api.getAllObjects === 'function' ? api.getAllObjects() : null;
+            if (!all) all = api && typeof api.getAllObjects === 'function' ? api.getAllObjects() : null;
             if (!all) return null;
             return all.find(o => o && o.createdAt === a.oCreated && _caTypeOf(o) === a.otype) || null;
         } catch (_) { return null; }
@@ -85525,6 +85738,9 @@ const ChartAlerts = {
         const ctx = this._ctx();
         let live = null, liveTried = false;
         const firedAll = [];
+        // V184 PERF: one object-list snapshot per pass (was: getAllObjects()
+        // allocation per alert — see _objOf).
+        const objSnapshot = (function () { try { const api = window._chart && window._chart.api; return api && typeof api.getAllObjects === 'function' ? api.getAllObjects() : null; } catch (_) { return null; } })();
         for (const a of this._items) {
             try {
                 if (a.enabled === false) continue;
@@ -85532,7 +85748,7 @@ const ChartAlerts = {
                 // V174: no chart match → still evaluate in the background when
                 // the alert carries enough data to fetch its own candles.
                 if (!chartMatch && !this._canFetch(a)) continue;   // legacy alert → waits for its chart
-                if (!this._objOf(a)) continue;                     // drawing deleted → orphan
+                if (!this._objOf(a, objSnapshot)) continue;        // drawing deleted → orphan
                 if (chartMatch && !liveTried) { live = this._chartCandles(ctx.tf, 60) || []; liveTried = true; }
                 const tfs = (a.tfs && a.tfs.length) ? a.tfs : (chartMatch ? [ctx.tf] : []);
                 if (!tfs.length) continue;
