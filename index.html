@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Chart Engine v49p — series.js v6 foundation · V184 perf: debugLog gated + rAF-throttled (was per-object-per-frame 200-line innerHTML+reflow — the lag), settings poll hashes settings only, overlay resolve cached per alert tick · V183 alert list keeps its scroll on group expand/collapse; anchors now persist (bucket + global state) and swap per ticker — anchored lines no longer show the other divisor's levels or vanish after a reload · V182 alerts + scan detection computed in a Web Worker, Events tab (events → one click to the chart, day separators), alerts grouped by coin collapsed by default · V181 ratio-chart boot-guard (hlines with alerts no longer wiped on reload of a synthetic pair), working «Apply to future lines» (persisted), alert default = Both touch + cross, click an alert card → open its chart · V180 Elliott rule texts in English (violation list, OK chip, tool settings) + top-left rule panel dropped below the source label · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
+    <title>Chart Engine v49p — series.js v6 foundation · V185 alert-scale perf (the «hundreds of alerts lag» report): alert evaluation is ONE batched worker job per pass with a worker-side candle cache (was a sequential round-trip per alert per TF), background alerts staggered (each ≥24 s apart, oldest first, capped per pass — the open chart's alerts keep the 4 s cadence, «Check now» forces a full pass), per-frame hasFor is O(1) via a drawing index, alert persistence is debounced + flushed on pagehide (was a full multi-MB JSON.stringify + synchronous setItem on every trigger), object lookup is one Map per pass (was a fresh getAllObjects per alert) · V184 perf: debugLog gated + rAF-throttled (was per-object-per-frame 200-line innerHTML+reflow — the lag), settings poll hashes settings only, overlay resolve cached per alert tick · V183 alert list keeps its scroll on group expand/collapse; anchors now persist (bucket + global state) and swap per ticker — anchored lines no longer show the other divisor's levels or vanish after a reload · V182 alerts + scan detection computed in a Web Worker, Events tab (events → one click to the chart, day separators), alerts grouped by coin collapsed by default · V181 ratio-chart boot-guard (hlines with alerts no longer wiped on reload of a synthetic pair), working «Apply to future lines» (persisted), alert default = Both touch + cross, click an alert card → open its chart · V180 Elliott rule texts in English (violation list, OK chip, tool settings) + top-left rule panel dropped below the source label · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -85125,6 +85125,11 @@ const CACompute = {
     _broken: false,      // a hard failure (no Worker support / init error)
     _seq: 0,
     _jobs: new Map(),    // id → { resolve, reject, timer }
+    // V185 PERF: ck → last-sent series signature. The alert pass sends each
+    // task's candles ONLY when the signature (length + last x + last close)
+    // changed since the previous job — steady state clones ~zero bytes and
+    // the per-pass cost stops growing with the alert count.
+    _ckSig: new Map(),
 
     // Verbatim script-text slice between two unique markers — used for the
     // MA_SPECS / OSCILLATOR_SPECS / _emaSrcKey blocks whose function-valued
@@ -85196,6 +85201,10 @@ const CACompute = {
         parts.push(computeCheck.toString());
         parts.push(detectSeriesEvents.toString());
         parts.push(_caDetectCore.toString());
+        // V185: worker-side candle cache for the batched alert pass — tasks
+        // re-send candles only when their signature changed; everything else
+        // is served from _wck (keyed by ck).
+        parts.push('const _wck = new Map();');
         parts.push('self.onmessage = function (e) {');
         parts.push('  const m = e.data;');
         parts.push('  try {');
@@ -85207,6 +85216,17 @@ const CACompute = {
         parts.push('    } else if (m.kind === "alert") {');
         parts.push('      const r = _caDetectCore(m.cfg, m.L, m.tf, m.ivMs, m.candles);');
         parts.push('      self.postMessage({ id: m.id, ok: true, r });');
+        parts.push('    } else if (m.kind === "alertBatch") {');
+        parts.push('      const out = [];');
+        parts.push('      for (const t of (m.tasks || [])) {');
+        parts.push('        try {');
+        parts.push('          let cs = (t.candles && t.candles.length) ? t.candles : _wck.get(t.ck);');
+        parts.push('          if (!cs || cs.length < 2) { out.push({ i: t.i, miss: true }); continue; }');
+        parts.push('          if (t.candles && t.candles.length) _wck.set(t.ck, t.candles);');
+        parts.push('          out.push({ i: t.i, r: _caDetectCore(t.cfg, t.L, t.tf, t.ivMs, cs) });');
+        parts.push('        } catch (_) { out.push({ i: t.i, r: { fired: [], probe: true } }); }');
+        parts.push('      }');
+        parts.push('      self.postMessage({ id: m.id, ok: true, out });');
         parts.push('    } else { self.postMessage({ id: m.id, ok: false, error: "unknown kind" }); }');
         parts.push('  } catch (err) { self.postMessage({ id: m.id, ok: false, error: String((err && err.message) || err) }); }');
         parts.push('};');
@@ -85232,11 +85252,13 @@ const CACompute = {
                 // init/parse-level failure → retire the worker for the session
                 this._broken = true;
                 this._w = null;
+                this._ckSig.clear();   // V185: cold cache on any future worker
                 try { w.terminate(); } catch (_) {}
                 for (const [, job] of this._jobs) { clearTimeout(job.timer); job.reject(new Error('worker error')); }
                 this._jobs.clear();
             };
             this._w = w;
+            this._ckSig.clear();     // V185: a fresh worker has an empty candle cache
             return w;
         } catch (_) {
             this._broken = true;
@@ -85281,6 +85303,43 @@ const CACompute = {
             () => _caDetectCore(cfg, L, tf, ivMs, candles),
             10000,
         ).then(m => (m && m.ok && m.r) ? m.r : null);
+    },
+
+    // V185 PERF: alert detection for a WHOLE pass in ONE job. The old path
+    // paid a postMessage + structured-clone round-trip PER ALERT PER TF
+    // (hundreds of alerts → hundreds of sequential round-trips every 4 s —
+    // the lag the user reported). One batched job + the worker-side candle
+    // cache (tasks omit candles when the series signature is unchanged) make
+    // the per-pass main-thread cost ~independent of the alert count.
+    // Returns { results: Map<i, coreResult>, misses: [i] } or null.
+    detectBatch(tasks) {
+        if (!tasks.length) return Promise.resolve({ results: new Map(), misses: [] });
+        const send = tasks.map((t) => {
+            try {
+                if (this._ckSig.get(t.ck) === t.sig) return { i: t.i, cfg: t.cfg, L: t.L, tf: t.tf, ivMs: t.ivMs, ck: t.ck };
+                this._ckSig.set(t.ck, t.sig);
+                return { i: t.i, cfg: t.cfg, L: t.L, tf: t.tf, ivMs: t.ivMs, ck: t.ck, candles: t.candles };
+            } catch (_) { return { i: t.i, cfg: t.cfg, L: t.L, tf: t.tf, ivMs: t.ivMs, ck: t.ck, candles: t.candles }; }
+        });
+        return this._post(
+            { kind: 'alertBatch', tasks: send },
+            () => {
+                // inline fallback — byte-identical kernels, candles are
+                // always present on the task objects
+                const out = [];
+                for (const t of tasks) { try { out.push({ i: t.i, r: _caDetectCore(t.cfg, t.L, t.tf, t.ivMs, t.candles) }); } catch (_) { out.push({ i: t.i, r: { fired: [], probe: true } }); } }
+                return { __inline: true, out };
+            },
+            15000,
+        ).then(m => {
+            if (m && m.__inline && Array.isArray(m.out)) return { results: new Map(m.out.map(o => [o.i, o.r])), misses: [] };
+            if (m && m.ok && Array.isArray(m.out)) {
+                const results = new Map(); const misses = [];
+                for (const o of m.out) { if (o.miss) { misses.push(o.i); continue; } results.set(o.i, o.r || { fired: [], probe: true }); }
+                return { results, misses };
+            }
+            return null;
+        });
     },
 };
 
@@ -85328,17 +85387,51 @@ const ChartAlerts = {
     _audio: null,      // V175: lazily created AudioContext for the trigger blip
     _fetchLog: [],     // V175: rolling 60 s log of bg fetch START times (budget)
     _probe: false,     // V176: touch probe of the last _evalAlert call (coarse-TF gate)
+    // V185 PERF (the «hundreds of alerts → jank» report):
+    _byDraw: null,     //   lazily-built Map 'oCreated|otype' → [alerts] — hasFor() runs PER FRAME in the toolbar paint, the old find() over every alert made frame cost scale with the alert count
+    _dirty: false,     //   debounced persistence — with hundreds of alerts the events arrays make JSON.stringify + setItem a multi-MB synchronous stall, so mutations mark dirty and one flush writes it all
+    _flushT: null,
+    _BG_EVAL_MS: 24000,  //   a background alert is re-evaluated at most once per this window (round-robin, oldest lastCheck first)
+    _BG_PER_PASS: 80,    //   …and at most this many background alerts per pass
 
     list() { return this._items.slice(); },
-    save() { try { _ls() && _ls().setItem(CA_LS_KEY, JSON.stringify(this._items)); } catch (_) {} this._rerender(); },
+    // V185: O(1) drawing lookup. First entry per key preserves the old
+    // find() semantics (the earliest matching alert wins).
+    _index() {
+        if (this._byDraw) return this._byDraw;
+        const m = new Map();
+        for (const a of this._items) {
+            if (!a || a.oCreated == null) continue;
+            const k = a.oCreated + '|' + a.otype;
+            let arr = m.get(k);
+            if (!arr) m.set(k, (arr = []));
+            arr.push(a);
+        }
+        return (this._byDraw = m);
+    },
+    // V185: debounced persistence — see _dirty above. flush() is also
+    // wired to pagehide / visibilitychange in start() so nothing is lost
+    // on reload within the debounce window.
+    save() {
+        this._dirty = true;
+        this._rerender();
+        if (this._flushT) return;
+        this._flushT = setTimeout(() => { this._flushT = null; this.flush(); }, 1200);
+    },
+    flush() {
+        if (this._flushT) { clearTimeout(this._flushT); this._flushT = null; }
+        if (!this._dirty) return;
+        this._dirty = false;
+        try { _ls() && _ls().setItem(CA_LS_KEY, JSON.stringify(this._items)); } catch (_) {}
+    },
     add(a) {
         const it = Object.assign({ id: 'ca-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), created: Date.now(), enabled: true, trigCount: 0, events: [], lastFired: {} }, a);
-        this._items.push(it); this.save(); return it;
+        this._items.push(it); this._byDraw = null; this.save(); return it;
     },
     get(id) { return this._items.find(x => x.id === id) || null; },
-    remove(id) { const i = this._items.findIndex(x => x.id === id); if (i >= 0) { this._items.splice(i, 1); this.save(); } },
-    update(id, patch) { const it = this.get(id); if (it) { Object.assign(it, patch); this.save(); } return it; },
-    forDrawing(oCreated, otype) { return this._items.find(a => a.oCreated === oCreated && a.otype === otype) || null; },
+    remove(id) { const i = this._items.findIndex(x => x.id === id); if (i >= 0) { this._items.splice(i, 1); this._byDraw = null; this.save(); } },
+    update(id, patch) { const it = this.get(id); if (it) { Object.assign(it, patch); this._byDraw = null; this.save(); } return it; },
+    forDrawing(oCreated, otype) { const arr = this._index().get(oCreated + '|' + otype); return (arr && arr[0]) || null; },
     hasFor(obj) { const t = _caTypeOf(obj); return !!(t && this.forDrawing(obj.createdAt, t)); },
     clearEvents() { for (const a of this._items) { a.events = []; } this.save(); },
 
@@ -85582,6 +85675,9 @@ const ChartAlerts = {
     // (lastFired, events, trigCount) and formatting the human message.
     // Async now (worker round-trip); evaluate() serializes passes via
     // _evalBusy so two overlapping ticks can never double-fire an event.
+    // V185: evaluate() no longer runs through this method (it batches the
+    // whole pass into CACompute.detectBatch) — kept intact as the single-
+    // alert debug/parity surface (worklog spies, manual probes).
     async _evalAlert(a, tf, candles) {
         const obj = this._objOf(a);
         const L = this._levelsOf(a, obj);
@@ -85727,62 +85823,149 @@ const ChartAlerts = {
         }
     },
 
-    async evaluate() {
-        // V182: single-pass guard — _evalAlert is async now (worker round-
-        // trip), so two overlapping ticks could evaluate the same alert
-        // twice with a stale lastFired and double-fire events. With the
-        // guard a slow pass simply skips ticks (the 4 s timer re-arms).
+    // V185: sync cache peek (no fetch, no budget) — mirrors the TTL windows
+    // of _bgCandles/_ratioCandles including the failure-backoff entries
+    // (their t is in the future, so they read as fresh-but-null → no retry).
+    _bgPeek(a, tf) {
+        try {
+            if (a.isRatio) {
+                if (!a.ratio || !a.ratio.num) return null;
+                const key = [a.ex, a.ratio.num, a.ratio.den, a.ratio.numPerp ? 1 : 0, a.ratio.denPerp ? 1 : 0, tf].join('|');
+                const c = this._legCache[key];
+                if (c && c.candles) return { candles: c.candles, stale: (Date.now() - c.t) >= 90000 };
+                return null;
+            }
+            const key = a.ex + ':' + (a.isPerp ? 'p' : 's') + ':' + a.symbol + '|' + tf;
+            const c = this._bgCache[key];
+            if (c && c.candles) return { candles: c.candles, stale: (Date.now() - c.t) >= 60000 };
+            return null;
+        } catch (_) { return null; }
+    },
+
+    async evaluate(force) {
+        // V182: single-pass guard — two overlapping ticks can never
+        // double-fire an event; a slow pass simply skips ticks.
         if (this._evalBusy) return 0;
         this._evalBusy = true;
         try {
         const ctx = this._ctx();
-        let live = null, liveTried = false;
-        const firedAll = [];
-        // V184 PERF: one object-list snapshot per pass (was: getAllObjects()
-        // allocation per alert — see _objOf).
+        // V185 PERF: ONE Map for drawing lookup per pass (first match wins —
+        // same result as the old per-alert find() over all objects).
         const objSnapshot = (function () { try { const api = window._chart && window._chart.api; return api && typeof api.getAllObjects === 'function' ? api.getAllObjects() : null; } catch (_) { return null; } })();
+        const objMap = new Map();
+        for (const o of (objSnapshot || [])) { const t = _caTypeOf(o); if (t) { const k = o.createdAt + '|' + t; if (!objMap.has(k)) objMap.set(k, o); } }
+
+        // ── Phase 1: candidates. Background alerts are STAGGERED (V185):
+        // each one at most once per _BG_EVAL_MS, oldest lastCheck first,
+        // capped at _BG_PER_PASS per pass — the per-pass work stops growing
+        // with the alert count. The open chart's own alerts keep the 4 s
+        // cadence (live candles, user watching). «Check now» passes force
+        // through (no stagger/cap).
+        const now = Date.now();
+        const due = [];
         for (const a of this._items) {
             try {
                 if (a.enabled === false) continue;
                 const chartMatch = !!(ctx && a.symbol === ctx.sym && a.srcMode === ctx.src);
-                // V174: no chart match → still evaluate in the background when
-                // the alert carries enough data to fetch its own candles.
                 if (!chartMatch && !this._canFetch(a)) continue;   // legacy alert → waits for its chart
-                if (!this._objOf(a, objSnapshot)) continue;        // drawing deleted → orphan
-                if (chartMatch && !liveTried) { live = this._chartCandles(ctx.tf, 60) || []; liveTried = true; }
-                const tfs = (a.tfs && a.tfs.length) ? a.tfs : (chartMatch ? [ctx.tf] : []);
-                if (!tfs.length) continue;
-                // V176: COARSE TF FIRST — evaluate from the largest interval
-                // down; when a VALID coarse window shows no candle touching
-                // the band/zone at all, the finer windows (which cover LESS
-                // time and are range-contained in the coarse candles) cannot
-                // touch either → skip their fetches entirely. A failed/empty
-                // coarse fetch leaves the gate OPEN so it never blinds the
-                // finer TFs.
-                const tfsDesc = tfs.slice().sort((x, y) => (CA_TF_MS[y] || 864e5) - (CA_TF_MS[x] || 864e5));
-                const fired = [];
-                let open = true;
-                for (const tf of tfsDesc) {
-                    if (!open) break;
-                    let candles = null;
-                    if (chartMatch && tf === ctx.tf) candles = live;   // live series, no fetch
-                    else candles = await this._bgCandles(a, tf);
-                    const valid = !!(candles && candles.length >= 2);
-                    this._probe = false;
-                    const evs = valid ? (await this._evalAlert(a, tf, candles)) : [];
-                    for (const ev of evs) fired.push(ev);
-                    open = valid ? this._probe : true;
-                }
-                a.lastCheck = Date.now();
-                if (fired.length) {
-                    this.save();   // V173: no toast — the Alerts tab log + unread badge is the feedback
-                    for (const ev of firedAll.concat(fired)) { if (firedAll.indexOf(ev) < 0) firedAll.push(ev); }
-                }
+                if (!objMap.has(a.oCreated + '|' + a.otype)) continue;   // drawing deleted → orphan
+                if (!chartMatch && !force && (now - (a.lastCheck || 0)) < this._BG_EVAL_MS) continue;
+                due.push({ a, chartMatch, obj: objMap.get(a.oCreated + '|' + a.otype) });
             } catch (_) {}
         }
-        // V175: fire feedback — at most ONE blip per tick, no matter how
-        // many alerts/events fired (the log + tab glow carry the details).
-        if (firedAll.length) this._beep();
+        if (!force) {
+            const bgDue = due.filter(d => !d.chartMatch).sort((x, y) => ((x.a.lastCheck || 0) - (y.a.lastCheck || 0)));
+            if (bgDue.length > this._BG_PER_PASS) {
+                const keep = new Set(bgDue.slice(0, this._BG_PER_PASS).map(d => d.a));
+                for (let i = due.length - 1; i >= 0; i--) { if (!due[i].chartMatch && !keep.has(due[i].a)) due.splice(i, 1); }
+            }
+        }
+
+        // ── Phase 2: collect tasks — candles from the live series / caches;
+        // stale-or-missing series refresh in PARALLEL (budget + backoff
+        // gated inside _bgCandles) and join the same batch.
+        const tasks = [];
+        const added = new Set();
+        const addTask = (a, tf, candles, obj, chartMatch) => {
+            try {
+                if (!candles || candles.length < 2) return;
+                const dk = a.id + '|' + tf;
+                if (added.has(dk)) return;
+                const L = this._levelsOf(a, obj);
+                if (!L) return;
+                added.add(dk);
+                const r = a.ratio || {};
+                const ck = (chartMatch ? 'L|' : 'B|') + (a.ex || '') + '|' + (a.symbol || '') + '|' +
+                    (a.isRatio ? ((r.numPerp ? 'p' : 's') + (r.denPerp ? 'p' : 's') + (r.num || '') + '/' + (r.den || '')) : '') + '|' + tf;
+                const sig = candles.length + ':' + candles[candles.length - 1].x + ':' + candles[candles.length - 1].c;
+                tasks.push({ i: tasks.length, a, tf, L, ivMs: CA_TF_MS[tf] || 864e5, ck, sig, candles,
+                    cfg: { type: a.type, side: a.side || '', marginPct: isFinite(+a.marginPct) ? +a.marginPct : null, created: a.created || 0, lastFired: Object.assign({}, a.lastFired || {}) } });
+            } catch (_) {}
+        };
+        let live = null, liveTried = false;
+        const pend = [];
+        for (const d of due) {
+            try {
+                const a = d.a;
+                const tfs = (a.tfs && a.tfs.length) ? a.tfs : (d.chartMatch ? [ctx.tf] : []);
+                if (!tfs.length) continue;
+                if (d.chartMatch && !liveTried) { live = this._chartCandles(ctx.tf, 60) || []; liveTried = true; }
+                for (const tf of tfs.slice().sort((x, y) => (CA_TF_MS[y] || 864e5) - (CA_TF_MS[x] || 864e5))) {
+                    let candles = null, stale = false;
+                    if (d.chartMatch && tf === ctx.tf) candles = live;
+                    else { const pk = this._bgPeek(a, tf); if (pk) { candles = pk.candles; stale = pk.stale; } }
+                    if (candles) addTask(a, tf, candles, d.obj, d.chartMatch);
+                    if (!d.chartMatch && (!candles || stale)) {
+                        pend.push(this._bgCandles(a, tf).then(cs => { addTask(a, tf, cs, d.obj, false); }));
+                    }
+                }
+                a.lastCheck = Date.now();   // attempted this pass (stagger paces retries)
+            } catch (_) {}
+        }
+        if (pend.length) { try { await Promise.all(pend); } catch (_) {} }
+
+        // ── Phase 3: ONE batched worker job for the whole pass (V185) —
+        // the old code paid a worker round-trip PER ALERT PER TF, plus a
+        // fresh getAllObjects() inside _evalAlert, sequentially.
+        const firedAll = [];
+        if (tasks.length) {
+            let results = null;
+            try {
+                const rb = await CACompute.detectBatch(tasks);
+                if (rb) {
+                    results = rb.results;
+                    if (rb.misses && rb.misses.length) {
+                        for (const i of rb.misses) { const t = tasks[i]; if (t) { try { CACompute._ckSig.delete(t.ck); } catch (_) {} } }
+                    }
+                }
+            } catch (_) { results = null; }
+            if (!results) {
+                results = new Map();
+                for (const t of tasks) { try { results.set(t.i, _caDetectCore(t.cfg, t.L, t.tf, t.ivMs, t.candles)); } catch (_) { results.set(t.i, { fired: [], probe: true }); } }
+            }
+            // ── Phase 4: merge (events / lastFired / trigCount), then ONE
+            // debounced save and at most ONE blip per pass.
+            for (const t of tasks) {
+                const r = results.get(t.i);
+                if (!r) continue;
+                const a = t.a;
+                this._probe = !!r.probe;
+                if (r.fired && r.fired.length) {
+                    a.lastFired = r.lastFired || a.lastFired;
+                    for (const it of r.fired) {
+                        const price = this._fmtP(isFinite(it.level) ? it.level : it.price);
+                        const sideTxt = a.side === 'above' ? ' ↓from above' : a.side === 'below' ? ' ↑from below' : '';
+                        const msg = (a.symLabel || a.symbol) + ' ' + this._kindText(it.kind) + (sideTxt ? sideTxt + ' ' : ' ') + price + ' (' + t.tf + ')';
+                        const ev = { t: Date.now(), tf: t.tf, kind: it.kind, price: it.price, level: it.level, side: a.side || undefined, msg };
+                        (a.events = a.events || []).unshift(ev);
+                        if (a.events.length > 100) a.events.length = 100;
+                        a.trigCount = (a.trigCount || 0) + 1;
+                        firedAll.push(ev);
+                    }
+                }
+            }
+        }
+        if (firedAll.length) { this._beep(); this.save(); }
         return firedAll.length;
         } finally { this._evalBusy = false; }
     },
@@ -85790,6 +85973,12 @@ const ChartAlerts = {
     start() {
         if (this._timer) return;
         this._timer = setInterval(() => { try { this.evaluate(); } catch (_) {} }, 4000);
+        // V185: debounced persistence — flush on pagehide / tab-hide so a
+        // reload within the 1.2 s debounce window cannot lose a change.
+        try {
+            window.addEventListener('pagehide', () => { try { this.flush(); } catch (_) {} });
+            document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { try { this.flush(); } catch (_) {} } });
+        } catch (_) {}
         // V175: unlock the AudioContext on the first user gesture (autoplay
         // policy) — a self-removing one-shot listener; while the context is
         // still suspended, _beep() stays silent instead of erroring.
@@ -85875,7 +86064,7 @@ function _renderAlertsTab(box) {
     chkBtn.onclick = async () => {
         chkBtn.disabled = true;
         try {
-            const n = await ChartAlerts.evaluate();
+            const n = await ChartAlerts.evaluate(true);   // V185: force — no stagger/cap on a manual check
             // V173: no toast — when nothing fired, flash the button itself
             if (!n) {
                 chkBtn.textContent = 'no new events';
