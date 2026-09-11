@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Chart Engine v49p — series.js v6 foundation · V189 ref% refresh + placement points anchored to price: the coin picker's «⚡ Compute» no longer replays the PREVIOUS markers' cached diffs (the ref cache was never invalidated — the resume branch skipped every coin after a marker move or interval change, so re-clicking Compute «не обновляет ref% значения»; the cache is now stamped with markers+interval and dropped when they change, failed/null coins are retried on re-click, and badges refresh live without sort mode), and in-progress tool points (trendline family / polygon / 5W impulse / ABC·tri·WXY) are data-anchored while placing: every frozen point carries a data snapshot and each preview render re-projects it through the CURRENT scale, so a zoom/pan/autoscale mid-placement moves already-placed points with their price/time instead of leaving them in screen space and committing wrong values (the ruler already worked this way) · V188 quote-currency restore repair: the ratio restore no longer fires THREE racing full composite loads (connect + isPerp switchAsset + delayed switchAsset — each gen bump aborted the in-flight fetches mid-air, up to 6 klines requests in ~1 s, and through the user's rate-limited CORS proxies the LAST load failed, leaving the bootstrap mono USDT chart under the correct composite label — «пара написана правильная, но график usdt»); the saved timeframe now lands on the orchestrator BEFORE the switch (the first load already fetches the right tf), isPerp no longer forwarded to ratio adapters (flags are baked in at construction), the delayed switchAsset is a mismatch-only fixup, and a failed/empty ratio load now retries ONCE after 3 s when the DataStore still holds a foreign instrument (self-repair instead of a stuck wrong chart) · V187 stale indicator lines fixed at the cache-key level: every indicator result carries a market stamp (DataStore symbol|tf + adapter symbol) and every reuse path refuses foreign stamps — the anchor-TF version key now includes the store’s symbol identity (different markets share the same UTC candle grid, so size:firstX:lastX alone collided across a switch and kept ANCHORED indicator lines on the previous instrument), the shared compute cache is market-keyed, and a ratio-config (denominator) change drops anchor data immediately · V186 switching fixes: indicators recompute after a quote-currency / symbol change (chained indicators' fast-path was keyed on constant version+mutation and froze on the previous instrument when the bar count matched; Volume Profile's model cache had no data identity), coin-picker exchange races fixed (a slower previous-exchange fetch no longer repaints the list, fetch results no longer published under the wrong exchange label, dedup slot no longer clobbered) + stale-while-revalidate so expired lists paint instantly, cross-exchange coin picks apply right after the adapter connects (the synchronous bus made the 'source:connected' listener miss its own event — picks waited on the 5 s fallback or never landed) · V185 alert-scale perf (the «hundreds of alerts lag» report): alert evaluation is ONE batched worker job per pass with a worker-side candle cache (was a sequential round-trip per alert per TF), background alerts staggered (each ≥24 s apart, oldest first, capped per pass — the open chart's alerts keep the 4 s cadence, «Check now» forces a full pass), per-frame hasFor is O(1) via a drawing index, alert persistence is debounced + flushed on pagehide (was a full multi-MB JSON.stringify + synchronous setItem on every trigger), object lookup is one Map per pass (was a fresh getAllObjects per alert) · V184 perf: debugLog gated + rAF-throttled (was per-object-per-frame 200-line innerHTML+reflow — the lag), settings poll hashes settings only, overlay resolve cached per alert tick · V183 alert list keeps its scroll on group expand/collapse; anchors now persist (bucket + global state) and swap per ticker — anchored lines no longer show the other divisor's levels or vanish after a reload · V182 alerts + scan detection computed in a Web Worker, Events tab (events → one click to the chart, day separators), alerts grouped by coin collapsed by default · V181 ratio-chart boot-guard (hlines with alerts no longer wiped on reload of a synthetic pair), working «Apply to future lines» (persisted), alert default = Both touch + cross, click an alert card → open its chart · V180 Elliott rule texts in English (violation list, OK chip, tool settings) + top-left rule panel dropped below the source label · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
+    <title>Chart Engine v49p — series.js v6 foundation · V190 tap-to-select drawings + persistent fib level settings: overlay objects are no longer selected (and body-dragged away) on the touch that starts on them — a touch on an UNSELECTED drawing parks the hit and only a QUICK TAP (release within 300 ms / 15 px) selects it on release, while a drag beyond the 10 px pan slop re-classifies the gesture as a chart pan (mid-gesture dragstart → drag → dragend, identical to the plain pan recognizer; already-selected objects keep the immediate endpoint/vertex/body drag so moving a drawing still works, locks still protect), and fib tools (fib / fibtrend / fibexp / fib-auto) gained persistent settings: the Fib Settings modal lists every level with a visibility checkbox (hidden levels are neither drawn nor hit-tested), a per-level color picker and a delete button, an «Add level» row for custom ratios, and a «Save as defaults for future fibs» checkbox persisting the whole set (levels + colors + hidden map) to localStorage 'ce_fib_style_v1' — new fibs are committed with the saved level set and the placement preview honors it too, while already-saved fibs keep their own serialized style on reload · V189 ref% refresh + placement points anchored to price: the coin picker's «⚡ Compute» no longer replays the PREVIOUS markers' cached diffs (the ref cache was never invalidated — the resume branch skipped every coin after a marker move or interval change, so re-clicking Compute «не обновляет ref% значения»; the cache is now stamped with markers+interval and dropped when they change, failed/null coins are retried on re-click, and badges refresh live without sort mode), and in-progress tool points (trendline family / polygon / 5W impulse / ABC·tri·WXY) are data-anchored while placing: every frozen point carries a data snapshot and each preview render re-projects it through the CURRENT scale, so a zoom/pan/autoscale mid-placement moves already-placed points with their price/time instead of leaving them in screen space and committing wrong values (the ruler already worked this way) · V188 quote-currency restore repair: the ratio restore no longer fires THREE racing full composite loads (connect + isPerp switchAsset + delayed switchAsset — each gen bump aborted the in-flight fetches mid-air, up to 6 klines requests in ~1 s, and through the user's rate-limited CORS proxies the LAST load failed, leaving the bootstrap mono USDT chart under the correct composite label — «пара написана правильная, но график usdt»); the saved timeframe now lands on the orchestrator BEFORE the switch (the first load already fetches the right tf), isPerp no longer forwarded to ratio adapters (flags are baked in at construction), the delayed switchAsset is a mismatch-only fixup, and a failed/empty ratio load now retries ONCE after 3 s when the DataStore still holds a foreign instrument (self-repair instead of a stuck wrong chart) · V187 stale indicator lines fixed at the cache-key level: every indicator result carries a market stamp (DataStore symbol|tf + adapter symbol) and every reuse path refuses foreign stamps — the anchor-TF version key now includes the store’s symbol identity (different markets share the same UTC candle grid, so size:firstX:lastX alone collided across a switch and kept ANCHORED indicator lines on the previous instrument), the shared compute cache is market-keyed, and a ratio-config (denominator) change drops anchor data immediately · V186 switching fixes: indicators recompute after a quote-currency / symbol change (chained indicators' fast-path was keyed on constant version+mutation and froze on the previous instrument when the bar count matched; Volume Profile's model cache had no data identity), coin-picker exchange races fixed (a slower previous-exchange fetch no longer repaints the list, fetch results no longer published under the wrong exchange label, dedup slot no longer clobbered) + stale-while-revalidate so expired lists paint instantly, cross-exchange coin picks apply right after the adapter connects (the synchronous bus made the 'source:connected' listener miss its own event — picks waited on the 5 s fallback or never landed) · V185 alert-scale perf (the «hundreds of alerts lag» report): alert evaluation is ONE batched worker job per pass with a worker-side candle cache (was a sequential round-trip per alert per TF), background alerts staggered (each ≥24 s apart, oldest first, capped per pass — the open chart's alerts keep the 4 s cadence, «Check now» forces a full pass), per-frame hasFor is O(1) via a drawing index, alert persistence is debounced + flushed on pagehide (was a full multi-MB JSON.stringify + synchronous setItem on every trigger), object lookup is one Map per pass (was a fresh getAllObjects per alert) · V184 perf: debugLog gated + rAF-throttled (was per-object-per-frame 200-line innerHTML+reflow — the lag), settings poll hashes settings only, overlay resolve cached per alert tick · V183 alert list keeps its scroll on group expand/collapse; anchors now persist (bucket + global state) and swap per ticker — anchored lines no longer show the other divisor's levels or vanish after a reload · V182 alerts + scan detection computed in a Web Worker, Events tab (events → one click to the chart, day separators), alerts grouped by coin collapsed by default · V181 ratio-chart boot-guard (hlines with alerts no longer wiped on reload of a synthetic pair), working «Apply to future lines» (persisted), alert default = Both touch + cross, click an alert card → open its chart · V180 Elliott rule texts in English (violation list, OK chip, tool settings) + top-left rule panel dropped below the source label · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -41586,6 +41586,20 @@ class FibonacciBase extends OverlayBase {
         return { yS, panel, pb, es, levels, levelColors };
     }
 
+    /**
+     * V190: resolve the level list for this fib honoring per-level visibility.
+     * es.levels carries the (possibly user-customized) ratio array; es.levelHidden
+     * maps ratio → true for levels the user switched off in the fib settings.
+     * Hidden levels are skipped by resolve (not drawn, no child line, no labels)
+     * and by hitTest (the resolved levels array already excludes them).
+     */
+    _fibLevelList(es, DefaultLevels) {
+        const levels = Array.isArray(es.levels) && es.levels.length
+            ? es.levels : DefaultLevels;
+        const hidden = es.levelHidden || {};
+        return levels.filter(r => !hidden[String(r)]);
+    }
+
     /** V46: shared render — clip + iterate levels + draw segments + labels. */
     _renderLevels(ctx, layout, r, isHovered) {
         if (!r) return;
@@ -41712,7 +41726,9 @@ class FibonacciRetracementObject extends FibonacciBase {
         const pb = panelBounds(panel);
 
         const es = this._applyDynamicStyle(this.y1, ctx);
-        const levels = es.levels || FibonacciRetracementObject.DEFAULT_STYLE.levels;
+        // V190: per-level visibility — hidden levels are excluded from resolve
+        // (no child line, no label) and therefore from hitTest/render too.
+        const levels = this._fibLevelList(es, FibonacciRetracementObject.DEFAULT_STYLE.levels);
         const levelColors = es.levelColors || {};
 
         //   0% = P2 (second tap, end of move)
@@ -41999,7 +42015,8 @@ class FibonacciTrendObject extends FibonacciBase {
         const pb = panelBounds(panel);
 
         const es = this._applyDynamicStyle(this.y1, ctx);
-        const levels = es.levels || FibonacciTrendObject.DEFAULT_STYLE.levels;
+        // V190: per-level visibility (see FibonacciBase._fibLevelList).
+        const levels = this._fibLevelList(es, FibonacciTrendObject.DEFAULT_STYLE.levels);
         const levelColors = es.levelColors || {};
 
         // Axis vector in data coords
@@ -42187,7 +42204,8 @@ class FibonacciExpansionObject extends FibonacciBase {
         const pb = panelBounds(panel);
 
         const es = this._applyDynamicStyle(this.y3, ctx);
-        const levels = es.levels || FibonacciExpansionObject.DEFAULT_STYLE.levels;
+        // V190: per-level visibility (see FibonacciBase._fibLevelList).
+        const levels = this._fibLevelList(es, FibonacciExpansionObject.DEFAULT_STYLE.levels);
         const levelColors = es.levelColors || {};
 
         // Swing distance (signed): P2.y - P1.y. Level r sits at P3.y + r * distance.
@@ -47520,6 +47538,81 @@ window._saveLineDefaults = function () {
 // window._trendlineBaseStyle (the live object, same reference).
 window._trendlineBaseStyle = TRENDLINE_BASE_STYLE;
 
+// ─── V190: Persistent FIB defaults (levels + per-level colors + visibility) ──
+// The fib settings modal writes them here + to 'ce_fib_style_v1'; the
+// ToolBase commit / FibAutoRangeTool merge the live values into every NEW
+// fib object's style (fib / fibtrend / fibexp), so user-configured levels,
+// their colors and per-level visibility survive a reload and apply to
+// future fibs — mirroring the TRENDLINE_BASE_STYLE machinery above.
+// Restored (already-saved) fibs keep their own serialized style untouched.
+let FIB_BASE_STYLE = {
+    levels: FIB_LEVELS.slice(),
+    levelColors: (() => {
+        const m = {};
+        for (let i = 0; i < FIB_LEVELS.length; i++) m[String(FIB_LEVELS[i])] = FIB_COLORS[i];
+        return m;
+    })(),
+    levelHidden: {},   // '0.618': true → level exists but is not drawn / hit-tested
+};
+(function _seedFibDefaults() {
+    try {
+        const LS = window._safeStorage || window.localStorage;
+        const raw = LS && LS.getItem('ce_fib_style_v1');
+        if (!raw) return;
+        const d = JSON.parse(raw);
+        if (!d || typeof d !== 'object') return;
+        if (Array.isArray(d.levels) && d.levels.length &&
+            d.levels.every(r => typeof r === 'number' && isFinite(r))) FIB_BASE_STYLE.levels = d.levels.slice();
+        if (d.levelColors && typeof d.levelColors === 'object') {
+            const m = {};
+            for (const k of Object.keys(d.levelColors)) {
+                if (/^-?\d+(\.\d+)?$/.test(k) && typeof d.levelColors[k] === 'string'
+                    && /^#[0-9a-fA-F]{3,8}$/.test(d.levelColors[k])) m[k] = d.levelColors[k];
+            }
+            if (Object.keys(m).length) FIB_BASE_STYLE.levelColors = m;
+        }
+        if (d.levelHidden && typeof d.levelHidden === 'object') {
+            const m = {};
+            for (const k of Object.keys(d.levelHidden)) {
+                if (/^-?\d+(\.\d+)?$/.test(k) && d.levelHidden[k] === true) m[k] = true;
+            }
+            FIB_BASE_STYLE.levelHidden = m;
+        }
+    } catch (_) {}
+})();
+window._saveFibDefaults = function () {
+    try {
+        const LS = window._safeStorage || window.localStorage;
+        LS.setItem('ce_fib_style_v1', JSON.stringify({
+            levels: FIB_BASE_STYLE.levels,
+            levelColors: FIB_BASE_STYLE.levelColors,
+            levelHidden: FIB_BASE_STYLE.levelHidden,
+        }));
+    } catch (_) {}
+};
+// V190: BRIDGE — the fib levels editor lives in the ce-engine module (same
+// cross-module gap that ate the V181 trendline checkbox); it goes through
+// window._fibBaseStyle (the live object, same reference).
+window._fibBaseStyle = FIB_BASE_STYLE;
+// V190: object types that receive the persistent level set at commit time.
+const _FIB_STYLE_TYPES = ['fib', 'fibtrend', 'fibexp'];
+// V190: preview helper — hidden-filtered [{ratio, color}] honoring
+// FIB_BASE_STYLE (levels + per-ratio colors; index fallback for custom
+// ratios the user added without picking a color).
+function _fibStyleLevelList() {
+    const levels = (Array.isArray(FIB_BASE_STYLE.levels) && FIB_BASE_STYLE.levels.length)
+        ? FIB_BASE_STYLE.levels : FIB_LEVELS;
+    const hidden = FIB_BASE_STYLE.levelHidden || {};
+    const colors = FIB_BASE_STYLE.levelColors || {};
+    const out = [];
+    for (const ratio of levels) {
+        if (hidden[String(ratio)]) continue;
+        const idx = FIB_LEVELS.indexOf(ratio);
+        out.push({ ratio, color: colors[String(ratio)] || (idx >= 0 ? FIB_COLORS[idx] : '#8b949e') });
+    }
+    return out;
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function _toolPanelBounds(layout, panelId) {
     const panel = layout.panels[panelId];
@@ -47554,17 +47647,22 @@ function _drawFibLevels(ctx, levelFn, labelFn, x1, x2, opts = {}) {
     ctx.lineWidth = opts.width || 1;
     ctx.setLineDash(opts.dash || [4, 3]);
     ctx.globalAlpha = opts.alpha != null ? opts.alpha : 0.6;
-    for (let i = 0; i < FIB_LEVELS.length; i++) {
-        const ratio = FIB_LEVELS[i];
+    // V190: honor the persistent fib defaults (custom levels, per-ratio
+    // colors, per-level visibility) so the live preview matches the
+    // object the commit will produce.
+    const _lvlList = _fibStyleLevelList();
+    for (let i = 0; i < _lvlList.length; i++) {
+        const ratio = _lvlList[i].ratio;
+        const color = _lvlList[i].color;
         const py = levelFn(ratio);
-        ctx.strokeStyle = FIB_COLORS[i];
+        ctx.strokeStyle = color;
         ctx.beginPath();
         ctx.moveTo(x1, py);
         ctx.lineTo(x2, py);
         ctx.stroke();
         // Label
         ctx.globalAlpha = 0.9;
-        ctx.fillStyle = FIB_COLORS[i];
+        ctx.fillStyle = color;
         ctx.font = '9px monospace';
         ctx.textAlign = opts.textAlign || 'left';
         ctx.textBaseline = 'middle';
@@ -48000,12 +48098,17 @@ class ToolBase extends Tool {
         if (this._spec.objectType) {
             const overlay = api.overlay;
             if (overlay) {
+                // V190: fib family gets the PERSISTENT level defaults (levels +
+                // per-ratio colors + per-level visibility from FIB_BASE_STYLE,
+                // seeded from 'ce_fib_style_v1' / edited in the fib settings
+                // modal), so user-configured levels apply to every new fib.
+                const _fibType = _FIB_STYLE_TYPES.indexOf(this._spec.objectType) >= 0;
                 overlay.addObject({
                     type: this._spec.objectType,
                     panelId: this._panelId,
                     ...coords,
-                    ...(this._spec.style ? { style: {
-                        ...this._spec.style,
+                    ...((this._spec.style || _fibType) ? { style: {
+                        ...(this._spec.style || {}),
                         // V181: "Apply to future lines" — the LIVE defaults
                         // (TRENDLINE_BASE_STYLE, modal-editable + persisted)
                         // win over the spec's spread-copied module-init
@@ -48017,6 +48120,12 @@ class ToolBase extends Tool {
                             lineStyle: TRENDLINE_BASE_STYLE.lineStyle,
                             lineWidth: TRENDLINE_BASE_STYLE.lineWidth,
                             lineAlpha: TRENDLINE_BASE_STYLE.lineAlpha,
+                        } : {}),
+                        // V190: persistent fib level set (see FIB_BASE_STYLE).
+                        ...(_fibType ? {
+                            levels: FIB_BASE_STYLE.levels.slice(),
+                            levelColors: Object.assign({}, FIB_BASE_STYLE.levelColors),
+                            levelHidden: Object.assign({}, FIB_BASE_STYLE.levelHidden),
                         } : {}),
                     } } : {}),
                 });
@@ -49516,7 +49625,15 @@ class FibAutoRangeTool extends Tool {
                 // short segments between the two auto-found X coordinates —
                 // which are often close together (narrow swing range) and the
                 // fib appears invisible.
-                style: { extend: 'both' },
+                // V190: also carry the persistent level set (levels + colors +
+                // per-level visibility) so auto-fibs follow the user's saved
+                // fib defaults like manually drawn ones.
+                style: {
+                    extend: 'both',
+                    levels: FIB_BASE_STYLE.levels.slice(),
+                    levelColors: Object.assign({}, FIB_BASE_STYLE.levelColors),
+                    levelHidden: Object.assign({}, FIB_BASE_STYLE.levelHidden),
+                },
             });
             console.log('[FibAutoRangeTool._completeFib] addObject returned', obj);
             console.log('[FibAutoRangeTool._completeFib] overlay.objects count after add =', overlay.objects.size);
@@ -53326,6 +53443,10 @@ function resolveActionPanelButton(btn, obj) {
 class DrawRecognizer extends GestureRecognizer {
     static TAP_MAX_MS = 300;
     static TAP_MAX_PX = 15;
+    // V190 tap-select: finger travel beyond this (touch started on an
+    // unselected overlay) re-classifies the gesture as a PAN — same
+    // threshold nextPanState uses for the plain pan recognizer.
+    static PAN_SLOP_PX = 10;
 
     constructor(api) {
         super(api);
@@ -53340,6 +53461,16 @@ class DrawRecognizer extends GestureRecognizer {
         // V37 step 14: pending action-panel button (set on handleStart,
         // dispatched on handleEnd if it was a tap, not a drag).
         this._actionPanelPending = null;
+        // V190 tap-select: a touch on an UNSELECTED overlay no longer
+        // selects + body-drags on touchstart (a pan pressed on a line used
+        // to grab and move it — the user's «он выделится и уедет»). The
+        // hit is parked in _pendingSelect; a QUICK TAP (release within
+        // TAP_MAX_*) selects on RELEASE, and a move beyond PAN_SLOP_PX
+        // hands the gesture to the panZoom pipeline (_panFallback, see
+        // handleMove) so panning from a line pans the chart instead.
+        this._pendingSelect = null;
+        this._panFallback = false;
+        this._panPanelId = null;
     }
     /** V42: spec-driven через OVERLAY_OBJECT_REGISTRY вместо 9 if (instanceof). */
     _toolForObj(obj) {
@@ -53618,14 +53749,32 @@ class DrawRecognizer extends GestureRecognizer {
                 const obj = hit.obj;
                 devLog('[DrawRec.start] sel ' + obj.constructor.name + ' key=' + obj._key + ' dist=' + hit.dist.toFixed(1));
 
-                if (obj instanceof TrendLineObject) {
-                    if (this._startOverlayDrag(obj, ctx, hit, { hasEndpoint: true })) return;
+                // V190 tap-select: immediate endpoint/vertex/body drag stays
+                // ONLY for an ALREADY-selected object (pressing a small
+                // handle of the selected drawing is deliberate). An
+                // unselected object must NOT be selected on touchstart —
+                // the hit is parked in _pendingSelect: a quick tap selects
+                // on RELEASE, a drag beyond the slop becomes a pan (the
+                // user's «выделялись на быстром тапе, на релизе, а не на
+                // любом касании»).
+                const _selTool = this._toolForObj(obj);
+                const _alreadySel = !!(_selTool && typeof _selTool.getSelectedKey === 'function'
+                    && _selTool.getSelectedKey() === obj._key);
+                if (_alreadySel) {
+                    if (obj instanceof TrendLineObject) {
+                        if (this._startOverlayDrag(obj, ctx, hit, { hasEndpoint: true })) return;
+                    }
+                    // V49n-fix: Fib/Zone/GridBot/Polygon — select + drag via _startOverlayDrag
+                    const spec = _overlayDragSpec(obj);
+                    if (spec) {
+                        if (this._startOverlayDrag(obj, ctx, hit, spec)) return;
+                    }
                 }
-                // V49n-fix: Fib/Zone/GridBot/Polygon — select + drag via _startOverlayDrag
-                const spec = _overlayDragSpec(obj);
-                if (spec) {
-                    if (this._startOverlayDrag(obj, ctx, hit, spec)) return;
-                }
+                // V190: defer — remember what was hit; decide on move/end.
+                this._pendingSelect = { obj, hit };
+                this._panFallback = false;
+                this._panPanelId = this.api.getActivePanel(ctx.startY);
+                return;
             } else {
                 // Touch outside any line → deselect all
                 if (overlay.visibleCount > 0) {
@@ -53649,6 +53798,43 @@ class DrawRecognizer extends GestureRecognizer {
 
     handleMove(ctx) {
         this._moved = true;
+        // ── V190 tap-select: deferred-selection states (checked before the
+        // normal paths). A touch that started on an UNSELECTED overlay is
+        // either still a tap candidate (_pendingSelect — wait for release)
+        // or, once the finger travels beyond PAN_SLOP_PX, a PAN (_panFallback
+        // — feed the panZoom pipeline exactly like PanRecognizer: mid-gesture
+        // dragstart, then per-move drag deltas, dragend on release).
+        if (this._panFallback) {
+            this.api.handleGesture('panZoom', mkGestureCtx(this.api, this.startZone, 'drag', 'touch', {
+                x: ctx.x, y: ctx.y, dx: ctx.dx, dy: ctx.dy,
+                panPanelId: this._panPanelId
+            }));
+            this.api.requestRender();
+            return;
+        }
+        if (this._pendingSelect) {
+            const dist = Math.hypot(ctx.x - this._startX, ctx.y - this._startY);
+            if (dist < DrawRecognizer.PAN_SLOP_PX) return;   // still a tap candidate
+            this._pendingSelect = null;
+            this._panFallback = true;
+            this.api.hideInput();
+            // Mid-gesture dragstart — the panZoom tool snapshots the viewport
+            // here (same entry point PanRecognizer uses when a plain pan
+            // starts after 10 px of travel).
+            this.api.handleGesture('panZoom', mkGestureCtx(this.api, this.startZone, 'dragstart', 'touch', {
+                x: ctx.x, y: ctx.y, dx: 0, dy: 0,
+                startX: this._startX, startY: this._startY,
+                panPanelId: this._panPanelId
+            }));
+            // Same-call first drag (mirrors PanRecognizer's fall-through —
+            // this move's own delta is applied once).
+            this.api.handleGesture('panZoom', mkGestureCtx(this.api, this.startZone, 'drag', 'touch', {
+                x: ctx.x, y: ctx.y, dx: ctx.dx, dy: ctx.dy,
+                panPanelId: this._panPanelId
+            }));
+            this.api.requestRender();
+            return;
+        }
         const toolName = this.api.getToolName();
 
         if (toolName === 'trendLine') {
@@ -53749,6 +53935,31 @@ class DrawRecognizer extends GestureRecognizer {
                     x: ctx.x, y: ctx.y
                 }));
             }
+        } else if (this._panFallback) {
+            // ── V190 tap-select: the gesture was re-classified as a PAN —
+            // close the panZoom pipeline (elastic snap-back + viewport
+            // history live in the panZoom tool's dragend). No selection.
+            this._panFallback = false;
+            this.api.handleGesture('panZoom', mkGestureCtx(this.api, this.startZone, 'dragend', 'touch', {
+                x: ctx.x, y: ctx.y,
+                panPanelId: this._panPanelId
+            }));
+        } else if (this._pendingSelect) {
+            // ── V190 tap-select: the finger went down on an unselected
+            // overlay and the gesture stayed within tap limits → select NOW
+            // (on release). This is the only moment an unselected drawing
+            // becomes selected on touch; panning from it never touches it.
+            const ps = this._pendingSelect;
+            this._pendingSelect = null;
+            if (isTap(dist, duration, DrawRecognizer.TAP_MAX_PX, DrawRecognizer.TAP_MAX_MS)) {
+                const tool = this._toolForObj(ps.obj);
+                if (tool) {
+                    this._deselectOthers('_trendLineTool');
+                    tool.selectLine(ps.obj._key, this.api, { x: ctx.x, y: ctx.y });
+                    this.api.dirty.set(DirtyFlags.OVERLAY);
+                    this.api.requestRender();
+                }
+            }
         } else if (this._dragActive) {
             const tool = this._getDragTool();
             const wasEndpointDrag = tool && (tool._dragMode === 'p1' || tool._dragMode === 'p2' || tool._dragMode === 'p3');
@@ -53774,6 +53985,10 @@ class DrawRecognizer extends GestureRecognizer {
         this._moved = false;
         this._dragActive = false;
         this._dragTool = null;
+        // V190 tap-select: drop the deferred-selection / pan-fallback state
+        // (a second finger turned the gesture into a pinch, etc.).
+        this._pendingSelect = null;
+        this._panFallback = false;
         // V37 step 14: cancel any pending action-panel press.
         this._actionPanelPending = null;
         const overlay = this.api.overlay;
@@ -56370,6 +56585,161 @@ class Engine {
             styleSelect.appendChild(opt);
         }
         modal.appendChild(makeRow('Style', styleSelect));
+
+        // ── V190: Fib levels editor (fib / fibtrend / fibexp — the style
+        // carries a levels[] array). Per-level: visibility checkbox, color,
+        // delete; plus custom-level adding and a persistent-defaults checkbox
+        // (mirrors into window._fibBaseStyle / 'ce_fib_style_v1' so future
+        // fibs are drawn with the same level set — the user's «постоянные
+        // сохраняющиеся значения: все уровни, их цвета… доп уровни…
+        // отключить отображение»).
+        const _isFib = Array.isArray(s.levels) && s.levels.length > 0;
+        if (_isFib) {
+            title.textContent = 'Fib Settings';
+            // Clone-on-edit: never mutate a shared DEFAULT_STYLE sub-object.
+            obj.style.levels = obj.style.levels.slice();
+            obj.style.levelColors = Object.assign({}, obj.style.levelColors || {});
+            obj.style.levelHidden = Object.assign({}, obj.style.levelHidden || {});
+            const _fibBase = (typeof window._fibBaseStyle === 'object' && window._fibBaseStyle)
+                ? window._fibBaseStyle : null;
+
+            const applyFib = () => {
+                this.dirty?.setAll?.();
+                this.requestRender?.();
+                try { if (window.ChartStatePersistence) window.ChartStatePersistence.save(); } catch (_) {}
+                if (_fibSaveCb.checked && _fibBase) {
+                    _fibBase.levels = obj.style.levels.slice().sort((a, b) => a - b);
+                    _fibBase.levelColors = Object.assign({}, obj.style.levelColors);
+                    _fibBase.levelHidden = Object.assign({}, obj.style.levelHidden);
+                    if (typeof window._saveFibDefaults === 'function') window._saveFibDefaults();
+                }
+            };
+
+            const fibSect = document.createElement('div');
+            fibSect.style.cssText = 'margin: 12px 0 6px 0; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08);';
+            const fibTitle = document.createElement('div');
+            fibTitle.textContent = 'Levels';
+            fibTitle.style.cssText = 'font-size: 12px; font-weight: 600; color: #8b949e; margin-bottom: 6px;';
+            fibSect.appendChild(fibTitle);
+
+            const fibRows = document.createElement('div');
+            fibSect.appendChild(fibRows);
+
+            const _fmtRatio = (r) => `${+(r * 100).toFixed(4)}%`;
+            const rebuildFibRows = () => {
+                fibRows.innerHTML = '';
+                const levels = obj.style.levels.slice().sort((a, b) => a - b);
+                obj.style.levels = levels;
+                for (const ratio of levels) {
+                    const key = String(ratio);
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display:flex; align-items:center; gap:8px; margin:4px 0;';
+
+                    const visCb = document.createElement('input');
+                    visCb.type = 'checkbox';
+                    visCb.checked = !obj.style.levelHidden[key];
+                    visCb.title = 'Show this level';
+                    visCb.style.cssText = 'width:15px; height:15px; cursor:pointer; accent-color:#58a6ff; flex:0 0 auto;';
+                    visCb.addEventListener('change', () => {
+                        if (visCb.checked) delete obj.style.levelHidden[key];
+                        else obj.style.levelHidden[key] = true;
+                        applyFib();
+                    });
+
+                    const lbl = document.createElement('label');
+                    lbl.textContent = _fmtRatio(ratio);
+                    lbl.style.cssText = 'font-size:12px; color:#e6edf3; font-family:monospace; flex:1; cursor:pointer;';
+                    lbl.addEventListener('click', () => { visCb.checked = !visCb.checked; visCb.dispatchEvent(new Event('change')); });
+
+                    const colInp = document.createElement('input');
+                    colInp.type = 'color';
+                    colInp.value = obj.style.levelColors[key] || '#8b949e';
+                    colInp.style.cssText = 'width:34px; height:22px; padding:0; border:1px solid rgba(255,255,255,0.2); border-radius:4px; background:transparent; cursor:pointer; flex:0 0 auto;';
+                    colInp.addEventListener('change', () => {
+                        obj.style.levelColors[key] = colInp.value;
+                        applyFib();
+                    });
+
+                    const delBtn = document.createElement('button');
+                    delBtn.textContent = '×';
+                    delBtn.title = 'Remove this level';
+                    delBtn.style.cssText = 'width:22px; height:22px; border-radius:4px; border:1px solid rgba(255,255,255,0.15);'
+                        + 'background:#0d1117; color:#f85149; font-size:13px; cursor:pointer; line-height:1; padding:0; flex:0 0 auto;';
+                    delBtn.addEventListener('click', () => {
+                        obj.style.levels = obj.style.levels.filter(r => String(r) !== key);
+                        delete obj.style.levelColors[key];
+                        delete obj.style.levelHidden[key];
+                        applyFib();
+                        rebuildFibRows();
+                    });
+
+                    row.appendChild(visCb);
+                    row.appendChild(lbl);
+                    row.appendChild(colInp);
+                    row.appendChild(delBtn);
+                    fibRows.appendChild(row);
+                }
+                if (!obj.style.levels.length) {
+                    const empty = document.createElement('div');
+                    empty.textContent = 'No levels — add one below';
+                    empty.style.cssText = 'font-size:11px; color:#8b949e; margin:4px 0;';
+                    fibRows.appendChild(empty);
+                }
+            };
+            rebuildFibRows();
+
+            // Add-level row: ratio input + color + Add
+            const addRow = document.createElement('div');
+            addRow.style.cssText = 'display:flex; align-items:center; gap:8px; margin-top:8px;';
+            const addInp = document.createElement('input');
+            addInp.type = 'text';
+            addInp.placeholder = 'e.g. 0.886';
+            addInp.style.cssText = 'background:#0d1117; color:#e6edf3; border:1px solid rgba(255,255,255,0.15);'
+                + 'border-radius:4px; padding:4px 8px; font-size:12px; width:70px; font-family:monospace;';
+            const addCol = document.createElement('input');
+            addCol.type = 'color';
+            addCol.value = '#8b949e';
+            addCol.title = 'Color for the new level';
+            addCol.style.cssText = 'width:34px; height:22px; padding:0; border:1px solid rgba(255,255,255,0.2); border-radius:4px; background:transparent; cursor:pointer;';
+            const addBtn = document.createElement('button');
+            addBtn.textContent = 'Add level';
+            addBtn.style.cssText = 'background:#21262d; color:#e6edf3; border:1px solid rgba(255,255,255,0.15);'
+                + 'border-radius:4px; padding:4px 10px; font-size:11px; cursor:pointer;';
+            addBtn.addEventListener('click', () => {
+                const v = Math.round(parseFloat(String(addInp.value).trim().replace(',', '.')) * 10000) / 10000;
+                if (!isFinite(v)) { addInp.style.borderColor = '#f85149'; return; }
+                addInp.style.borderColor = 'rgba(255,255,255,0.15)';
+                if (v <= -100 || v >= 100) { addInp.style.borderColor = '#f85149'; return; }
+                if (obj.style.levels.some(r => Math.abs(r - v) < 1e-9)) { addInp.style.borderColor = '#d29922'; return; }
+                obj.style.levels.push(v);
+                obj.style.levelColors[String(v)] = addCol.value;
+                delete obj.style.levelHidden[String(v)];
+                addInp.value = '';
+                applyFib();
+                rebuildFibRows();
+            });
+            addRow.appendChild(addInp);
+            addRow.appendChild(addCol);
+            addRow.appendChild(addBtn);
+            fibSect.appendChild(addRow);
+
+            // Save-as-default checkbox (persistent fib settings)
+            const fibSaveRow = document.createElement('div');
+            fibSaveRow.style.cssText = 'display:flex; align-items:center; gap:6px; margin-top:10px;';
+            const _fibSaveCb = document.createElement('input');
+            _fibSaveCb.type = 'checkbox';
+            _fibSaveCb.checked = true;
+            _fibSaveCb.style.cssText = 'width:15px; height:15px; cursor:pointer; accent-color:#58a6ff;';
+            const fibSaveLbl = document.createElement('label');
+            fibSaveLbl.textContent = 'Save as defaults for future fibs';
+            fibSaveLbl.style.cssText = 'font-size:11px; color:#8b949e; cursor:pointer;';
+            fibSaveLbl.addEventListener('click', () => { _fibSaveCb.checked = !_fibSaveCb.checked; });
+            fibSaveRow.appendChild(_fibSaveCb);
+            fibSaveRow.appendChild(fibSaveLbl);
+            fibSect.appendChild(fibSaveRow);
+
+            modal.appendChild(fibSect);
+        }
 
         // "Apply to future lines" checkbox
         const futureRow = document.createElement('div');
