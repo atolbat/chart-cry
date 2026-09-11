@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Chart Engine v49p — series.js v6 foundation · V185 alert-scale perf (the «hundreds of alerts lag» report): alert evaluation is ONE batched worker job per pass with a worker-side candle cache (was a sequential round-trip per alert per TF), background alerts staggered (each ≥24 s apart, oldest first, capped per pass — the open chart's alerts keep the 4 s cadence, «Check now» forces a full pass), per-frame hasFor is O(1) via a drawing index, alert persistence is debounced + flushed on pagehide (was a full multi-MB JSON.stringify + synchronous setItem on every trigger), object lookup is one Map per pass (was a fresh getAllObjects per alert) · V184 perf: debugLog gated + rAF-throttled (was per-object-per-frame 200-line innerHTML+reflow — the lag), settings poll hashes settings only, overlay resolve cached per alert tick · V183 alert list keeps its scroll on group expand/collapse; anchors now persist (bucket + global state) and swap per ticker — anchored lines no longer show the other divisor's levels or vanish after a reload · V182 alerts + scan detection computed in a Web Worker, Events tab (events → one click to the chart, day separators), alerts grouped by coin collapsed by default · V181 ratio-chart boot-guard (hlines with alerts no longer wiped on reload of a synthetic pair), working «Apply to future lines» (persisted), alert default = Both touch + cross, click an alert card → open its chart · V180 Elliott rule texts in English (violation list, OK chip, tool settings) + top-left rule panel dropped below the source label · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
+    <title>Chart Engine v49p — series.js v6 foundation · V189 ref% refresh + placement points anchored to price: the coin picker's «⚡ Compute» no longer replays the PREVIOUS markers' cached diffs (the ref cache was never invalidated — the resume branch skipped every coin after a marker move or interval change, so re-clicking Compute «не обновляет ref% значения»; the cache is now stamped with markers+interval and dropped when they change, failed/null coins are retried on re-click, and badges refresh live without sort mode), and in-progress tool points (trendline family / polygon / 5W impulse / ABC·tri·WXY) are data-anchored while placing: every frozen point carries a data snapshot and each preview render re-projects it through the CURRENT scale, so a zoom/pan/autoscale mid-placement moves already-placed points with their price/time instead of leaving them in screen space and committing wrong values (the ruler already worked this way) · V188 quote-currency restore repair: the ratio restore no longer fires THREE racing full composite loads (connect + isPerp switchAsset + delayed switchAsset — each gen bump aborted the in-flight fetches mid-air, up to 6 klines requests in ~1 s, and through the user's rate-limited CORS proxies the LAST load failed, leaving the bootstrap mono USDT chart under the correct composite label — «пара написана правильная, но график usdt»); the saved timeframe now lands on the orchestrator BEFORE the switch (the first load already fetches the right tf), isPerp no longer forwarded to ratio adapters (flags are baked in at construction), the delayed switchAsset is a mismatch-only fixup, and a failed/empty ratio load now retries ONCE after 3 s when the DataStore still holds a foreign instrument (self-repair instead of a stuck wrong chart) · V187 stale indicator lines fixed at the cache-key level: every indicator result carries a market stamp (DataStore symbol|tf + adapter symbol) and every reuse path refuses foreign stamps — the anchor-TF version key now includes the store’s symbol identity (different markets share the same UTC candle grid, so size:firstX:lastX alone collided across a switch and kept ANCHORED indicator lines on the previous instrument), the shared compute cache is market-keyed, and a ratio-config (denominator) change drops anchor data immediately · V186 switching fixes: indicators recompute after a quote-currency / symbol change (chained indicators' fast-path was keyed on constant version+mutation and froze on the previous instrument when the bar count matched; Volume Profile's model cache had no data identity), coin-picker exchange races fixed (a slower previous-exchange fetch no longer repaints the list, fetch results no longer published under the wrong exchange label, dedup slot no longer clobbered) + stale-while-revalidate so expired lists paint instantly, cross-exchange coin picks apply right after the adapter connects (the synchronous bus made the 'source:connected' listener miss its own event — picks waited on the 5 s fallback or never landed) · V185 alert-scale perf (the «hundreds of alerts lag» report): alert evaluation is ONE batched worker job per pass with a worker-side candle cache (was a sequential round-trip per alert per TF), background alerts staggered (each ≥24 s apart, oldest first, capped per pass — the open chart's alerts keep the 4 s cadence, «Check now» forces a full pass), per-frame hasFor is O(1) via a drawing index, alert persistence is debounced + flushed on pagehide (was a full multi-MB JSON.stringify + synchronous setItem on every trigger), object lookup is one Map per pass (was a fresh getAllObjects per alert) · V184 perf: debugLog gated + rAF-throttled (was per-object-per-frame 200-line innerHTML+reflow — the lag), settings poll hashes settings only, overlay resolve cached per alert tick · V183 alert list keeps its scroll on group expand/collapse; anchors now persist (bucket + global state) and swap per ticker — anchored lines no longer show the other divisor's levels or vanish after a reload · V182 alerts + scan detection computed in a Web Worker, Events tab (events → one click to the chart, day separators), alerts grouped by coin collapsed by default · V181 ratio-chart boot-guard (hlines with alerts no longer wiped on reload of a synthetic pair), working «Apply to future lines» (persisted), alert default = Both touch + cross, click an alert card → open its chart · V180 Elliott rule texts in English (violation list, OK chip, tool settings) + top-left rule panel dropped below the source label · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -19541,11 +19541,17 @@ class IndicatorManager {
      */
     getCached(key, version, computeFn) {
         const entry = this._computeCache.get(key);
-        if (entry && entry.version === version) {
+        // V187-market-stamp: the shared compute cache is per-MARKET. On a
+        //   symbol / quote-currency / exchange / spot-perp switch the stamp
+        //   changes → entries miss even if a fresh DataStore's version
+        //   counter coincides (it restarts from 0), so a brick can never
+        //   receive another market's shared result.
+        const mkt = this._marketStamp || '';
+        if (entry && entry.version === version && entry.mkt === mkt) {
             return entry.result;  // cache hit — no recomputation
         }
         const result = computeFn();
-        this._computeCache.set(key, { result, version });
+        this._computeCache.set(key, { result, version, mkt });
         return result;
     }
 
@@ -19818,6 +19824,19 @@ class IndicatorManager {
     computeAll(dataStore, slice, visibleRange) {
         // V49: store dataStore reference so _computeRaw can access OHLCV Frame
         this._lastDataStore = dataStore;
+        // V187-market-stamp: identity of the market the CURRENT chart data
+        //   belongs to — the DataStore's V121 symbol/tf stamp (flips when
+        //   new candles land) + the adapter's current symbol (flips
+        //   synchronously at switch start). Indicator results are tagged
+        //   with this stamp (result._mkt) and every reuse path (brick
+        //   fast-path, shared compute cache, anchor version key) refuses
+        //   results whose stamp differs — «линии индикаторные старые,
+        //   особенно якорные» dies at the ROOT: after a quote-currency /
+        //   denominator / exchange / coin / spot-perp switch a result
+        //   computed for the previous instrument can never be reused,
+        //   regardless of which cache key would otherwise collide (same
+        //   UTC candle grid ⇒ same size:firstX:lastX across markets).
+        this._marketStamp = `${(dataStore && dataStore.symbol) || ''}|${(dataStore && dataStore.tf) || ''}|${(this.multiTf && this.multiTf._adapter && this.multiTf._adapter.symbol) || ''}`;
         // V49n-MTF: remember the VISIBLE chart-TF xRange (what the user
         // sees on screen, NOT the full lazy-loaded history). This is used
         // by _anchorTfGet's coverage check: if anchor candles cover the
@@ -19880,7 +19899,21 @@ class IndicatorManager {
                 if (!refData) continue;
                 sourceData = refData;
                 sourceCount = refResult.count || refData.length;
-                sourceVersion = 0;
+                // V186 FIX: was a CONSTANT 0 / 'bulk'. Chained indicators
+                //   (Source = another indicator's output) keyed their
+                //   brick-level fast-path on (count, version, mutation) — with
+                //   version+mutation frozen, a series REPLACEMENT (quote-currency
+                //   change → new RatioAdapter → loadHistory, or a full symbol
+                //   change) that kept the same bar count (~1000 fetch limit on
+                //   both instruments) hit the fast-path forever and kept
+                //   serving the PREVIOUS instrument's _computed — «при смене
+                //   quote currency индикаторы не подстраиваются». Threading the
+                //   real DataStore version makes any data-generation change
+                //   recompute chained bricks, while a truly unchanged frame
+                //   still hits the fast-path. Mutation stays 'bulk' on purpose:
+                //   chained bricks always take the full-recompute path
+                //   internally (same as before), only the invalidation is fixed.
+                sourceVersion = dataStore._version;
                 sourceMutation = 'bulk';
             } else {
                 // Get or cache source data from DataStore
@@ -20615,14 +20648,25 @@ class IndicatorBrick extends IndicatorBase {
         // FIX V49n-perf-pan: fast-path — if nothing changed since last compute,
         // return cached result immediately. During panning, chart data version,
         // anchor data, and count all stay the same → skip ALL computation.
+        // V187-market-stamp: a cached result may only be reused when it was
+        //   computed for the SAME market (symbol|tf|adapter-symbol). After a
+        //   quote-currency / denominator / exchange / coin / spot-perp
+        //   switch the stamp changes → the fast path misses once and every
+        //   brick recomputes from the new data (the «линии индикаторные
+        //   старые, особенно якорные» bug).
         if (!isTimerBased && this._computed && !this._computed._anchorPending &&
+            (!manager || !this._computed._mkt || this._computed._mkt === manager._marketStamp) &&
             this._computed.count === count &&
             this._computeVersion === version &&
             this._computeMutation === mutation) {
             // Check anchor data version too (for MTF indicators)
             if (this.anchorTimeframe && this.anchorTimeframe !== 'chart') {
                 const anchorStore = manager?.multiTf?.getStore(this.anchorTimeframe);
-                const anchorVer = anchorStore ? `${anchorStore.size}:${anchorStore.firstX}:${anchorStore.lastX}` : '0';
+                // V187-market-stamp: include the store's symbol identity —
+                //   different markets share the same UTC time grid, so
+                //   size:firstX:lastX alone can collide across a switch and
+                //   serve the PREVIOUS instrument's anchored line.
+                const anchorVer = anchorStore ? `${anchorStore.symbol || ''}|${anchorStore.size}:${anchorStore.firstX}:${anchorStore.lastX}` : '0';
                 if (this._computeAnchorVer === anchorVer) {
                     // Everything matches — return cached result, skip all computation
                     return this._computed;
@@ -20713,7 +20757,8 @@ class IndicatorBrick extends IndicatorBase {
             // used by both canReuse check (when anchor data unavailable) and
             // by the success path (to tag the result).
             const _anchorStore = manager?.multiTf?.getStore(this.anchorTimeframe);
-            const anchorVer = _anchorStore ? `${_anchorStore.size}:${_anchorStore.firstX}:${_anchorStore.lastX}` : '0';
+            // V187-market-stamp: symbol identity included (see fast-path note)
+            const anchorVer = _anchorStore ? `${_anchorStore.symbol || ''}|${_anchorStore.size}:${_anchorStore.firstX}:${_anchorStore.lastX}` : '0';
             if (__anchorDbg && !this._anchorGetLogged) {
                 devLog('[anchor-TF]', this.id, '_anchorTfGet returned', {
                     tf: this.anchorTimeframe,
@@ -20767,6 +20812,7 @@ class IndicatorBrick extends IndicatorBase {
                     _anchorTf: this.anchorTimeframe,
                     _anchorPending: true,
                     _cachedDsVersion: dsVersion,
+                    _mkt: manager?._marketStamp || '',
                 };
                 for (const out of outs) {
                     if (out.type === 'band' || out.type === 'cloud') continue;
@@ -20863,6 +20909,9 @@ class IndicatorBrick extends IndicatorBase {
                         // FIX V49n-anchor-reuse: save anchor store version so
                         // canReuse detects pagination changes.
                         anchorResult._cachedAnchorVer = anchorVer || '0';
+                        // V187-market-stamp: tag the result so the fast path
+                        //   can detect a result computed for another market.
+                        anchorResult._mkt = manager?._marketStamp || '';
                         this._computed = anchorResult;
                         return anchorResult;
                     }
@@ -35499,7 +35548,13 @@ class VolumeProfileRenderer {
         // V55-vp-logscale: include isLog in the cache key so switching Y-scale
         //   mode (linear ↔ log) invalidates the cache and re-accumulates with
         //   the correct overlap weighting.
-        const cacheKey = `${yMin.toFixed(2)}:${yMax.toFixed(2)}:${nodeCount}:${count}:${isLog ? 1 : 0}`;
+        // V186 FIX: the key had NO data identity — after a symbol / quote-currency
+        //   (ratio legs) switch with a similar Y range and equal count, the model
+        //   cache kept serving the PREVIOUS instrument's histogram/POC.
+        //   First+last close fingerprint invalidates it on any instrument change.
+        const _vpFpA = priceSeries.data?.[0] ?? 0;
+        const _vpFpB = priceSeries.data?.[count - 1] ?? 0;
+        const cacheKey = `${yMin.toFixed(2)}:${yMax.toFixed(2)}:${nodeCount}:${count}:${isLog ? 1 : 0}:${_vpFpA}:${_vpFpB}`;
         if (VolumeProfileRenderer._vpModelCacheKey === cacheKey && VolumeProfileRenderer._vpModelCache) {
             return VolumeProfileRenderer._vpModelCache;
         }
@@ -47208,6 +47263,58 @@ CE.registerModule('ce-api-and-nav', ['ce-overlay-history-and-manager', 'ce-data-
 
 'use strict';
 
+// ═══ V189: data-anchored in-progress points ═══════════════════════════════
+// Frozen (committed-but-not-finalized) tool points used to live only in
+// PIXEL coords: a scale change mid-placement (wheel zoom / pan / autoscale)
+// left them at the old screen position — visually detached from the price
+// they were placed on («точки не привязаны к y координатам, а к скрин
+// спейсу») — and the final px→data conversion at completion then produced
+// WRONG values (whatever the stale screen position mapped to under the new
+// scale). Fix: every frozen point ALSO carries a data snapshot (dx/dy)
+// taken at freeze time; each preview render re-projects the frozen points
+// from that snapshot through the CURRENT scale — the same trick the ruler
+// preview always used (it stores px/py AND x/y and re-projects every
+// render, so the ruler stayed anchored on pan/zoom).
+function _toolDataSnapshot(api, panelId, px, py) {
+    try {
+        const sc = api && api.scaleCache;
+        const yS = sc && sc.valid ? sc.yScales[panelId] : null;
+        if (sc && yS && sc.xScale) {
+            const dx = sc.xScale.pixToVal(px), dy = yS.pixToVal(py);
+            if (isFinite(dx) && isFinite(dy)) return { dx, dy };
+        }
+    } catch (e) { /* scale not ready — pixel-only point */ }
+    return {};
+}
+/** Re-derive plain frozen points ({x,y,dx,dy}) from their data snapshot. */
+function _toolReanchorPts(api, panelId, pts) {
+    try {
+        const sc = api && api.scaleCache;
+        const yS = sc && sc.valid ? sc.yScales[panelId] : null;
+        if (!sc || !yS || !sc.xScale) return;
+        for (const p of pts) {
+            if (p && isFinite(p.dx) && isFinite(p.dy)) {
+                p.x = sc.xScale.valToPix(p.dx);
+                p.y = yS.valToPix(p.dy);
+            }
+        }
+    } catch (e) { /* ignore — next render retries */ }
+}
+/** Same for AnchorPoint arrays — frozen only (bound ones track the cursor). */
+function _toolReanchorAnchors(api, panelId, anchors) {
+    try {
+        const sc = api && api.scaleCache;
+        const yS = sc && sc.valid ? sc.yScales[panelId] : null;
+        if (!sc || !yS || !sc.xScale) return;
+        for (const a of anchors) {
+            if (a && a.isSet && a.isSet() && !a.isBound() && isFinite(a.dx) && isFinite(a.dy)) {
+                a.x = sc.xScale.valToPix(a.dx);
+                a.y = yS.valToPix(a.dy);
+            }
+        }
+    } catch (e) { /* ignore — next render retries */ }
+}
+
 class Tool {
     constructor() {
         this.anchors    = [];     // AnchorPoint[]
@@ -47848,6 +47955,13 @@ class ToolBase extends Tool {
         }
 
         // Стандартный путь: просто commitPoint (продвигает anchor index)
+        // V189: freeze this point in DATA coords too (alongside its pixels) —
+        //   renderPreview re-projects frozen anchors from the snapshot when
+        //   the scale changes mid-placement, so the completed object gets
+        //   the price/time the user actually placed instead of whatever the
+        //   stale screen position maps to under the new scale.
+        const _curA = (Array.isArray(this._spec.anchors) && this.anchors[this._commitIdx]) || null;
+        if (_curA && _curA.isSet()) Object.assign(_curA, _toolDataSnapshot(api, this._panelId, _curA.x, _curA.y));
         this.commitPoint();
     }
 
@@ -47968,7 +48082,10 @@ class ToolBase extends Tool {
             }
         }
         const cur = this._vertices[this._vertices.length - 1];
-        if (cur) { cur.unbind(); cur.x = px.x; cur.y = px.y; }
+        if (cur) { cur.unbind(); cur.x = px.x; cur.y = px.y;
+            // V189: data snapshot — the preview re-anchors this frozen vertex
+            //   from it when the scale changes before the polygon is closed.
+            Object.assign(cur, _toolDataSnapshot(api, this._panelId, px.x, px.y)); }
         this._addVertex();
         api.dirty.set(DirtyFlags.OVERLAY);
         api.requestRender();
@@ -48141,6 +48258,14 @@ class ToolBase extends Tool {
         if (Array.isArray(this._spec.anchors) && this._spec.anchors.length >= 2) {
             if (!this.p1.isSet()) return;
         }
+
+        // V189: re-anchor frozen points to the CURRENT scale before anything
+        //   reads their pixels (zoom/pan/autoscale mid-placement must move
+        //   already-placed points with their price/time, not leave them in
+        //   screen space). Bound anchors track the cursor and are skipped;
+        //   polygon _vertices are AnchorPoints — the same helper fits.
+        _toolReanchorAnchors(api, this._panelId, this.anchors);
+        _toolReanchorAnchors(api, this._panelId, this._vertices);
 
         ctx.save();
         ctx.strokeStyle = TOOL_LINE_COLOR;
@@ -48671,7 +48796,7 @@ class Impulse5Tool extends Tool {
         // Registry compat: TrendLineTool._drawingLockedPanel checks t._spec.impulse5
         //   → the drawing panel locks after the FIRST committed point.
         this._spec = { impulse5: true };
-        this._vertices = [];   // committed points, PIXEL coords [{x,y}, …]
+        this._vertices = [];   // committed points, PIXEL coords + data snapshot [{x,y,dx,dy}, …]
         this._lingerPts = null;   // V155: data-coords snapshot of committed points (linger zone)
     }
 
@@ -48713,7 +48838,11 @@ class Impulse5Tool extends Tool {
         this._api = api;
         this._panelId = this._panelId || 'main';
         if (!this._active) return;
-        this._vertices.push({ x: px.x, y: px.y });
+        // V189: keep a data snapshot alongside the pixels — the preview
+        //   re-projects committed points through the CURRENT scale, so a
+        //   zoom/pan mid-placement moves them with their price/time and the
+        //   completion below converts the RIGHT values.
+        this._vertices.push({ x: px.x, y: px.y, ..._toolDataSnapshot(api, this._panelId, px.x, px.y) });
         if (this._vertices.length >= 6) {
             this._complete(api);      // P5 placed — impulse is complete
             return;
@@ -48786,7 +48915,9 @@ class Impulse5Tool extends Tool {
         const yS = sc.yScales[this._panelId];
         const pts = this._vertices
             .filter(v => isFinite(v.x) && isFinite(v.y))
-            .map(v => ({ x: sc.xScale.pixToVal(v.x), y: yS.pixToVal(v.y) }));
+            .map(v => (isFinite(v.dx) && isFinite(v.dy))
+                ? { x: v.dx, y: v.dy }   // V189: exact placed values, no fp drift
+                : { x: sc.xScale.pixToVal(v.x), y: yS.pixToVal(v.y) });
         this.cancelDraw();
         const overlay = api.overlay;
         if (overlay && pts.length >= 2) {
@@ -48830,6 +48961,10 @@ class Impulse5Tool extends Tool {
         const sc = api.scaleCache;
         if (!sc || !sc.valid || !sc.xScale || !sc.yScales[this._panelId]) return;
         const xScale = sc.xScale, yS = sc.yScales[this._panelId];
+        // V189: re-anchor committed points to the CURRENT scale (data
+        //   snapshots) before reading their pixels — placed points follow
+        //   their price/time on zoom/pan instead of staying in screen space.
+        _toolReanchorPts(api, this._panelId, this._vertices);
         const pb = _toolPanelBounds(layout, this._panelId);
         const ptsPx = this._vertices.map(v => ({ px: v.x, py: v.y }));
         const ch = api.crosshair;
@@ -48938,7 +49073,7 @@ class ElliottPatternTool extends Tool {
         // Registry compat: TrendLineTool._drawingLockedPanel checks
         //   t._spec.impulse5 || t._spec.elliott → locks after the FIRST point.
         this._spec = { elliott: true, pattern: this._patternKey };
-        this._vertices = [];      // committed points, PIXEL coords [{x,y}, …]
+        this._vertices = [];      // committed points, PIXEL coords + data snapshot [{x,y,dx,dy}, …]
         this._lingerPts = null;   // V155-style linger zone snapshot (data coords)
     }
 
@@ -48978,7 +49113,8 @@ class ElliottPatternTool extends Tool {
         this._api = api;
         this._panelId = this._panelId || 'main';
         if (!this._active) return;
-        this._vertices.push({ x: px.x, y: px.y });
+        // V189: data snapshot alongside pixels (see Impulse5Tool.onCommit).
+        this._vertices.push({ x: px.x, y: px.y, ..._toolDataSnapshot(api, this._panelId, px.x, px.y) });
         if (this._vertices.length >= this.spec.totalPts) {
             this._complete(api);
             return;
@@ -49044,7 +49180,9 @@ class ElliottPatternTool extends Tool {
         const yS = sc.yScales[this._panelId];
         const pts = this._vertices
             .filter(v => isFinite(v.x) && isFinite(v.y))
-            .map(v => ({ x: sc.xScale.pixToVal(v.x), y: yS.pixToVal(v.y) }));
+            .map(v => (isFinite(v.dx) && isFinite(v.dy))
+                ? { x: v.dx, y: v.dy }   // V189: exact placed values, no fp drift
+                : { x: sc.xScale.pixToVal(v.x), y: yS.pixToVal(v.y) });
         this.cancelDraw();
         const overlay = api.overlay;
         if (overlay && pts.length >= 2) {
@@ -49087,6 +49225,8 @@ class ElliottPatternTool extends Tool {
         const sc = api.scaleCache;
         if (!sc || !sc.valid || !sc.xScale || !sc.yScales[this._panelId]) return;
         const xScale = sc.xScale, yS = sc.yScales[this._panelId];
+        // V189: re-anchor committed points to the CURRENT scale (see Impulse5Tool).
+        _toolReanchorPts(api, this._panelId, this._vertices);
         const pb = _toolPanelBounds(layout, this._panelId);
         const spec = this.spec;
         const ptsPx = this._vertices.map(v => ({ px: v.x, py: v.y }));
@@ -62100,6 +62240,43 @@ class RatioAdapter extends DataSourceAdapter {
         //   optimistically with cached denom + freshly fetched num.
         this._denCache = new Map();
         this._denCacheTtl = 60000; // 60s — stale data is fine for optimistic display
+        // V188-foreign-retry: bounded retry counter for the delayed self-repair
+        //   in _scheduleForeignDataRetry (fresh adapter per switch → max 2
+        //   attempts per user action).
+        this._foreignRetryCount = 0;
+    }
+
+    /** V188-foreign-retry: ONE delayed re-fetch when this load failed or came
+     *  back empty while the chart's DataStore still holds a DIFFERENT
+     *  instrument's candles. The canonical case is the boot restore of a
+     *  quote-currency (ratio) session: the bootstrap mono USDT chart loaded
+     *  first, the composite load then failed through a rate-limited proxy
+     *  chain — the label kept showing the correct pair («SOL/ETH») while the
+     *  candles stayed USDT-priced, and nothing ever retried («закрываю
+     *  страницу с quote currency не usdt… открываю — пара правильная, график
+     *  usdt»). Two bounded attempts (3 s, then 10 s) ride out transient
+     *  rate-limit windows — a chain that failed FAST (hard block / tight
+     *  quota) can burn attempt #1 before connectivity returns, so attempt #2
+     *  uses a wider window; the counter keeps it from looping forever.
+     *  Skips silently when the generation went stale or the store already
+     *  shows our composite (someone else fixed it in the meantime). */
+    _scheduleForeignDataRetry(gen) {
+        if (gen !== undefined && gen !== this._switchGen) return;
+        const attempt = this._foreignRetryCount || 0;
+        if (attempt >= 2) return;
+        this._foreignRetryCount = attempt + 1;
+        const delay = attempt === 0 ? 3000 : 10000;
+        setTimeout(() => {
+            if (gen !== undefined && gen !== this._switchGen) return;
+            let dsSym = null;
+            try {
+                const engine = this.chartApi?._ctx?.engine || window._chart?.engine;
+                dsSym = engine?.dataContext?.dataStore?.symbol ?? null;
+            } catch (_) {}
+            if (dsSym === this.symbol) return; // already correct — nothing to repair
+            try { devLog('[V188-ratio] composite label over foreign data — retry', { store: dsSym, want: this.symbol, attempt: attempt + 1 }); } catch (_) {}
+            this._fetchAndStream(this._switchGen).catch(() => {});
+        }, delay);
     }
 
     /** Build a Binance kline URL for a given symbol.
@@ -62502,6 +62679,10 @@ class RatioAdapter extends DataSourceAdapter {
             this._denPerp = denRes.usedPerp;
             if (numCandles.length === 0 || denCandles.length === 0) {
                 this._updateStatus('No data for one or both symbols');
+                // V188-foreign-retry: the store may still hold the boot mono
+                //   chart under our composite label — schedule the one-shot
+                //   self-repair instead of staying wrong forever.
+                this._scheduleForeignDataRetry(gen);
                 return;
             }
 
@@ -62521,6 +62702,8 @@ class RatioAdapter extends DataSourceAdapter {
 
             if (ratioCandles.length === 0) {
                 this._updateStatus('No overlapping candles');
+                // V188-foreign-retry: same self-repair as the empty-fetch path.
+                this._scheduleForeignDataRetry(gen);
                 return;
             }
 
@@ -62554,6 +62737,21 @@ class RatioAdapter extends DataSourceAdapter {
             this._updateStatus('Ratio fetch failed');
             // V49n-fix: no toast — the error is usually transient (CORS proxy
             //   retrying). The chart will retry on the next swipe/pick.
+            // V186: one visible toast per adapter instance — a silent catch
+            //   used to leave the PREVIOUS instrument's candles (and indicator
+            //   values) on screen under the NEW pair's label, which read as
+            //   «индикаторы не пересчитались». A fresh adapter is created per
+            //   switch, so this fires at most once per user action.
+            if (!this._fetchErrToasted) {
+                this._fetchErrToasted = true;
+                try { if (typeof showToast === 'function') showToast('Ratio load failed — showing previous data'); } catch (_) {}
+            }
+            // V188-foreign-retry: on the boot restore path "previous data" is
+            //   the bootstrap mono USDT chart sitting under OUR composite
+            //   label («пара правильная, график usdt») — nothing else will
+            //   ever fix it until the next user action. Retry ONCE after a
+            //   short delay to ride out the transient rate-limit window.
+            this._scheduleForeignDataRetry(gen);
         } finally {
             if (gen === this._switchGen) this._loading = false;
             const api = this.chartApi || window._chart?.api;
@@ -63149,17 +63347,24 @@ class CoinListService {
         const cacheKey = exchange || 'all';
         if (!force && this._cache && this._cacheKey === cacheKey && Date.now() - this._cacheTime < this._ttl) return this._cache;
         if (this._fetching && this._fetchingKey === cacheKey) return this._fetching;
+        // V186 FIX: capture OUR promise — the unconditional finally used to
+        //   null the dedup slot while a NEWER different-exchange fetch was
+        //   still in flight (older call resolving later), allowing duplicate
+        //   network fetches for the same exchange (rate-limit burns, latency).
+        const p = this._fetchAll(exchange);
         this._fetchingKey = cacheKey;
-        this._fetching = this._fetchAll(exchange);
+        this._fetching = p;
         try {
-            const result = await this._fetching;
+            const result = await p;
             this._cache = result;
             this._cacheKey = cacheKey;
             this._cacheTime = Date.now();
             return result;
         } finally {
-            this._fetching = null;
-            this._fetchingKey = null;
+            if (this._fetching === p) {
+                this._fetching = null;
+                this._fetchingKey = null;
+            }
         }
     }
 
@@ -66437,6 +66642,22 @@ class DataSourceOrchestrator {
             if (this.srcMode === 'ratio' && value?.numerator) {
                 this._preRatioSymbol = value.numerator;
             }
+            // V187-denominator-switch: the moment the numerator/denominator
+            //   config changes, drop the anchor-TF stores + invalidate the
+            //   indicator compute caches — the old pair's anchored indicator
+            //   lines (EMA-1d etc.) must never render over the new pair, not
+            //   even for the few frames until the accompanying source:switch
+            //   runs its own clearAnchorData. Covers «когда переключаю
+            //   делитель на графике usdt на ETH, якорные линии показывают
+            //   для другого делителя» + «линии индикаторные могут быть
+            //   старые, особенно якорные».
+            try {
+                const engine = this.api?._ctx?.engine || window._chart?.engine;
+                const im = engine?.indicatorManager;
+                if (im && typeof im.clearAnchorData === 'function') {
+                    im.clearAnchorData();
+                }
+            } catch (_) { /* best-effort */ }
             // V121-anchor-fix: when already in ratio mode, DON'T call
             //   adapter.switchAsset here. The accompanying source:switch
             //   event will create a fresh adapter with the new ratioConfig.
@@ -66467,8 +66688,16 @@ class DataSourceOrchestrator {
             if (this.srcMode === 'bybit') this.bybitCategory = value ? 'linear' : 'spot';
             // Forward to the active adapter (BinanceAdapter overrides
             // switchAsset to swap endpoints). Other adapters ignore it.
+            // V188-ratio-noisPerp: EXCEPT ratio adapters — their perp flags
+            //   (numeratorPerp/denominatorPerp) are baked in at construction
+            //   from ratioConfig, and RatioAdapter.switchAsset doesn't read
+            //   the isPerp key at all: the call only bumped _switchGen
+            //   (aborting the in-flight composite load) and started an
+            //   identical reload. During a boot restore this raced the
+            //   initial load as a full duplicate (three loads total — see
+            //   V188-ratio-restore-fixup-only).
             const adapter = this._getActiveAdapter();
-            if (adapter) {
+            if (adapter && this.srcMode !== 'ratio') {
                 await adapter.switchAsset({ isPerp: !!value });
             }
             // V124-fix(stale-anchor): spot ↔ perp is a MARKET change with the
@@ -67246,19 +67475,36 @@ class SourceUIController {
                         this.bus.emit('source:param', { param: 'isPerp', value: isPerp }, 'CoinPicker');
                         this.bus.emit('source:param', { param: 'symbol', value: symbol }, 'CoinPicker');
                     } else {
+                        // V186 FIX (cross-exchange pick applied 5 s late or never):
+                        //   TypedEventBus.emit is SYNCHRONOUS and
+                        //   DataSourceOrchestrator._onSwitch fires
+                        //   'source:connected' as its LAST statement — INSIDE the
+                        //   'source:switch' emit below. The listener used to be
+                        //   registered AFTER that emit, so it never saw the
+                        //   event; isPerp+symbol were applied only by the 5 s
+                        //   fallback while the new adapter spent those 5 s
+                        //   loading the OLD symbol («выбрал другую биржу и
+                        //   монету — график не меняется»), and the fallback
+                        //   could also revert a newer pick. Now: listener
+                        //   registered BEFORE the emit, params apply right after
+                        //   connect (the adapter is _active by then), and a
+                        //   per-controller pick EPOCH makes stale fallbacks no-op.
+                        const myPick = (this._pickEpoch = (this._pickEpoch || 0) + 1);
                         let done = false;
                         const applyParams = () => {
-                            if (done) return;
+                            if (done || myPick !== this._pickEpoch) return;
                             done = true;
                             this.bus.emit('source:param', { param: 'isPerp', value: isPerp }, 'CoinPicker');
                             this.bus.emit('source:param', { param: 'symbol', value: symbol }, 'CoinPicker');
                         };
-                        this.bus.emit('source:switch', { src }, 'CoinPicker');
                         const unsub = this.bus.on('source:connected', () => {
-                            unsub();
-                            setTimeout(applyParams, 300);
+                            // Defer unsub out of the synchronous dispatch —
+                            //   unsubscribing mid-iteration can skip the next listener.
+                            setTimeout(() => { try { unsub(); } catch (_) {} }, 0);
+                            setTimeout(applyParams, 0);
                         });
-                        setTimeout(() => { unsub(); applyParams(); }, 5000);
+                        this.bus.emit('source:switch', { src }, 'CoinPicker');
+                        setTimeout(() => { try { unsub(); } catch (_) {} applyParams(); }, 5000);
                     }
                 });
                 // V50: expose picker instance globally so _wireCoinInfoTagClicks
@@ -76057,6 +76303,40 @@ const _cpLoadedLogos = new Set();
 
 const CP_COINS_LS_TTL = 3600000;  // V50: 1 hour localStorage cache for coin list
 
+// V186 stale-while-revalidate for the picker coin lists: switching to an
+//   exchange whose cached list had EXPIRED used to block the UI on the full
+//   network fetch (10 s timeout + up to 3 CORS-proxy fallbacks, plus
+//   Binance's serialized listing-date enrichment) — «меняю биржу, а она не
+//   грузится долго». Now an expired-but-present copy paints INSTANTLY (a
+//   coin SET is days-stable; prices refresh via the 15 s ticker force
+//   refresh) while ONE deduplicated background fetch refreshes the memo map,
+//   IndexedDB and the single slot.
+const CP_COINS_SWR_MAX_TTL = 7 * 24 * 3600000;  // serve stale lists up to 7 days old
+const _cpRevalidating = new Set();
+function _cpScheduleCoinsRevalidate(exchange) {
+    if (_cpRevalidating.has(exchange)) return;
+    _cpRevalidating.add(exchange);
+    setTimeout(() => {
+        _coinListService.fetch(exchange, true)
+            .then(coins => {
+                if (!coins || !coins.length) return;
+                _cpCoinsByExchange.set(exchange, { coins, ts: Date.now() });
+                try {
+                    const j = JSON.stringify({ coins, ts: Date.now() });
+                    if (j.length <= 1500000) _idbCache.set('cp.coins.' + exchange, j);
+                } catch (e) { /* quota — silent */ }
+                // Publish only if the single slot still points at OUR exchange
+                // (overlapping fetches must not poison it — V186).
+                if (_cpCachedExchange === exchange) {
+                    _cpCachedCoins = coins;
+                    if (typeof window !== 'undefined') window._cpCachedCoins = coins;
+                }
+            })
+            .catch(() => {})
+            .finally(() => { _cpRevalidating.delete(exchange); });
+    }, 50);
+}
+
 function _cpPreloadCoins(exchange, opts) {
     // V159 quiet mode: background preloaders pass { quiet:true } so the call
     //   NEVER touches the single-slot cache (_cpCachedCoins / _cpCachedExchange
@@ -76092,6 +76372,19 @@ function _cpPreloadCoins(exchange, opts) {
                 }
                 return Promise.resolve(parsed.coins);
             }
+            // V186 SWR: expired IDB row (>1 h) — paint it now, refresh in background.
+            else if (parsed && parsed.ts && Date.now() - parsed.ts < CP_COINS_SWR_MAX_TTL && Array.isArray(parsed.coins) && parsed.coins.length > 0) {
+                if (!quiet) {
+                    _cpCachedCoins = parsed.coins;
+                    _cpCachedExchange = exchange;
+                    if (typeof window !== 'undefined') {
+                        window._cpCachedCoins = parsed.coins;
+                        window._cpCachedExchange = exchange;
+                    }
+                }
+                _cpScheduleCoinsRevalidate(exchange);
+                return Promise.resolve(parsed.coins);
+            }
         }
     } catch (e) { /* corrupt cache */ }
     // V159: per-exchange memory map (warm from the boot preload) — 5 min TTL.
@@ -76099,8 +76392,19 @@ function _cpPreloadCoins(exchange, opts) {
     // is at most 5 minutes old, an LS row can be up to an hour old.
     try {
         const memo = _cpCoinsByExchange.get(exchange);
-        if (memo && Array.isArray(memo.coins) && memo.coins.length > 0 &&
-            Date.now() - memo.ts < CP_PRELOAD_MEM_TTL) {
+        if (memo && Array.isArray(memo.coins) && memo.coins.length > 0) {
+            if (Date.now() - memo.ts < CP_PRELOAD_MEM_TTL) {
+                if (!quiet) {
+                    _cpCachedCoins = memo.coins;
+                    _cpCachedExchange = exchange;
+                    if (typeof window !== 'undefined') {
+                        window._cpCachedCoins = memo.coins;
+                        window._cpCachedExchange = exchange;
+                    }
+                }
+                return Promise.resolve(memo.coins);
+            }
+            // V186 SWR: expired memo (boot preload older than 5 min) — same deal.
             if (!quiet) {
                 _cpCachedCoins = memo.coins;
                 _cpCachedExchange = exchange;
@@ -76109,6 +76413,7 @@ function _cpPreloadCoins(exchange, opts) {
                     window._cpCachedExchange = exchange;
                 }
             }
+            _cpScheduleCoinsRevalidate(exchange);
             return Promise.resolve(memo.coins);
         }
     } catch (e) { /* fall through to network */ }
@@ -76121,7 +76426,13 @@ function _cpPreloadCoins(exchange, opts) {
     if (typeof window !== 'undefined') { if (!quiet) window._cpCachedExchange = exchange; }
     _cpCoinsPromise = _coinListService.fetch(exchange)
         .then(coins => {
-            if (!quiet) {
+            // V186 FIX: publish only if the single slot STILL points at our
+            //   exchange. Two overlapping fetches (user switch + boot preload
+            //   / force refresh) used to write the loser's coins under the
+            //   winner's exchange label — the fast path at the top of this
+            //   function then served the PREVIOUS exchange's list instantly,
+            //   even across picker reopen («список прошлой биржи»).
+            if (!quiet && _cpCachedExchange === exchange) {
                 _cpCachedCoins = coins;
                 if (typeof window !== 'undefined') window._cpCachedCoins = coins;
             }
@@ -76153,13 +76464,19 @@ function _cpForceRefresh(exchange) {
     if (typeof window !== 'undefined') window._cpCachedExchange = exchange;
     _cpCoinsPromise = _coinListService.fetch(exchange, true)
         .then(coins => {
-            _cpCachedCoins = coins;
-            // FIX: keep window._cpCachedCoins in sync — _cpPreloadCoins does
-            //   this but the previous _cpForceRefresh only updated the
-            //   closure variable. External code that reads
-            //   window._cpCachedCoins (e.g. SourceUIController._cycleSymbol)
-            //   would see stale data after a force-refresh.
-            if (typeof window !== 'undefined') window._cpCachedCoins = coins;
+            // V186 FIX: publish only if the slot still points at our exchange —
+            //   a slow refresh for the PREVIOUS exchange resolving after a
+            //   switch used to overwrite the new exchange's list (picker
+            //   _refreshTickers repaint + poisoned fast path).
+            if (_cpCachedExchange === exchange) {
+                _cpCachedCoins = coins;
+                // FIX: keep window._cpCachedCoins in sync — _cpPreloadCoins does
+                //   this but the previous _cpForceRefresh only updated the
+                //   closure variable. External code that reads
+                //   window._cpCachedCoins (e.g. SourceUIController._cycleSymbol)
+                //   would see stale data after a force-refresh.
+                if (typeof window !== 'undefined') window._cpCachedCoins = coins;
+            }
             return coins;
         })
         .catch(e => { console.warn('[CoinPicker] refresh failed:', e); _cpCoinsPromise = null; throw e; })
@@ -76208,11 +76525,29 @@ window._cpApplyQuoteCore = function (quote) {
             const preSrc = orch?._preRatioSource;
             const src = preSrc === 'bybit' ? 'bybit'
                       : preSrc === 'coinbase' ? 'coinbase'
-                      : (orch?.srcMode === 'bybit' ? 'bybit' : 'binance');
+                      : (orch?.srcMode === 'bybit' ? 'bybit'
+                      // V186: was missing — a quote reset while on a plain
+                      //   Coinbase chart (e.g. after a forceMono alert
+                      //   navigation kept the saved quote) switched the user
+                      //   to BINANCE instead.
+                      : orch?.srcMode === 'coinbase' ? 'coinbase' : 'binance');
             const sym = orch?._preRatioSymbol || num;
             ch.bus.emit('source:switch', { src }, 'QuoteCore');
             setTimeout(() => {
-                ch.bus.emit('source:param', { param: 'symbol', value: sym }, 'QuoteCore');
+                // V186 FIX: this delayed symbol param used to fire
+                //   unconditionally. (a) Leaving ratio already restores
+                //   _preRatioSymbol inside _onSwitch, so this re-applied the
+                //   SAME symbol and forced a full redundant reload
+                //   (switchAsset has no skip-if-same guard). (b) If the user
+                //   re-entered ratio mode within the 300 ms, it landed there
+                //   where RatioAdapter ignores symbol — orchestrator state/UI
+                //   diverged from the chart (documented hazard in _onParam).
+                try {
+                    const o = ch.orchestrator;
+                    if (!o || o.srcMode === 'ratio') return;
+                    if (o.srcMode === src && o.symbol === sym) return;
+                    ch.bus.emit('source:param', { param: 'symbol', value: sym }, 'QuoteCore');
+                } catch (e) {}
             }, 300);
         } else {
             const denom = quote + 'USDT';
@@ -76832,10 +77167,17 @@ class CoinPicker {
     }
 
     async _loadCoins() {
+        // V186 FIX: capture the requested exchange — applyExchange is
+        //   fire-and-forget, and a SLOWER fetch for the previous exchange
+        //   used to resolve after the newer one and repaint the list with
+        //   the PREVIOUS exchange's coins (no staleness check after the await).
+        const reqExch = this._exchange;
         this._listEl.innerHTML = '<div class="cp-loading">Loading...</div>';
         try {
-            // Use module-level cache — no races
             this._coins = await _cpPreloadCoins(this._exchange);
+            // V186: stale load — picker closed, or the user switched exchanges
+            //   while this fetch was in flight; drop it instead of rendering it.
+            if (!this._el || this._exchange !== reqExch) return;
             if (!this._coins || this._coins.length === 0) {
                 this._listEl.innerHTML = '<div class="cp-empty">No coins found. Check network / CORS.</div>';
                 return;
@@ -76850,7 +77192,11 @@ class CoinPicker {
             // the list at the currently-selected coin rather than the top.
             this._centerActiveRow();
         } catch (e) {
-            this._listEl.innerHTML = `<div class="cp-empty">Failed to load: ${esc(e.message || e)}</div>`;
+            // V186: a STALE load's error must not overwrite the newer
+            //   exchange's already-rendered list either.
+            if (this._el && this._exchange === reqExch) {
+                this._listEl.innerHTML = `<div class="cp-empty">Failed to load: ${esc(e.message || e)}</div>`;
+            }
         }
     }
 
@@ -76949,9 +77295,12 @@ class CoinPicker {
     async _refreshTickers() {
         if (!this._el || !_cpCachedCoins) return;
         if (this._tooltipEl || this._favMenuEl || this._sortMenuEl) return;
+        const reqExch = this._exchange;  // V186: the exchange can change during the fetch
         try {
-            const fresh = await _cpForceRefresh(this._exchange);
-            if (!fresh || !this._el) return;  // picker was closed during fetch
+            const fresh = await _cpForceRefresh(reqExch);
+            // V186: also drop the result if the user switched exchanges while
+            //   the refresh was in flight (it used to overwrite the new list).
+            if (!fresh || !this._el || this._exchange !== reqExch) return;
             this._coins = fresh;
             // Re-apply filters with preserveScroll=true so the user's scroll
             // position is kept. Sort order will re-evaluate against new prices,
@@ -78479,6 +78828,17 @@ class CoinPicker {
         if (!this._refDiffCache) this._refDiffCache = new Map();
         const cache = this._refDiffCache;
 
+        // V189-fix: the cache used to survive across computes FOREVER. The
+        //   resume branch below then skipped EVERY coin on a re-click — after
+        //   moving a marker in the TimeMarkerBrick (or changing the picker
+        //   interval) a fresh Compute silently replayed the PREVIOUS markers'
+        //   values («даже при новом compute он не обновляет ref% значения»).
+        //   Stamp the cache with its ref config; a different stamp means the
+        //   whole cache is stale → drop it and recompute every coin. Same
+        //   stamp (paused/aborted run, re-click) still resumes for free.
+        const refStamp = tf + '|' + ts1 + '|' + ts2;
+        if (this._refDiffStamp !== refStamp) cache.clear();
+
         // V108e: use updateBtn() helper instead of capturing btn as const —
         //   the helper re-queries the DOM on each call so it survives re-renders.
         {
@@ -78525,8 +78885,11 @@ class CoinPicker {
 
             const coin = coins[idx];
             const coinKey = coin.base + ':' + coin.quote;
-            // V108c: skip coins already cached (resume support)
-            if (cache.has(coinKey)) {
+            // V108c: skip coins already cached (resume support).
+            //   V189-fix: skip only SUCCESSFUL values — a cached null (failed
+            //   fetch / no market) is retried on every fresh compute click,
+            //   so re-pressing Compute can now fill previously missing coins.
+            if (cache.get(coinKey) != null) {
                 this._refComputeDone++;
                 if (!this._refComputePaused) updateBtn(`⏸ ${this._refComputeDone}/${total}`);
                 continue;
@@ -78564,8 +78927,12 @@ class CoinPicker {
             //   live during compute. When sortByRef is enabled, newly cached
             //   coins appear in the filtered list as they're computed.
             //   Throttle to every 10 coins to avoid excessive re-renders.
-            if (this._options.sortByRef && this._refComputeDone % 10 === 0) {
-                this._applyFilters();
+            //   V189: without sortByRef the badges also refresh live
+            //   (_renderVisible) — the values used to appear only after the
+            //   whole compute finished.
+            if (this._refComputeDone % 10 === 0) {
+                if (this._options.sortByRef) this._applyFilters();
+                else this._renderVisible();
             }
 
             // Rate limit: 120ms between coins (2 requests per coin = 240ms per coin)
@@ -78579,6 +78946,7 @@ class CoinPicker {
         this._refComputeAbort = false;
         this._refDiffCacheTs = Date.now();
         this._refDiffRefPoints = refPoints;
+        this._refDiffStamp = refStamp;   // V189: cache is valid for THIS ref config
 
         if (wasAborted) {
             updateBtn(`⚡ Resume (${this._refComputeDone}/${total})`);
@@ -79355,6 +79723,19 @@ const ChartStatePersistence = (() => {
                         if (state.source.preRatioSource) {
                             orch._preRatioSource = state.source.preRatioSource;
                         }
+                        // V188-ratio-restore-tf: land the saved timeframe on the
+                        //   orchestrator BEFORE the source:switch emit — _onSwitch's
+                        //   ratio branch builds the RatioAdapter with
+                        //   `this.timeframe`, so the INITIAL composite load already
+                        //   fetches the right tf. The old order kept the boot tf
+                        //   (4h) here and only corrected it in the delayed
+                        //   switchAsset below — a second FULL composite load that
+                        //   raced the first (and on a rate-limited proxy chain the
+                        //   loser's fetches were wasted / the final one failed,
+                        //   leaving the boot mono chart under the composite label).
+                        if (tf && orch.timeframe !== tf) {
+                            orch.timeframe = tf;
+                        }
                     }
 
                     // V119: for bybit, also set bybitCategory BEFORE source:switch
@@ -79371,19 +79752,55 @@ const ChartStatePersistence = (() => {
                     }
                     // Then emit source:param for symbol + timeframe
                     if (state.source.isPerp !== undefined) {
-                        bus.emit('source:param', { param: 'isPerp', value: !!state.source.isPerp }, 'StatePersistence');
+                        if (isRatio) {
+                            // V188-ratio-restore-noisPerp: the RatioAdapter got
+                            //   numeratorPerp/denominatorPerp baked in at
+                            //   construction (from the saved ratioConfig, via the
+                            //   numIsPerp/denIsPerp resolution in _onSwitch).
+                            //   Forwarding isPerp through source:param used to
+                            //   call adapter.switchAsset({ isPerp }) on it — a key
+                            //   RatioAdapter.switchAsset does NOT even read —
+                            //   whose ONLY real effect was bumping _switchGen
+                            //   (aborting the in-flight initial composite load)
+                            //   and starting an identical second load. Just set
+                            //   the orchestrator flag the save captured.
+                            orch.isPerp = !!state.source.isPerp;
+                        } else {
+                            bus.emit('source:param', { param: 'isPerp', value: !!state.source.isPerp }, 'StatePersistence');
+                        }
                     }
                     if (state.source.bybitCategory) {
                         bus.emit('source:param', { param: 'bybitCategory', value: state.source.bybitCategory }, 'StatePersistence');
                     }
                     if (isRatio && state.source.ratioConfig) {
                         bus.emit('source:param', { param: 'ratioConfig', value: state.source.ratioConfig }, 'StatePersistence');
-                        const adapter = orch._getActiveAdapter?.();
-                        if (adapter && typeof adapter.switchAsset === 'function') {
+                        // V188-ratio-restore-fixup-only: the unconditional delayed
+                        //   switchAsset was a THIRD full composite load racing the
+                        //   initial one (three concurrent loads on every ratio
+                        //   restore: connect + isPerp + this one; each _switchGen
+                        //   bump discarded the in-flight fetches mid-air — up to
+                        //   6 klines requests within ~1 s). Through the user's
+                        //   rate-limited CORS proxies that storm made the LAST
+                        //   load fail and left the bootstrap mono (USDT) candles
+                        //   under the composite label — «написано правильная пара
+                        //   с quote, но график usdt». The adapter is already
+                        //   constructed with the saved numerator/denominator/perp
+                        //   flags, and the saved tf landed on it pre-switch
+                        //   (V188-ratio-restore-tf) — only schedule a corrective
+                        //   switchAsset when it actually mismatched (legacy saves
+                        //   / partial restores).
+                        const _ra = orch._getActiveAdapter?.();
+                        const _rc = state.source.ratioConfig;
+                        const _raMatches = !_ra || (
+                            _ra.timeframe === tf
+                            && _ra.numerator === (_rc.numerator || '')
+                            && _ra.denominator === (_rc.denominator || '')
+                        );
+                        if (_ra && !_raMatches && typeof _ra.switchAsset === 'function') {
                             setTimeout(() => {
-                                adapter.switchAsset({
+                                _ra.switchAsset({
                                     timeframe: tf,
-                                    ratioConfig: state.source.ratioConfig,
+                                    ratioConfig: _rc,
                                 }).catch(e => console.warn('[StatePersistence] ratio adapter.switchAsset failed:', e?.message || e));
                             }, 50);
                         }
@@ -86547,6 +86964,7 @@ function _caOpenModal(obj, t, ctx, existing) {
 // isPerp comes from the persisted scan result (market flag of the coin's
 // display market); when absent (old persisted records) the chart's current
 // spot/perp mode is kept — only the symbol is switched.
+let _caOpenCoinEpoch = 0;  // V186: per-call epoch — a newer openCoinOnChart call must never be reverted by an older call's 5 s fallback timer.
 function openCoinOnChart(sym, isPerp, ex, forceMono) {
     try {
         const ch = window._chart;
@@ -86610,15 +87028,27 @@ function openCoinOnChart(sym, isPerp, ex, forceMono) {
 
         // 4b. Different exchange → source:switch, wait for the new adapter to
         // connect, then apply the params (the CoinPicker cross-exchange path).
+        // V186 FIX: same synchronous-bus trap as the CoinPicker path —
+        // 'source:connected' fires INSIDE the switch emit (as _onSwitch's last
+        // statement), so a listener registered after the emit never saw it and
+        // isPerp+symbol were applied only by the 5 s fallback while the new
+        // adapter loaded the OLD coin; a second navigation inside that window
+        // could also be reverted by the first call's stale timer. Listener
+        // before emit + immediate apply + epoch guard.
+        const myOpen = ++_caOpenCoinEpoch;
         let done = false;
         const applyOnce = () => {
-            if (done) return; done = true;
+            if (done || myOpen !== _caOpenCoinEpoch) return;
+            done = true;
             syncUi();
             emitParams();
             // V168: no success toast — the chart switching IS the feedback.
         };
+        const unsub = bus.on('source:connected', () => {
+            setTimeout(() => { try { unsub(); } catch (_) {} }, 0);  // defer: no mid-dispatch unsubscribe
+            setTimeout(applyOnce, 0);
+        });
         bus.emit('source:switch', { src: ex }, 'ScanStats');
-        const unsub = bus.on('source:connected', () => { try { unsub(); } catch (_) {} setTimeout(applyOnce, 300); });
         setTimeout(() => { try { unsub(); } catch (_) {} applyOnce(); }, 5000);
     } catch (e) { try { _toast('Open failed: ' + (e && e.message)); } catch (_) {} }
 }
