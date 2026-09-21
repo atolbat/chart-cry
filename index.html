@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Chart Engine v49p — series.js v6 foundation · V190 tap-to-select drawings + persistent fib level settings: overlay objects are no longer selected (and body-dragged away) on the touch that starts on them — a touch on an UNSELECTED drawing parks the hit and only a QUICK TAP (release within 300 ms / 15 px) selects it on release, while a drag beyond the 10 px pan slop re-classifies the gesture as a chart pan (mid-gesture dragstart → drag → dragend, identical to the plain pan recognizer; already-selected objects keep the immediate endpoint/vertex/body drag so moving a drawing still works, locks still protect), and fib tools (fib / fibtrend / fibexp / fib-auto) gained persistent settings: the Fib Settings modal lists every level with a visibility checkbox (hidden levels are neither drawn nor hit-tested), a per-level color picker and a delete button, an «Add level» row for custom ratios, and a «Save as defaults for future fibs» checkbox persisting the whole set (levels + colors + hidden map) to localStorage 'ce_fib_style_v1' — new fibs are committed with the saved level set and the placement preview honors it too, while already-saved fibs keep their own serialized style on reload · V189 ref% refresh + placement points anchored to price: the coin picker's «⚡ Compute» no longer replays the PREVIOUS markers' cached diffs (the ref cache was never invalidated — the resume branch skipped every coin after a marker move or interval change, so re-clicking Compute «не обновляет ref% значения»; the cache is now stamped with markers+interval and dropped when they change, failed/null coins are retried on re-click, and badges refresh live without sort mode), and in-progress tool points (trendline family / polygon / 5W impulse / ABC·tri·WXY) are data-anchored while placing: every frozen point carries a data snapshot and each preview render re-projects it through the CURRENT scale, so a zoom/pan/autoscale mid-placement moves already-placed points with their price/time instead of leaving them in screen space and committing wrong values (the ruler already worked this way) · V188 quote-currency restore repair: the ratio restore no longer fires THREE racing full composite loads (connect + isPerp switchAsset + delayed switchAsset — each gen bump aborted the in-flight fetches mid-air, up to 6 klines requests in ~1 s, and through the user's rate-limited CORS proxies the LAST load failed, leaving the bootstrap mono USDT chart under the correct composite label — «пара написана правильная, но график usdt»); the saved timeframe now lands on the orchestrator BEFORE the switch (the first load already fetches the right tf), isPerp no longer forwarded to ratio adapters (flags are baked in at construction), the delayed switchAsset is a mismatch-only fixup, and a failed/empty ratio load now retries ONCE after 3 s when the DataStore still holds a foreign instrument (self-repair instead of a stuck wrong chart) · V187 stale indicator lines fixed at the cache-key level: every indicator result carries a market stamp (DataStore symbol|tf + adapter symbol) and every reuse path refuses foreign stamps — the anchor-TF version key now includes the store’s symbol identity (different markets share the same UTC candle grid, so size:firstX:lastX alone collided across a switch and kept ANCHORED indicator lines on the previous instrument), the shared compute cache is market-keyed, and a ratio-config (denominator) change drops anchor data immediately · V186 switching fixes: indicators recompute after a quote-currency / symbol change (chained indicators' fast-path was keyed on constant version+mutation and froze on the previous instrument when the bar count matched; Volume Profile's model cache had no data identity), coin-picker exchange races fixed (a slower previous-exchange fetch no longer repaints the list, fetch results no longer published under the wrong exchange label, dedup slot no longer clobbered) + stale-while-revalidate so expired lists paint instantly, cross-exchange coin picks apply right after the adapter connects (the synchronous bus made the 'source:connected' listener miss its own event — picks waited on the 5 s fallback or never landed) · V185 alert-scale perf (the «hundreds of alerts lag» report): alert evaluation is ONE batched worker job per pass with a worker-side candle cache (was a sequential round-trip per alert per TF), background alerts staggered (each ≥24 s apart, oldest first, capped per pass — the open chart's alerts keep the 4 s cadence, «Check now» forces a full pass), per-frame hasFor is O(1) via a drawing index, alert persistence is debounced + flushed on pagehide (was a full multi-MB JSON.stringify + synchronous setItem on every trigger), object lookup is one Map per pass (was a fresh getAllObjects per alert) · V184 perf: debugLog gated + rAF-throttled (was per-object-per-frame 200-line innerHTML+reflow — the lag), settings poll hashes settings only, overlay resolve cached per alert tick · V183 alert list keeps its scroll on group expand/collapse; anchors now persist (bucket + global state) and swap per ticker — anchored lines no longer show the other divisor's levels or vanish after a reload · V182 alerts + scan detection computed in a Web Worker, Events tab (events → one click to the chart, day separators), alerts grouped by coin collapsed by default · V181 ratio-chart boot-guard (hlines with alerts no longer wiped on reload of a synthetic pair), working «Apply to future lines» (persisted), alert default = Both touch + cross, click an alert card → open its chart · V180 Elliott rule texts in English (violation list, OK chip, tool settings) + top-left rule panel dropped below the source label · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
+    <title>Chart Engine v49p — series.js v6 foundation · V198 range magnet covers EVERY drawing tool: single-point lines (hline/vline/hray/vray + the horizontal/vertical alias spellings TrendLineTool.setMode actually uses), the multi-vertex polygon (a tap inside the close-to-first-vertex radius still CLOSES the polygon — the close gesture wins over opening a new sweep, same 14 px condition as _polygonOnCommit) and the ruler (both measurement ends placed by sweeps; the 3-tap deactivation semantics untouched — a completed ruler is not “drawing” so its deactivation tap never opens a sweep); only FibAuto stays native (it is already a range tool — its own phases sweep an X-range and auto-find min/max with their own toggle, wrapping the magnet around it would double-derive its points and corrupt its min/max semantics); polarity (high↔low) alternates across every tool’s points exactly as before and resets when the tool completes/exits · V197 range magnet: a 3-state toggle next to the magnet (off → low first (L) → high first (H), persisted 'ce_rangemagnet') — multi-point tools (free/ray/fib/fibtrend/fibexp/zone/gridbot/5W/ABC/TRI/WXY) place each point with a two-tap X-RANGE sweep instead of a raw crosshair click: tap #1 drops a vertical range line (kept in DATA coords — pan/zoom mid-sweep stays glued to its candle), moving the pointer sweeps the second line (the crosshair's OWN vertical line — the same precision mechanism, but the horizontal line, its price label and the pointer-Y axis tag are hidden while sweeping) over an almost-transparent polarity-colored band with a LIVE extreme marker (dot + H/L price label on the range's high or low candle), and tap #2 commits the tool point AT that extreme (candle center + its high/low) — then the polarity FLIPS for the next point (high → low → high …) until the tool completes; sweeping empty space (no candle in range, e.g. the future) falls back to a normal pointer placement, Esc closes the active sweep, and single-point tools (hline/vline/hray/vray/fibauto), polygon and ruler keep the normal flow · V196 volume-profile draw-path optimization: the developing-POC line (on by default) ran a full 64-bin volume accumulation plus a full 64-bin running-POC argmax scan PER CANDLE PER FRAME (~128k iterations/frame on 1000 candles — the largest measured main-frame cost); it is now incremental — each candle adds volume only to its ~1-5 COVERED bins (the uniform bin grid makes the window directly computable, log-level logs are precomputed once per rebuild instead of 128k Math.log calls) and the running POC is maintained as a monotonic running max (volumes only grow, so a full rescan can never change the result — tie-breaking preserved bit-for-bit); computeModel no longer builds a throwaway Histogram per rebuild (its poc/va outputs were dead — poc read .midpoint off the scalar Histogram.poc() return, va stored the valueArea FUNCTION, and render() recomputes both indices from the level arrays itself) and its cache key is quantized to 1/8 of a bin so autoscale jitter between ticks no longer rebuilds the whole accumulation (sub-bin shift ≤ bin/8 — sub-pixel) · V195 overlay/crosshair draw-path optimization: the overlay's two per-frame caches (per-object resolve results + the BUILD_ANCHOR_CONTEXT anchor snapshot, an O(visible)×series scan feeding dynamic anchors like range/swing-high) were destroyed and rebuilt on EVERY overlay frame — the end-of-frame invalidateCtx() ran unconditionally and render() opened with the V103b full reset that threw away the resolve results the hover hit-test had built moments earlier in the SAME frame — so every crosshair move paid TWO resolve() passes per drawing plus a fresh anchor-context scan even though nothing the caches depend on had changed; invalidation is now event-driven and O(1): OverlayManager._checkScaleGen() keys the caches on Scale IDENTITY (RenderContext._frame builds a new Scale pair every main frame, so pan/zoom/data/layout changes always flip it; object/style/anchor mutations flip it via _dirty(), which every mutation path — settings modal, undo/redo, worker stateSync — already routes through), and updateHover() skips its O(objects) hit-test entirely when the pointer position, mutation revision and active tool are unchanged (the once-per-second countdown-pill tick at a static pointer used to run a full hit-test for nothing) and skips it outright when the pointer is off-plot — a live WS tick flipping the scale generation no longer pays a full hit-test for a cursor parked outside the chart; visibleCount dropped its per-frame Array.from allocation · V194 render-pipeline optimization (drawing charts &amp; candles): the developing-POC pass that ran on EVERY rendered frame was rewritten — it used to rebuild a 24-bin Histogram per frame with per-candle hist.add() plus a full 24-bin scan per candle for hist.poc() (O(visible×24) + several allocations on every frame, pan path included), and because Histogram.poc() returns a scalar while the code read «poc.midpoint» off it, it wrote NaN into every slot — the whole computation was dead weight AND the volumeHighMark POC tick marks never drew; the rewrite is an O(N) single pass with a running argmax (exact, tie-breaking identical, zero allocations, cached by data-version + visible window so Y-pans/re-renders skip it) and the POC marks now actually render when volumeHighMark is on and candles are wide enough; the candle-close countdown pill moved to the overlay canvas — its once-per-second text change used to fire markAllDirtyAndRender (a FULL grid+candles+indicators redraw 1-2×/s even on a completely idle chart), now only the cheap overlay layer repaints and a full relayout render happens only when the pill’s width actually changes; and no-op WS/REST ticks (payload value-identical to the stored candle) no longer bump the DataStore version — they used to invalidate every indicator’s compute cache and force a full recompute + redraw up to 5×/s in a quiet market · V193 z-score anomaly: configurable dot radius + RSI-style threshold lines — the anomaly dots the Z-Score panel draws above/below the threshold are no longer hard-coded 4 px (new 'Anomaly dot radius' setting, 0.5–12, default 4 = the old look; small 1–2 px dots keep dense charts readable), and the panel gained optional ±threshold reference lines in the RSI/MFI style (dashed red above / green below, on by default, un-checkable in settings → Reference overlays like RSI's 70/30) — implemented as a new BrickLevel valueParam/valueScale mechanism so the lines' Y value and their drawn labels ('+2.5' / '-4') track the Threshold param LIVE (change the threshold and both lines move with it, they can never go stale), and the panel auto-fit expands to keep visible threshold lines on-screen · V192 quote switches win the network + picker minicharts survive quote roundtrips: every source:switch / symbol / ratioConfig / timeframe / isPerp transition opens a 12 s switch window during which the background scanner workers (the 100-coin × TF auto-scan) and the alert background evaluations hold NEW kline fetches — the interactive quote-currency / coin load no longer queues behind dozens of rate-limited 1000-candle scan requests (418/429 storms measured live; «тупит и не обновляет индикаторные линии» was the switch starving), the RatioAdapter now stamps the chart DataStore with the tf CAPTURED at load start (a concurrent anchor-TF prefetch's temporary this.timeframe mutation could stamp 4h candles as '1d' — poisoning the market-stamp identity and the IndexedDB cache keys), the foreign-data self-repair keeps retrying every 20 s for ~2.5 minutes instead of giving up after two attempts (a failed composite load self-heals as soon as the network window opens), and the 5 s ratio poll reuses the previous denominator candles for 60 s (halves the constant poll traffic); minicharts: the V49n version-wipe (a relic from before the sparkline key carried the quote currency) is gone — ETH→USDT→ETH reopens the picker with INSTANT cached charts (was a full 26-request refetch, «миничарты перезагружаются заново»), and the open()-time stale-marking only fires when the chart window moved by more than a candle (live-tick jitter no longer schedules background refetches of every visible minichart) · V191 anchored lines survive coin switches + perp funding on spot: anchor-TF fetches no longer misread a transient network/proxy failure as "no history" — Binance/ByBit/Coinbase/Ratio fetchHistoryTf now DISTINGUISH failure (network error / HTTP 403·429·5xx → short 'error' retry) from a genuine empty history (HTTP 200 + [] → 60 s no-data), allSettled keeps one market's good data when the other leg fails, the first error retry waits 2.5 s instead of 15-30 s (one-off proxy hiccup self-heals invisibly), a late in-flight fetch of the PREVIOUS coin can no longer poison the new coin's error backoff (generation guard in the catch), and the funding/OI aux pipeline discards stale fetches across a coin switch (gen guard in _computeAuxSeries — the old coin's points no longer merge into the new chart and the failure backoff resets), so «меняю монету — якорные линии не отобразились, ухожу и возвращаюсь — на месте» is fixed at the fetch-identity level; the Funding Rate indicator also gained a perp fallback for spot charts — when Binance futures has no funding history for the coin, ByBit's linear funding history is fetched and shown (perp data on a spot chart, «данные с перпа, если есть») · V190 tap-to-select drawings + persistent fib level settings: overlay objects are no longer selected (and body-dragged away) on the touch that starts on them — a touch on an UNSELECTED drawing parks the hit and only a QUICK TAP (release within 300 ms / 15 px) selects it on release, while a drag beyond the 10 px pan slop re-classifies the gesture as a chart pan (mid-gesture dragstart → drag → dragend, identical to the plain pan recognizer; already-selected objects keep the immediate endpoint/vertex/body drag so moving a drawing still works, locks still protect), and fib tools (fib / fibtrend / fibexp / fib-auto) gained persistent settings: the Fib Settings modal lists every level with a visibility checkbox (hidden levels are neither drawn nor hit-tested), a per-level color picker and a delete button, an «Add level» row for custom ratios, and a «Save as defaults for future fibs» checkbox persisting the whole set (levels + colors + hidden map) to localStorage 'ce_fib_style_v1' — new fibs are committed with the saved level set and the placement preview honors it too, while already-saved fibs keep their own serialized style on reload · V189 ref% refresh + placement points anchored to price: the coin picker's «⚡ Compute» no longer replays the PREVIOUS markers' cached diffs (the ref cache was never invalidated — the resume branch skipped every coin after a marker move or interval change, so re-clicking Compute «не обновляет ref% значения»; the cache is now stamped with markers+interval and dropped when they change, failed/null coins are retried on re-click, and badges refresh live without sort mode), and in-progress tool points (trendline family / polygon / 5W impulse / ABC·tri·WXY) are data-anchored while placing: every frozen point carries a data snapshot and each preview render re-projects it through the CURRENT scale, so a zoom/pan/autoscale mid-placement moves already-placed points with their price/time instead of leaving them in screen space and committing wrong values (the ruler already worked this way) · V188 quote-currency restore repair: the ratio restore no longer fires THREE racing full composite loads (connect + isPerp switchAsset + delayed switchAsset — each gen bump aborted the in-flight fetches mid-air, up to 6 klines requests in ~1 s, and through the user's rate-limited CORS proxies the LAST load failed, leaving the bootstrap mono USDT chart under the correct composite label — «пара написана правильная, но график usdt»); the saved timeframe now lands on the orchestrator BEFORE the switch (the first load already fetches the right tf), isPerp no longer forwarded to ratio adapters (flags are baked in at construction), the delayed switchAsset is a mismatch-only fixup, and a failed/empty ratio load now retries ONCE after 3 s when the DataStore still holds a foreign instrument (self-repair instead of a stuck wrong chart) · V187 stale indicator lines fixed at the cache-key level: every indicator result carries a market stamp (DataStore symbol|tf + adapter symbol) and every reuse path refuses foreign stamps — the anchor-TF version key now includes the store’s symbol identity (different markets share the same UTC candle grid, so size:firstX:lastX alone collided across a switch and kept ANCHORED indicator lines on the previous instrument), the shared compute cache is market-keyed, and a ratio-config (denominator) change drops anchor data immediately · V186 switching fixes: indicators recompute after a quote-currency / symbol change (chained indicators' fast-path was keyed on constant version+mutation and froze on the previous instrument when the bar count matched; Volume Profile's model cache had no data identity), coin-picker exchange races fixed (a slower previous-exchange fetch no longer repaints the list, fetch results no longer published under the wrong exchange label, dedup slot no longer clobbered) + stale-while-revalidate so expired lists paint instantly, cross-exchange coin picks apply right after the adapter connects (the synchronous bus made the 'source:connected' listener miss its own event — picks waited on the 5 s fallback or never landed) · V185 alert-scale perf (the «hundreds of alerts lag» report): alert evaluation is ONE batched worker job per pass with a worker-side candle cache (was a sequential round-trip per alert per TF), background alerts staggered (each ≥24 s apart, oldest first, capped per pass — the open chart's alerts keep the 4 s cadence, «Check now» forces a full pass), per-frame hasFor is O(1) via a drawing index, alert persistence is debounced + flushed on pagehide (was a full multi-MB JSON.stringify + synchronous setItem on every trigger), object lookup is one Map per pass (was a fresh getAllObjects per alert) · V184 perf: debugLog gated + rAF-throttled (was per-object-per-frame 200-line innerHTML+reflow — the lag), settings poll hashes settings only, overlay resolve cached per alert tick · V183 alert list keeps its scroll on group expand/collapse; anchors now persist (bucket + global state) and swap per ticker — anchored lines no longer show the other divisor's levels or vanish after a reload · V182 alerts + scan detection computed in a Web Worker, Events tab (events → one click to the chart, day separators), alerts grouped by coin collapsed by default · V181 ratio-chart boot-guard (hlines with alerts no longer wiped on reload of a synthetic pair), working «Apply to future lines» (persisted), alert default = Both touch + cross, click an alert card → open its chart · V180 Elliott rule texts in English (violation list, OK chip, tool settings) + top-left rule panel dropped below the source label · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -12320,20 +12320,47 @@ class PanelLabelRenderer {
         // V51-countdown-color: 'green' or 'red' — colors the countdown pill
         //   by candle direction. null = default (accent blue).
         this._countdownColor   = null;
+        // V194-countdown-overlay: pill slot recorded by the main-canvas label
+        //   pass; the pill itself is PAINTED on the overlay canvas (see
+        //   renderCountdown) so its once-per-second text change no longer
+        //   forces a full main-canvas redraw.
+        this._countdownRects   = {};
     }
 
     /** V51-countdown-label: set the countdown text shown in the main panel sticker. */
     setCountdownText(text) {
         const changed = this._countdownText !== (text || '');
         this._countdownText = text || '';
-        // V51-countdown-render: trigger a re-render when text changes so the
-        //   countdown updates on canvas even without user interaction (streaming).
-        //   PanelLabelRenderer is drawn as part of MainRenderer.render(), which
-        //   is gated by dirty flags. Without this, the countdown text only
-        //   updates when the user pans/zooms (which sets dirty flags).
-        if (changed && this._api) {
-            try { this._api.markAllDirtyAndRender?.(); } catch (_) {}
+        if (!changed || !this._api) return;
+        // V51-countdown-render superseded by V194-countdown-overlay: the pill is
+        //   painted on the OVERLAY canvas now, so a text change only needs the
+        //   cheap overlay layer repainted — NOT a full main-canvas redraw
+        //   (grid + candles + indicators), which markAllDirtyAndRender caused
+        //   1-2×/s even on a completely idle chart. A full relayout render is
+        //   requested only when the pill's WIDTH actually changes (digit-count
+        //   change, % suffix appears/disappears): the main-canvas label pass
+        //   reserves the slot width and positions the sticker after it, so a
+        //   wider/narrower pill must go through the layout; everything else
+        //   repaints overlay-only.
+        let full = true;
+        const rect = this._countdownRects && this._countdownRects.main;
+        if (rect && rect.w > 0) {
+            try {
+                const mctx = this._measureCtx || (this._measureCtx = document.createElement('canvas').getContext('2d'));
+                const style = { ...PANEL_LABEL_DEFAULTS, ...((this._configs && this._configs.main && this._configs.main.style) || {}) };
+                mctx.font = style.stickerFont;
+                const w = mctx.measureText(this._countdownText).width + 6;
+                full = Math.abs(w - rect.w) > 2;
+            } catch (_) { full = true; }
         }
+        try {
+            if (full) {
+                this._api.markAllDirtyAndRender?.();
+            } else {
+                this._api.dirty.set(DirtyFlags.OVERLAY);
+                this._api.requestRender();
+            }
+        } catch (_) {}
     }
 
     /** V51-countdown-color: set countdown pill color ('green'|'red'|null). */
@@ -12458,6 +12485,7 @@ class PanelLabelRenderer {
         // V37: rebuild rect maps from scratch each frame.
         this._deleteBtnRects = {};
         this._labelRects = {};
+        this._countdownRects = {};   // V194-countdown-overlay
         for (const pId in layout.panels) {
             const panel = layout.panels[pId];
             if (panel.height <= 0) continue;
@@ -12723,42 +12751,33 @@ class PanelLabelRenderer {
             ctx.fillText(subtitle2, x + padX, contentTop + (subH || titleH) + 2);
         }
 
-        // V51-countdown-label: countdown pill — drawn AFTER subtitle (TF),
-        //   BEFORE sticker (connection). Color by candle direction (green/red)
-        //   to match the current candle's color, or accent blue if no color set.
+        // V51-countdown-label: countdown pill slot — drawn AFTER subtitle (TF),
+        //   BEFORE sticker (connection). V194-countdown-overlay: the pill is
+        //   PAINTED on the OVERLAY canvas (renderCountdown, called from the
+        //   overlay render stage) — only the SLOT is reserved/recorded here.
+        //   The countdown text changes once per second; previously every change
+        //   forced a full main-canvas redraw (grid + candles + indicators) via
+        //   markAllDirtyAndRender just to update this little pill — now those
+        //   are cheap overlay-only repaints, and a full relayout render happens
+        //   only when the pill's width actually changes (setCountdownText).
+        //   The layout reservation (contentW above) is UNCHANGED, so the
+        //   sticker / expose / eye button geometry stays identical.
         let countdownEndX = x + padX + contentW;
         if (countdown) {
             const cx = x + padX + titleW + (subtitle ? 6 + subW : 0) + 8;
             const cy = contentTop;
             const cw = countdownW + 6;
             const ch = lineH;
-            // V51-countdown-color: pick pill bg + text color by candle direction
-            const cc = this._countdownColor;
-            let pillBg, pillBorder, pillText;
-            if (cc === 'green') {
-                pillBg = 'rgba(63, 185, 80, 0.18)';
-                pillBorder = 'rgba(63, 185, 80, 0.4)';
-                pillText = '#3fb950';
-            } else if (cc === 'red') {
-                pillBg = 'rgba(248, 81, 73, 0.18)';
-                pillBorder = 'rgba(248, 81, 73, 0.4)';
-                pillText = '#f85149';
-            } else {
-                pillBg = 'rgba(88, 166, 255, 0.18)';
-                pillBorder = 'rgba(88, 166, 255, 0.4)';
-                pillText = '#58a6ff';
+            const prevRect = this._countdownRects[pId];
+            this._countdownRects[pId] = { x: cx, y: cy, w: cw, h: ch };
+            if (prevRect && (prevRect.x !== cx || prevRect.y !== cy || prevRect.h !== ch)) {
+                // Slot moved (panel layout change) — the overlay canvas still
+                // shows the pill at the OLD position. Stage 3 checks the dirty
+                // flags AFTER this main-canvas pass, so setting OVERLAY here
+                // repaints the overlay (and the pill at its new slot) in the
+                // SAME frame — no ghost pill.
+                try { this._api?.dirty?.set(DirtyFlags.OVERLAY); } catch (_) {}
             }
-            ctx.fillStyle = pillBg;
-            this._roundRect(ctx, cx, cy, cw, ch, 2);
-            ctx.fill();
-            ctx.strokeStyle = pillBorder;
-            ctx.lineWidth = 1;
-            this._roundRect(ctx, cx, cy, cw, ch, 2);
-            ctx.stroke();
-            ctx.font = style.stickerFont;
-            ctx.fillStyle = pillText;
-            ctx.textBaseline = 'top';
-            ctx.fillText(countdown, cx + 3, contentTop);
             countdownEndX = cx + cw;
         }
 
@@ -13234,6 +13253,51 @@ class PanelLabelRenderer {
         ctx.lineTo(x, y + r);
         ctx.arcTo(x, y, x + r, y, r);
         ctx.closePath();
+    }
+
+    /**
+     * V194-countdown-overlay: paint the candle-close countdown pill on the
+     * OVERLAY canvas. The slot geometry is recorded by _drawPanelLabel during
+     * the main-canvas label pass (_countdownRects['main']); both canvases share
+     * the same logical coordinate space and DPR transform, so the pill lands
+     * exactly where the V51 layout reserved it. Called from the overlay render
+     * stage AFTER tool previews — the pill keeps its "drawn last" visual weight.
+     * Colors replicate the V51-countdown-color mapping (green/red by candle
+     * direction, accent blue default).
+     */
+    renderCountdown(octx) {
+        const rect = this._countdownRects && this._countdownRects.main;
+        const text = this._countdownText;
+        if (!octx || !rect || !text) return;
+        const style = { ...PANEL_LABEL_DEFAULTS, ...((this._configs && this._configs.main && this._configs.main.style) || {}) };
+        const cc = this._countdownColor;
+        let pillBg, pillBorder, pillText;
+        if (cc === 'green') {
+            pillBg = 'rgba(63, 185, 80, 0.18)';
+            pillBorder = 'rgba(63, 185, 80, 0.4)';
+            pillText = '#3fb950';
+        } else if (cc === 'red') {
+            pillBg = 'rgba(248, 81, 73, 0.18)';
+            pillBorder = 'rgba(248, 81, 73, 0.4)';
+            pillText = '#f85149';
+        } else {
+            pillBg = 'rgba(88, 166, 255, 0.18)';
+            pillBorder = 'rgba(88, 166, 255, 0.4)';
+            pillText = '#58a6ff';
+        }
+        octx.font = style.stickerFont;
+        const cw = Math.max(6, octx.measureText(text).width + 6);
+        const ch = rect.h;
+        octx.fillStyle = pillBg;
+        this._roundRect(octx, rect.x, rect.y, cw, ch, 2);
+        octx.fill();
+        octx.strokeStyle = pillBorder;
+        octx.lineWidth = 1;
+        this._roundRect(octx, rect.x, rect.y, cw, ch, 2);
+        octx.stroke();
+        octx.fillStyle = pillText;
+        octx.textBaseline = 'top';
+        octx.fillText(text, rect.x + 3, rect.y);
     }
 }
 
@@ -14011,6 +14075,29 @@ class DataStore {
         const prevClose = lI > 0 ? this.getData('price', lI - 1) : this.getData('price', lI);
         const curClose  = dataObj.close  ?? dataObj.price ?? this.getData('price', lI);
 
+        // V194 noop-tick-skip: snapshot the slots this call may write, compare
+        //   after the writes. WS kline streams re-send the current candle 1-5×/s
+        //   and the REST poll fallback re-sends it every few seconds — when the
+        //   payload is identical to what's stored (quiet market), bumping
+        //   _version invalidates EVERY indicator's compute cache (computeAll
+        //   keys on the data version) and forces a full O(N) recompute + full
+        //   redraw for pixels that did not change. No delta → no version bump,
+        //   no recompute, and the caller skips the redraw.
+        const slots = {};
+        for (const id in this.seriesMap) {
+            const s = this.seriesMap[id];
+            if (!s) continue;
+            const f = { data: s.data ? s.data[wI] : null };
+            if (s.openData !== null) f.open = s.openData[wI];
+            if (s.highData !== null) f.high = s.highData[wI];
+            if (s.lowData  !== null) f.low  = s.lowData[wI];
+            if (s.pocData  !== null) f.poc  = s.pocData[wI];
+            slots[id] = f;
+        }
+        // NaN-safe inequality (Float64 slots hold numbers; NaN === NaN is false
+        // but a NaN→NaN rewrite is NOT a change).
+        const _neq = (a, b) => a !== b && !(Number.isNaN(a) && Number.isNaN(b));
+
         for (const id in this.seriesMap) {
             if (!this.seriesMap[id]) continue;
             const s = this.seriesMap[id];
@@ -14030,8 +14117,26 @@ class DataStore {
             }
         }
         this._prevSize = this.size;
-        this._mutation = 'update';
-        if (!this._batchMode) this._version++;
+        // V194 noop-tick-skip: detect whether anything actually changed
+        let changed = false;
+        for (const id in slots) {
+            const s = this.seriesMap[id];
+            if (!s) continue;
+            const f = slots[id];
+            if (_neq(f.data, s.data ? s.data[wI] : null) ||
+                (s.openData !== null && _neq(f.open, s.openData[wI])) ||
+                (s.highData !== null && _neq(f.high, s.highData[wI])) ||
+                (s.lowData  !== null && _neq(f.low,  s.lowData[wI]))  ||
+                (s.pocData  !== null && _neq(f.poc,  s.pocData[wI]))) {
+                changed = true;
+                break;
+            }
+        }
+        if (changed) {
+            this._mutation = 'update';
+            if (!this._batchMode) this._version++;
+        }
+        return changed;
     }
 
     /** Clear all data, reset to empty store */
@@ -14731,7 +14836,11 @@ class SeriesBackedDataStore extends DataStore {
         }
     }
     updateLastPoint(data) {
-        super.updateLastPoint(data);
+        // V194 noop-tick-skip: propagate the base class's change verdict —
+        //   the OHLCV frame mirror below stays UNCONDITIONAL (cheap pop+push
+        //   keeps the series.js Derived columns coherent regardless), only the
+        //   DataStore version bump is gated on a real value change.
+        const changed = super.updateLastPoint(data);
         if (this._ohlcvFrame.length > 0) {
             const notify = !this._batchMode;  // V49n: silent during batch
             this._ohlcvFrame.pop(notify);
@@ -14741,6 +14850,7 @@ class SeriesBackedDataStore extends DataStore {
                 close: data.close ?? data.price ?? NaN, volume: data.vol ?? NaN,
             }, notify);
         }
+        return changed;
     }
     clear() {
         super.clear();  // bumps _version
@@ -14884,10 +14994,24 @@ class SeriesBackedDataStore extends DataStore {
     buildRenderSlice(iMin, iMax) {
         const slice = super.buildRenderSlice(iMin, iMax);
         
-        // V49f: compute developing POC over visible range using SeriesJS.Histogram
-        // For each candle in [iMin, iMax], add (close, volume) to histogram,
-        // then read poc().midpoint. This gives a developing POC that resets
-        // when the visible range changes.
+        // V49f: compute developing POC over visible range.
+        // V194 PERF REWRITE: the original rebuilt a `new Histogram` EVERY frame
+        //   and ran per-candle hist.add() + hist.poc() (a 24-bin scan PER
+        //   candle) — O(visible × bins) plus several allocations per frame,
+        //   on top of the pan path. AND it fed nothing: Histogram.poc()
+        //   returns a scalar, but this code read `poc.midpoint` off it
+        //   (always undefined → NaN in the Float64Array), so the whole
+        //   per-frame computation was dead weight and the volumeHighMark POC
+        //   marks never drew. The rewrite:
+        //   • O(n) single pass with a RUNNING argmax — masses only grow
+        //     within the window, so the incremental max is exact; ties keep
+        //     the lower bin (strict >), matching Histogram.poc() semantics;
+        //   • cached Float64Array bins/buffer — zero allocations per frame;
+        //   • result cached by (data version, iMin, iMax, count) — re-renders
+        //     without an index change (Y-pan, zoom-Y, re-render after overlay
+        //     work) skip the pass entirely;
+        //   • writes REAL POC values (the old `.midpoint` bug wrote NaN) —
+        //     the per-candle POC tick marks now render as V49f intended.
         if (this._ohlcvFrame && slice.count > 0) {
             try {
                 // Find price series in slice
@@ -14897,28 +15021,55 @@ class SeriesBackedDataStore extends DataStore {
                     if (ss.config?.type === 'candlestick' && ss.pocData) { priceSS = ss; break; }
                 }
                 if (priceSS) {
-                    // Compute price range for histogram bins from visible data
-                    let lo = Infinity, hi = -Infinity;
-                    for (let i = 0; i < slice.count; i++) {
-                        const c = priceSS.data[i];
-                        if (isFinite(c)) { if (c < lo) lo = c; if (c > hi) hi = c; }
-                    }
-                    if (isFinite(lo) && isFinite(hi) && hi > lo) {
-                        const pad = (hi - lo) * 0.1;
-                        lo -= pad; hi += pad;
-                        const hist = new Histogram({ bins: 24, lo, hi, autoExtend: true });
-                        // Find volume data
-                        let volSS = slice.seriesSlices['volume'] || slice.seriesSlices['vol'];
-                        for (let i = 0; i < slice.count; i++) {
-                            const close = priceSS.data[i];
-                            const vol = volSS ? volSS.data[i] : 0;
-                            if (isFinite(close) && isFinite(vol) && vol > 0) {
-                                hist.add(close, vol);
-                            }
-                            const poc = hist.poc();
-                            priceSS.pocData[i] = poc ? poc.midpoint : NaN;
+                    const closeData = priceSS.data;
+                    const n = slice.count;
+                    const ver = this._version || 0;
+                    // Cache hit — same data + same visible window: skip the pass.
+                    // (The slice buffer is still re-filled below from the cache.)
+                    if (!(this._dpocCache && this._dpocCache.ver === ver &&
+                          this._dpocCache.i0 === iMin && this._dpocCache.i1 === iMax &&
+                          this._dpocCache.n === n)) {
+                        if (!this._dpocBuf || this._dpocBuf.length < n) this._dpocBuf = new Float64Array(n);
+                        const out = this._dpocBuf;
+                        // Price range for the 24-bin histogram from visible closes,
+                        // ±10% pad — the pad guarantees every close lands in-range,
+                        // so Histogram's autoExtend path could never fire and is
+                        // safely omitted here.
+                        let lo = Infinity, hi = -Infinity;
+                        for (let i = 0; i < n; i++) {
+                            const c = closeData[i];
+                            if (isFinite(c)) { if (c < lo) lo = c; if (c > hi) hi = c; }
                         }
+                        if (isFinite(lo) && isFinite(hi) && hi > lo) {
+                            const pad = (hi - lo) * 0.1;
+                            lo -= pad; hi += pad;
+                            const bins = 24;
+                            const binW = (hi - lo) / bins;
+                            if (!this._dpocMass || this._dpocMass.length !== bins) this._dpocMass = new Float64Array(bins);
+                            const mass = this._dpocMass;
+                            mass.fill(0);
+                            let volSS = slice.seriesSlices['volume'] || slice.seriesSlices['vol'];
+                            const volData = volSS ? volSS.data : null;
+                            let bestIdx = -1, bestMass = -1;
+                            for (let i = 0; i < n; i++) {
+                                const c = closeData[i];
+                                const v = volData ? volData[i] : 0;
+                                if (isFinite(c) && isFinite(v) && v > 0) {
+                                    let b = ((c - lo) / binW) | 0;
+                                    if (b < 0) b = 0; else if (b >= bins) b = bins - 1;
+                                    const m = (mass[b] += v);
+                                    if (m > bestMass) { bestMass = m; bestIdx = b; }
+                                    out[i] = lo + (bestIdx + 0.5) * binW;
+                                } else {
+                                    out[i] = NaN;   // no histogram mass yet at this bar
+                                }
+                            }
+                        } else {
+                            out.fill(NaN, 0, n);   // degenerate range — no POC
+                        }
+                        this._dpocCache = { ver, i0: iMin, i1: iMax, n };
                     }
+                    priceSS.pocData.set(this._dpocBuf.subarray(0, n));
                 }
             } catch (e) { /* developing POC failed — keep static pocData */ }
         }
@@ -15073,7 +15224,7 @@ class DataContext {
         return { firstX: this.dataStore.getX(0), lastX: this.dataStore.getLastX() };
     }
     _append(d)    { this._enrichWithSMA20(d); this.dataStore.pushPoint(d);      return { newLastX: this.dataStore.getLastX() }; }
-    _updateLast(d){ this._enrichWithSMA20(d); this.dataStore.updateLastPoint(d); return { newLastX: this.dataStore.getLastX() }; }
+    _updateLast(d){ this._enrichWithSMA20(d); const _changed = this.dataStore.updateLastPoint(d); return { newLastX: this.dataStore.getLastX(), changed: _changed !== false }; }
 
     /**
      * Compute SMA(period) from recent close prices and attach to payload
@@ -18551,6 +18702,11 @@ class MultiTfDataManager {
         // Retry backoff on error (15 sec base — multiplied by 2^errorCount
         //   for exponential backoff, capped at 5 minutes).
         this._retryMs = 15 * 1000;
+        // V191-anchor-blank: first retry after a fetch ERROR — short enough
+        //   that a one-off proxy hiccup self-heals without the user noticing
+        //   (the old schedule made the FIRST retry wait 15-30 s, which read
+        //   as "anchored lines didn't show up after the coin switch").
+        this._firstRetryMs = 2500;
         // FIX V50-anchor-TF: distinguish "HTTP 200 + empty array" (coin has
         //   no history for this TF — e.g. a newly listed perp without 1d
         //   candles) from "network/CORS/HTTP error". The previous code
@@ -18748,11 +18904,19 @@ class MultiTfDataManager {
         const errTs = this._errorTs.get(tf) || 0;
         if (errTs) {
             const errCount = this._errorCount.get(tf) || 0;
-            // Exponential backoff for true errors: 15s, 30s, 60s, 120s, 240s, capped at 5min.
-            // No-data uses fixed 60s (we want to recheck periodically for newly-listed history).
+            // Exponential backoff for true errors. V191-anchor-blank: the
+            //   FIRST retry waits only 2.5 s (was 15 s×2^count = 30 s after
+            //   one failure) — a one-off proxy hiccup must self-heal almost
+            //   invisibly instead of blanking the anchored lines for half a
+            //   minute («меняю монету — якорные линии не отобразились»).
+            //   From the 2nd consecutive failure on: 15 s, 30 s, 60 s, 120 s,
+            //   240 s, capped at 5 min. No-data keeps fixed 60 s (we want to
+            //   recheck periodically for newly-listed history).
             const backoffMs = store.state === 'no-data'
                 ? this._noDataRetryMs
-                : Math.min(this._maxBackoffMs, this._retryMs * Math.pow(2, errCount));
+                : (errCount <= 1
+                    ? this._firstRetryMs
+                    : Math.min(this._maxBackoffMs, this._retryMs * Math.pow(2, errCount - 2)));
             const age = Date.now() - errTs;
             if (age < backoffMs) {
                 if (__dbg && !this._prefetchBackoffLogged) {
@@ -19059,6 +19223,18 @@ class MultiTfDataManager {
                     });
                 }
             } catch (e) {
+                // V191-anchor-blank: generation guard — if the symbol switched
+                //   while THIS (old-symbol) fetch was in flight, do NOT touch
+                //   the shared store / backoff maps: the fetch belongs to the
+                //   PREVIOUS coin, and marking state='error' + _errorTs here
+                //   poisoned the NEW coin's first prefetch (clearAnchorData
+                //   had already reset the backoff — this late write re-armed
+                //   it), blanking the anchored lines until the (15-300 s)
+                //   backoff expired or the user switched away and back.
+                if (startGen !== (this._generation || 0)) {
+                    if (__dbg) devLog('[anchor-TF] prefetch ERROR after generation change — ignored (old symbol)', { tf, error: e.message });
+                    return;
+                }
                 if (this._stores.has(tf)) store.state = 'error';
                 this._errorTs.set(tf, Date.now());
                 // FIX V50-anchor-TF: increment consecutive-error counter so
@@ -20305,6 +20481,7 @@ class BrickLevel {
         lineWidth = 1, dash = [4, 4], alpha = 0.8,
         optional = false, name = null, defaultVisible = true,
         includeInAutoFit = false,
+        valueParam = null, valueScale = 1,   // V193: dynamic value from a BrickParam
     }) {
         this.value          = value;
         this.label          = label;
@@ -20316,6 +20493,27 @@ class BrickLevel {
         this.name           = name;          // cfg key for optional toggle
         this.defaultVisible = defaultVisible;
         this.includeInAutoFit = !!includeInAutoFit;
+        // V193: valueParam — when set, the level's Y value tracks a live BrickParam
+        //   (e.g. Z-Score ±threshold lines follow the 'threshold' param as the user
+        //   drags it, exactly like the static 70/30 lines on RSI but dynamic).
+        // valueScale — multiplier applied after the param lookup (negThr = -1 × threshold).
+        this.valueParam     = valueParam || null;
+        this.valueScale     = valueScale ?? 1;
+    }
+
+    /**
+     * V193: effective Y value of this level for the given indicator instance.
+     * Falls back to the static `value` when no valueParam is set, the param
+     * is missing (indicator not constructed yet / settings modal for a NEW
+     * indicator), or the param value is not finite.
+     */
+    levelValue(ind) {
+        let v = this.value;
+        if (this.valueParam && ind?.params) {
+            const p = ind.params[this.valueParam];
+            if (p != null && isFinite(p)) v = p;
+        }
+        return v * (this.valueScale || 1);
     }
 }
 
@@ -22052,8 +22250,10 @@ class IndicatorBrick extends IndicatorBase {
         for (const lv of levels) {
             const key = lv.name || String(lv.value);
             if (!this.levelVisible[key]) continue;
-            if (!isFinite(lv.value)) continue;
-            const y = yScale.valToPix(lv.value);
+            // V193: resolve dynamic levels (valueParam) against this indicator's params
+            const lvVal = lv.levelValue ? lv.levelValue(this) : lv.value;
+            if (!isFinite(lvVal)) continue;
+            const y = yScale.valToPix(lvVal);
             if (!isFinite(y)) continue;
             // Clip to plot vertical bounds so a level outside the Y range
             // doesn't draw a stray line in a neighbouring panel.
@@ -22072,14 +22272,19 @@ class IndicatorBrick extends IndicatorBase {
             ctx.stroke();
             // Label at the right edge — small text pill so it's readable
             // over the indicator line.
-            if (lv.label) {
+            // V193: for dynamic levels (valueParam) show the LIVE signed value
+            //   (e.g. '+2.5' / '-4') instead of a static label that would go
+            //   stale the moment the user changes the param.
+            let lvLabel = lv.label;
+            if (lv.valueParam) lvLabel = `${lvVal > 0 ? '+' : ''}${+lvVal.toFixed(2)}`;
+            if (lvLabel) {
                 ctx.setLineDash([]);
                 ctx.font = '9px -apple-system, sans-serif';
                 ctx.textBaseline = 'middle';
                 ctx.textAlign    = 'left';
                 ctx.fillStyle    = lv.color;
                 ctx.globalAlpha  = 1;
-                ctx.fillText(lv.label, plotLeft + 4, y - 6);
+                ctx.fillText(lvLabel, plotLeft + 4, y - 6);
             }
         }
         ctx.setLineDash([]);
@@ -22552,9 +22757,11 @@ class IndicatorBrick extends IndicatorBase {
                 if (!lv.includeInAutoFit) continue;
                 const key = lv.name || String(lv.value);
                 if (!this.levelVisible[key]) continue;
-                if (isFinite(lv.value)) {
-                    if (lv.value < yMin) yMin = lv.value;
-                    if (lv.value > yMax) yMax = lv.value;
+                // V193: dynamic levels (valueParam) fit against their live value
+                const lvVal = lv.levelValue ? lv.levelValue(this) : lv.value;
+                if (isFinite(lvVal)) {
+                    if (lvVal < yMin) yMin = lvVal;
+                    if (lvVal > yMax) yMax = lvVal;
                 }
             }
         }
@@ -22626,6 +22833,21 @@ class BrickRegistry {
                 levels: (meta.levels || []).filter(l => l.optional).map(l => ({
                     name: l.name, value: l.value, label: l.label,
                     defaultVisible: l.defaultVisible,
+                    // V193: dynamic levels — carry valueParam/valueScale and a
+                    //   descriptor-side levelValue() mirroring BrickLevel's, so
+                    //   the settings modal can resolve the indicator's LIVE
+                    //   level value (e.g. Z-Score ±threshold tracks the
+                    //   Threshold param instead of the stale static 2.5).
+                    valueParam: l.valueParam || null,
+                    valueScale: l.valueScale ?? 1,
+                    levelValue(ind) {
+                        let v = this.value;
+                        if (this.valueParam && ind?.params) {
+                            const p = ind.params[this.valueParam];
+                            if (p != null && isFinite(p)) v = p;
+                        }
+                        return v * (this.valueScale || 1);
+                    },
                 })),
                 bands: (meta.bands || []).filter(b => b.optional).map(b => ({
                     name: b.name, from: b.from, to: b.to, label: b.label,
@@ -26939,6 +27161,11 @@ class ZScoreBrick extends IndicatorBrick {
                 ] }),
             new BrickParam({ name: 'period', label: 'Period', default: 50, min: 5, max: 500, step: 1, group: 'Model' }),
             new BrickParam({ name: 'threshold', label: 'Threshold', default: 2.5, min: 1, max: 5, step: 0.1, group: 'Model' }),
+            // V193: configurable anomaly-dot radius — the dots drawn at every
+            //   bar whose |Z| exceeds the threshold used to be hard-coded at 4px;
+            //   smaller values (1-2) keep dense charts readable.
+            new BrickParam({ name: 'dotRadius', label: 'Anomaly dot radius', default: 4, min: 0.5, max: 12, step: 0.5, group: 'Display',
+                tooltip: 'Radius of the anomaly dots drawn above/below the threshold. Lower = smaller dots.' }),
             // V106: per-mode params
             new BrickParam({ name: 'ewmaAlpha', label: 'EWMA Alpha', default: 0.1, min: 0.001, max: 1, step: 0.001, group: 'Advanced' }),
             new BrickParam({ name: 'garchP', label: 'GARCH α (ARCH)', default: 0.1, min: 0.001, max: 0.5, step: 0.001, group: 'Advanced' }),
@@ -26963,6 +27190,16 @@ class ZScoreBrick extends IndicatorBrick {
             new BrickLevel({ value: 0, label: '0', color: 'rgba(255,255,255,0.2)',
                              lineWidth: 1, dash: [2, 4],
                              optional: true, name: 'zero', defaultVisible: true }),
+            // V193: optional ±threshold reference lines (RSI/MFI-style 70/30 look).
+            //   valueParam: 'threshold' — the Y value tracks the Threshold param
+            //   LIVE (change threshold → both lines move + the drawn labels show
+            //   the actual signed value). Toggled in settings → Reference overlays.
+            new BrickLevel({ value: 2.5, label: '+Threshold', color: 'rgba(244,67,54,0.55)',
+                             lineWidth: 1, dash: [4, 4], optional: true, name: 'posThr',
+                             defaultVisible: true, valueParam: 'threshold' }),
+            new BrickLevel({ value: -2.5, label: '-Threshold', color: 'rgba(76,175,80,0.55)',
+                             lineWidth: 1, dash: [4, 4], optional: true, name: 'negThr',
+                             defaultVisible: true, valueParam: 'threshold', valueScale: -1 }),
         ],
     };
 
@@ -27547,6 +27784,10 @@ class ZScoreBrick extends IndicatorBrick {
 
         // Highlight anomalies
         ctx.save();
+        // V193: configurable dot radius (was hard-coded 4). Clamped defensively —
+        //   the settings slider allows 0.5..12, but a restored/serialized cfg
+        //   could carry anything.
+        const dotR = Math.max(0.5, Math.min(24, +this.params.dotRadius > 0 ? +this.params.dotRadius : 4));
         for (let i = iMin; i <= iMax; i++) {
             const z = computed.line[i];
             if (!isFinite(z) || Math.abs(z) < threshold) continue;
@@ -27554,7 +27795,7 @@ class ZScoreBrick extends IndicatorBrick {
             const py = yScale.valToPix(z);
             // Draw circle
             ctx.beginPath();
-            ctx.arc(px, py, 4, 0, Math.PI * 2);
+            ctx.arc(px, py, dotR, 0, Math.PI * 2);
             ctx.fillStyle = z > 0 ? '#f85149' : '#3fb950';
             ctx.globalAlpha = 0.8;
             ctx.fill();
@@ -27575,6 +27816,12 @@ class ZScoreBrick extends IndicatorBrick {
                 yMax = Math.max(yMax, computed.line[i]);
             }
         }
+        // V193: keep the ±threshold reference lines inside the fitted range —
+        //   with a high threshold (e.g. 4-5) on quiet data the lines would
+        //   otherwise render off-panel and look like the feature is broken.
+        const thr = Math.abs(this.params.threshold ?? 2.5);
+        if (this.levelVisible?.posThr) yMax = Math.max(yMax, thr);
+        if (this.levelVisible?.negThr) yMin = Math.min(yMin, -thr);
         const pad = (yMax - yMin) * 0.05;
         return { yMin: yMin - pad, yMax: yMax + pad };
     }
@@ -32945,6 +33192,29 @@ class AuxSeriesBrick extends IndicatorBrick {
         if (!lastX) return this._emptyAuxResult(count, visibleRange);
         const startBarX = lastX - (count - 1) * intervalMs;
 
+        // V191-aux-stale: market guard. When the chart's symbol/timeframe
+        //   changed (coin switch), the in-flight fetch for the PREVIOUS
+        //   market (a) kept `this._fetching` true until it settled — BLOCKING
+        //   the new market's fetch in step 5 — and (b) its .then handler had
+        //   NO symbol check, so the old coin's funding/OI points were merged
+        //   into this brick via _mergeAuxRaw; the fetched window spans the
+        //   same time range, so step 4's cache-hit branch then kept serving
+        //   the PREVIOUS coin's data indefinitely — «с индикатором фандинга
+        //   оч похоже все» (funding stale after a coin change). Reuses the
+        //   RelPerf generation mechanism (_checkFetchGenBump): bumps
+        //   _auxFetchGen + resets _fetching when (symbol, tf) changed, so
+        //   the new market fetches immediately and the stale fetch's result
+        //   is discarded in step 5's handlers. Also resets the failure
+        //   backoff — the previous coin's empty fetches (e.g. a spot-only
+        //   coin without funding) must not delay the new coin's first fetch
+        //   by up to 30 s.
+        const _auxGenBefore = this._auxFetchGen || 0;
+        this._checkFetchGenBump(adapter.symbol || '', adapter.timeframe || '1m');
+        if ((this._auxFetchGen || 0) !== _auxGenBefore) {
+            this._auxFails = 0;
+            this._auxFailUntil = 0;
+        }
+
         // ── 2. Register with AuxDataManager (centralized lazy-load) ──
         const mgrKey = opts.getMgrKey();
         if (!this._auxMgrRegistered || this._auxMgrKey !== mgrKey) {
@@ -32999,7 +33269,13 @@ class AuxSeriesBrick extends IndicatorBrick {
             const actualEnd = (this._fetchedRange && fetchEnd < this._fetchedRange.firstX)
                 ? fetchEnd
                 : lastX;
+            const _auxMyGen = this._auxFetchGen || 0;
             opts.doFetch(actualStart, actualEnd).then(raw => {
+                // V191-aux-stale: this fetch belongs to a PREVIOUS market —
+                //   the coin/timeframe switched while it was in flight.
+                //   Discard (do NOT merge foreign data, do NOT touch
+                //   _fetching: it now belongs to the new market's fetch).
+                if ((this._auxFetchGen || 0) !== _auxMyGen) return;
                 if (raw && raw.length) {
                     this._mergeAuxRaw(raw, 'timestamp');
                     this._auxFails = 0;   // V122-fix: reset backoff counter on success
@@ -33009,7 +33285,11 @@ class AuxSeriesBrick extends IndicatorBrick {
                 }
                 this._fetching = false;
                 this._triggerRender();
-            }).catch(() => { this._fetching = false; this._auxNoteFetchFail(); });
+            }).catch(() => {
+                if ((this._auxFetchGen || 0) !== _auxMyGen) return;
+                this._fetching = false;
+                this._auxNoteFetchFail();
+            });
         }
 
         // ── 6. Use stale auxRaw if available (while fetch is in progress) ──
@@ -33261,7 +33541,7 @@ const AUX_DATA_SPECS = [
         type: 'fundingrate',
         label: 'Funding Rate',
         shortLabel: 'FR',
-        description: 'Historical funding rate from Binance Futures. Forward-filled to chart bars. Works for any USDT-quoted symbol that has a perp market; otherwise renders empty.',
+        description: 'Historical funding rate from the perp market: Binance Futures first, then ByBit linear as fallback. Forward-filled to chart bars. Shows the perp funding even when the chart coin is spot, as long as any perp market lists it; otherwise renders empty.',
         category: 'composite',
         tags: ['funding', 'perp', 'binance', 'derivatives', 'sentiment'],
         panelMode: 'separate',
@@ -33285,6 +33565,34 @@ const AUX_DATA_SPECS = [
             timestamp: r.fundingTime,
             value: parseFloat(r.fundingRate) * 100,
         })),
+        // V191-funding-perp: the chart may show a SPOT coin that has no
+        //   funding of its own («если спотовая монета, то она не показывает
+        //   фандинг, что логично») — but the PERP market usually does, and
+        //   the user asked to show the perp's funding data whenever it
+        //   exists («надо показывать все же данные с перпа для фандинга,
+        //   если есть»). The primary source is Binance futures (already a
+        //   perp endpoint — it covers Binance charts + any coin with a
+        //   Binance perp); this fallback adds ByBit's linear funding
+        //   history so coins listed ONLY on ByBit (no Binance futures)
+        //   still show funding on a spot chart. Normalized to the same
+        //   {timestamp, value:%} shape, ascending by time.
+        fallbackFetch: async (brick, adapter, startX, endX) => {
+            try {
+                let url = `https://api.bybit.com/v5/market/funding/history?category=linear&symbol=${encodeURIComponent(adapter.symbol)}&limit=200`;
+                if (startX) url += `&startTime=${Math.round(startX)}`;
+                if (endX) url += `&endTime=${Math.round(endX)}`;
+                const data = await brick._fetchJson(url);
+                const list = data?.result?.list;
+                if (!Array.isArray(list) || list.length === 0) return [];
+                return list.map(r => ({
+                    // ByBit v5 field is fundingRateTimestamp (verified live);
+                    // older docs/aliases kept as defensive fallbacks.
+                    timestamp: Number(r.fundingRateTimestamp ?? r.fundingTimestamp ?? r.fundingEventTimestamp ?? r.timestamp),
+                    value: parseFloat(r.fundingRate) * 100,
+                })).filter(p => isFinite(p.timestamp) && isFinite(p.value))
+                  .sort((a, b) => a.timestamp - b.timestamp);
+            } catch (_) { return []; }
+        },
         mgrKeySuffix: (params) => params.oiWeighted ? 'oi' : 'plain',
         postProcess: async (raw, params, brick, adapter) => {
             if (!params.oiWeighted) return raw;
@@ -33403,8 +33711,15 @@ function createAuxBrick(spec) {
                     if (!adapter) return [];
                     const url = spec.url(adapter, this.params, startX, endX);
                     const data = await this._fetchJson(url);
-                    if (!Array.isArray(data)) return [];
-                    let raw = spec.parse(data);
+                    // V191-funding-perp: null (network/HTTP failure) and []
+                    // (HTTP 200 + empty) BOTH mean "primary market has no
+                    // funding data here" → try the per-market fallback so a
+                    // spot chart still shows the PERP's funding when any
+                    // perp market lists the coin.
+                    let raw = Array.isArray(data) ? spec.parse(data) : [];
+                    if ((!raw || raw.length === 0) && spec.fallbackFetch) {
+                        raw = await spec.fallbackFetch(this, adapter, startX, endX);
+                    }
                     if (spec.postProcess) {
                         raw = await spec.postProcess(raw, this.params, this, adapter);
                     }
@@ -35464,13 +35779,33 @@ class VolumeProfileRenderer {
      *   `isLog` is true, distribute volume proportionally to LOG-space overlap
      *   instead, so the same candle contributes equally across the log bins it
      *   actually crosses on screen.
+     *
+     * V196-perf-vp: the old loop scanned ALL nodeCount bins per candle (O(N×bins)
+     *   per rebuild/developing-POC pass — 1000×64 = 64k iterations, and in log
+     *   mode 2 Math.log calls PER BIN PER CANDLE ≈ 128k Math.log calls). The bin
+     *   grid is UNIFORM in its own space (linear price / natural log of price),
+     *   so the covered bin window is directly computable: only ~1-5 bins can
+     *   overlap any single candle. The per-bin overlap test below is byte-for-byte
+     *   the old one — skipped bins all had overlapHi <= overlapLo (zero
+     *   contribution), so the accumulated totals are bit-identical. The window is
+     *   widened by 1 bin on each side as float-safety; the overlap test still
+     *   filters exact coverage. Log-level logs are passed in precomputed
+     *   (levelLogLo/levelLogHi — built once per rebuild, was per candle per bin).
+     *
+     *   Returns [wLo, wHi] — the (widened, clamped) bin window whose totals MAY
+     *   have changed (bins passing the overlap test are a subset) — or null when
+     *   the candle was skipped entirely (invalid/degenerate) or hit the
+     *   pathological full-scan fallback (isLog grid + non-positive candle price —
+     *   cannot occur for real price data; the old full linear-scan behavior is
+     *   preserved verbatim for it). The POC-developing loop uses the window to
+     *   update its running POC without a full-bin rescan.
      */
-    static _accumulateCandle(o, h, l, c, v, nodeCount, levelsPriceLo, levelsPriceHi, levelsBuyVol, levelsSellVol, isLog) {
-        if (!isFinite(o) || !isFinite(c) || !isFinite(v) || v <= 0) return;
+    static _accumulateCandle(o, h, l, c, v, nodeCount, levelsPriceLo, levelsPriceHi, levelsBuyVol, levelsSellVol, isLog, levelLogLo, levelLogHi) {
+        if (!isFinite(o) || !isFinite(c) || !isFinite(v) || v <= 0) return null;
         const isBuy = c >= o;
         const barLo = Math.min(o, c, isFinite(l) ? l : Math.min(o, c));
         const barHi = Math.max(o, c, isFinite(h) ? h : Math.max(o, c));
-        if (barHi <= barLo) return;
+        if (barHi <= barLo) return null;
         if (isLog && barLo > 0 && barHi > 0) {
             // Log-space overlap: weight by log-bin coverage, not linear coverage.
             // This makes the histogram visually consistent with how the bins
@@ -35478,10 +35813,21 @@ class VolumeProfileRenderer {
             const logBarLo = Math.log(barLo);
             const logBarHi = Math.log(barHi);
             const logBarRange = logBarHi - logBarLo;
-            for (let li = 0; li < nodeCount; li++) {
+            if (logBarRange <= 0) return null;
+            // V196-perf-vp: analytic window — the log-grid spacing is uniform
+            //   (log of a geometric grid), derive it from the first two levels.
+            let wLo = 0, wHi = nodeCount - 1;
+            if (nodeCount >= 2 && levelLogLo && Number.isFinite(levelLogLo[0]) && Number.isFinite(levelLogLo[1])) {
+                const logStep = levelLogLo[1] - levelLogLo[0];
+                if (logStep > 0) {
+                    wLo = Math.max(0, Math.floor((logBarLo - levelLogLo[0]) / logStep) - 1);
+                    wHi = Math.min(nodeCount - 1, Math.floor((logBarHi - levelLogLo[0]) / logStep) + 1);
+                }
+            }
+            for (let li = wLo; li <= wHi; li++) {
                 if (levelsPriceHi[li] <= 0 || levelsPriceLo[li] <= 0) continue;
-                const logLvlLo = Math.log(levelsPriceLo[li]);
-                const logLvlHi = Math.log(levelsPriceHi[li]);
+                const logLvlLo = levelLogLo[li];   // V196: precomputed (was Math.log per candle per bin)
+                const logLvlHi = levelLogHi[li];
                 const overlapLo = Math.max(logBarLo, logLvlLo);
                 const overlapHi = Math.min(logBarHi, logLvlHi);
                 if (overlapHi > overlapLo) {
@@ -35491,9 +35837,19 @@ class VolumeProfileRenderer {
                     else levelsSellVol[li] += allocVol;
                 }
             }
-        } else {
+            return [wLo, wHi];
+        } else if (!isLog) {
             // Linear mode (unchanged): weight by linear price coverage.
-            for (let li = 0; li < nodeCount; li++) {
+            // V196-perf-vp: analytic window — the linear grid is uniform.
+            let wLo = 0, wHi = nodeCount - 1;
+            if (nodeCount >= 2 && isFinite(levelsPriceLo[0]) && isFinite(levelsPriceLo[1])) {
+                const step = levelsPriceLo[1] - levelsPriceLo[0];
+                if (step > 0) {
+                    wLo = Math.max(0, Math.floor((barLo - levelsPriceLo[0]) / step) - 1);
+                    wHi = Math.min(nodeCount - 1, Math.floor((barHi - levelsPriceLo[0]) / step) + 1);
+                }
+            }
+            for (let li = wLo; li <= wHi; li++) {
                 const overlapLo = Math.max(barLo, levelsPriceLo[li]);
                 const overlapHi = Math.min(barHi, levelsPriceHi[li]);
                 if (overlapHi > overlapLo) {
@@ -35503,13 +35859,50 @@ class VolumeProfileRenderer {
                     else levelsSellVol[li] += allocVol;
                 }
             }
+            return [wLo, wHi];
         }
+        // V196: pathological fallback — isLog grid but the candle spans a
+        //   non-positive price (never happens for real market data). Old
+        //   V55 behavior preserved verbatim: linear-weighted FULL scan.
+        for (let li = 0; li < nodeCount; li++) {
+            const overlapLo = Math.max(barLo, levelsPriceLo[li]);
+            const overlapHi = Math.min(barHi, levelsPriceHi[li]);
+            if (overlapHi > overlapLo) {
+                const overlapRatio = (overlapHi - overlapLo) / (barHi - barLo);
+                const allocVol = v * overlapRatio;
+                if (isBuy) levelsBuyVol[li] += allocVol;
+                else levelsSellVol[li] += allocVol;
+            }
+        }
+        return null;
     }
 
     /**
      * V49n: Compute volume profile model (data layer — no canvas/DOM).
      * Separated from render() to keep rendering pure.
      * Returns { levelsPriceMid, levelsBuyVol, levelsSellVol, poc, va, nodeCount } or null.
+     *
+     * V196-perf-vp changes:
+     *   1. Cache key quantized to 1/8 of a BIN height (in the grid's own space)
+     *      instead of yMin/yMax toFixed(2). toFixed(2) is far finer than one bin
+     *      (a 64-bin grid over a 22k range has ~344-unit bins vs 0.01-unit key
+     *      steps), so any autoscale re-fit between WS ticks rebuilt the whole
+     *      O(N×bins) accumulation for a sub-bin — visually sub-pixel — shift.
+     *      A hit with a slightly shifted live range now reuses the cached level
+     *      grid: drawn boundaries map level PRICES through the CURRENT yScale,
+     *      so the displacement is bounded by bin/8 (sub-pixel for typical bins).
+     *   2. The throwaway per-rebuild Histogram is gone. Its only outputs were
+     *      model.poc/model.va — both DEAD since introduction: Histogram.poc()
+     *      returns a scalar while the code read `.midpoint` off it (poc was
+     *      always undefined) and va stored the valueArea FUNCTION uncalled;
+     *      render() never consumed either (it recomputes the POC and VA
+     *      indices from the level arrays itself). The Histogram also cost a
+     *      64-bin construction + one add() per candle + poc()/valueArea() scans
+     *      on EVERY rebuild. poc/va are kept as null fields so any future
+     *      consumer fails loudly (null deref) instead of silently misdrawing.
+     *   3. Level log arrays are precomputed once per rebuild (levelLogLo/Hi)
+     *      and passed to _accumulateCandle — was 2 Math.log calls per bin per
+     *      candle (≈128k calls per log-mode rebuild).
      */
     static computeModel(slice, yMin, yMax, nodeCount, isLog) {
         if (!isFinite(yMin) || !isFinite(yMax) || yMax - yMin <= 0) return null;
@@ -35552,9 +35945,25 @@ class VolumeProfileRenderer {
         //   (ratio legs) switch with a similar Y range and equal count, the model
         //   cache kept serving the PREVIOUS instrument's histogram/POC.
         //   First+last close fingerprint invalidates it on any instrument change.
+        // V196-perf-vp: quantize the range part of the key to 1/8 of a bin
+        //   height (in the grid's own space — price for linear grids, log10
+        //   for log grids) so autoscale jitter between ticks stops rebuilding
+        //   the accumulation. Any shift ≥ bin/8 still misses (fresh grid).
         const _vpFpA = priceSeries.data?.[0] ?? 0;
         const _vpFpB = priceSeries.data?.[count - 1] ?? 0;
-        const cacheKey = `${yMin.toFixed(2)}:${yMax.toFixed(2)}:${nodeCount}:${count}:${isLog ? 1 : 0}:${_vpFpA}:${_vpFpB}`;
+        let _vpQyMin, _vpQyMax;
+        if (isLog) {
+            const _vpLogMin = Math.log10(Math.max(RENDER_CONSTANTS.LOG_SCALE_EPSILON, yMin));
+            const _vpLogMax = Math.log10(Math.max(RENDER_CONSTANTS.LOG_SCALE_EPSILON, yMax));
+            const _vpQ = Math.max(1e-12, (_vpLogMax - _vpLogMin) / nodeCount / 8);
+            _vpQyMin = Math.round(_vpLogMin / _vpQ);
+            _vpQyMax = Math.round(_vpLogMax / _vpQ);
+        } else {
+            const _vpQ = Math.max(1e-12, yRange / nodeCount / 8);
+            _vpQyMin = Math.round(yMin / _vpQ);
+            _vpQyMax = Math.round(yMax / _vpQ);
+        }
+        const cacheKey = `${_vpQyMin}:${_vpQyMax}:${nodeCount}:${count}:${isLog ? 1 : 0}:${_vpFpA}:${_vpFpB}`;
         if (VolumeProfileRenderer._vpModelCacheKey === cacheKey && VolumeProfileRenderer._vpModelCache) {
             return VolumeProfileRenderer._vpModelCache;
         }
@@ -35566,6 +35975,7 @@ class VolumeProfileRenderer {
         const levelsBuyVol   = new Float64Array(nodeCount);
         const levelsSellVol  = new Float64Array(nodeCount);
 
+        let levelLogLo = null, levelLogHi = null;
         if (isLog) {
             const logMin = Math.log10(Math.max(RENDER_CONSTANTS.LOG_SCALE_EPSILON, yMin));
             const logMax = Math.log10(Math.max(RENDER_CONSTANTS.LOG_SCALE_EPSILON, yMax));
@@ -35574,6 +35984,15 @@ class VolumeProfileRenderer {
                 const lo = Math.pow(10, logMin + i * step);
                 const hi = Math.pow(10, logMin + (i + 1) * step);
                 levelsPriceLo[i] = lo; levelsPriceHi[i] = hi; levelsPriceMid[i] = (lo + hi) / 2;
+            }
+            // V196-perf-vp: natural-log copies of the level bounds — one-time
+            //   cost (2×nodeCount Math.log calls), consumed per candle by
+            //   _accumulateCandle's analytic window + overlap test.
+            levelLogLo = new Float64Array(nodeCount);
+            levelLogHi = new Float64Array(nodeCount);
+            for (let i = 0; i < nodeCount; i++) {
+                levelLogLo[i] = levelsPriceLo[i] > 0 ? Math.log(levelsPriceLo[i]) : NaN;
+                levelLogHi[i] = levelsPriceHi[i] > 0 ? Math.log(levelsPriceHi[i]) : NaN;
             }
         } else {
             const step = (yMax - yMin) / nodeCount;
@@ -35584,31 +36003,19 @@ class VolumeProfileRenderer {
             }
         }
 
-        // V51-vp-cache-fix: series lookup already done above before cache check.
-
-        // Duplicate series lookup removed — already done above before cache check
-        const vpHist = new Histogram({
-            bins: nodeCount, lo: levelsPriceLo[0], hi: levelsPriceHi[nodeCount-1],
-            autoExtend: true
-        });
+        // V196-perf-vp: accumulate only into each candle's covered bin window;
+        //   the per-candle Histogram add() (and the Histogram itself) is gone —
+        //   its poc/va outputs were dead (see doc above).
         for (let i = 0; i < count; i++) {
             const o = priceSeries.openData?.[i];
             const h = priceSeries.highData?.[i];
             const l = priceSeries.lowData?.[i];
             const c = priceSeries.data?.[i];
             const v = volSeries?.data?.[i];
-            if (!isFinite(o) || !isFinite(c) || !isFinite(v) || v <= 0) continue;
-            const isBuy = c >= o;
-            const barLo = Math.min(o, c, isFinite(l) ? l : Math.min(o, c));
-            const barHi = Math.max(o, c, isFinite(h) ? h : Math.max(o, c));
-            if (barHi <= barLo) continue;
-            VolumeProfileRenderer._accumulateCandle(o, h, l, c, v, nodeCount, levelsPriceLo, levelsPriceHi, levelsBuyVol, levelsSellVol, isLog);
-            vpHist.add(isBuy ? (o + c) / 2 : (o + c) / 2, v);
+            VolumeProfileRenderer._accumulateCandle(o, h, l, c, v, nodeCount, levelsPriceLo, levelsPriceHi, levelsBuyVol, levelsSellVol, isLog, levelLogLo, levelLogHi);
         }
 
-        const poc = vpHist.poc ? vpHist.poc.midpoint : null;
-        const va = vpHist.valueArea ? vpHist.valueArea : null;
-        const result = { levelsPriceLo, levelsPriceHi, levelsPriceMid, levelsBuyVol, levelsSellVol, poc, va, nodeCount };
+        const result = { levelsPriceLo, levelsPriceHi, levelsPriceMid, levelsBuyVol, levelsSellVol, poc: null, va: null, levelLogLo, levelLogHi, nodeCount };
         // V51-vp-cache-fix: cache the FULL result, not just Histogram
         VolumeProfileRenderer._vpModelCache = result;
         VolumeProfileRenderer._vpModelCacheKey = cacheKey;
@@ -35871,19 +36278,31 @@ class VolumeProfileRenderer {
             const runSellVol = new Float64Array(nodeCount);
             const pocPoints = [];
 
+            // V196-perf-vp: INCREMENTAL running POC. The old loop re-ran a full
+            //   nodeCount-bin argmax scan after EVERY candle — O(N×bins) per
+            //   frame (1000 candles × 64 bins = 64k scans + the O(N×bins)
+            //   accumulation itself — the largest measured main-frame cost).
+            //   Totals only ever GROW (accumulation is monotonic), so the
+            //   running argmax can be maintained: bins outside the candle's
+            //   updated window keep their totals and can never exceed the
+            //   current max; within the window the ascending scan with strict
+            //   > preserves the old full-scan tie-breaking (lowest bin wins)
+            //   bit-for-bit. Invalid candles (accumulate returns null) leave
+            //   the running state untouched — exactly like the old no-op scan.
+            let runPocIdx = 0, runMax = 0;
             for (let i = iMin; i <= iMax; i++) {
-                VolumeProfileRenderer._accumulateCandle(
+                const win = VolumeProfileRenderer._accumulateCandle(
                     priceSeries.openData?.[i], priceSeries.highData?.[i], priceSeries.lowData?.[i],
                     priceSeries.data?.[i], volSeries?.data?.[i],
-                    nodeCount, levelsPriceLo, levelsPriceHi, runBuyVol, runSellVol, isLog
+                    nodeCount, levelsPriceLo, levelsPriceHi, runBuyVol, runSellVol, isLog,
+                    model.levelLogLo, model.levelLogHi
                 );
-
-                // Find running POC
-                let runPocIdx = 0;
-                let runMax = 0;
-                for (let li = 0; li < nodeCount; li++) {
-                    const t = runBuyVol[li] + runSellVol[li];
-                    if (t > runMax) { runMax = t; runPocIdx = li; }
+                if (win) {
+                    // Find running POC — touched bins only (see V196 note above)
+                    for (let li = win[0]; li <= win[1]; li++) {
+                        const t = runBuyVol[li] + runSellVol[li];
+                        if (t > runMax) { runMax = t; runPocIdx = li; }
+                    }
                 }
 
                 if (xData && isFinite(xData[i])) {
@@ -37375,7 +37794,12 @@ class OverlayRenderer {
         //   as part of the line, not as a separate bright label.
         //   V138: font raised to 6.5px — between the 9px inline label and
         //   the 4.5px of V137 ("чуть побольше"), gap 4→5 to match.
-        const pctText = this._crosshairPctText(snap, yS, my, currentPriceData);
+        // V197: range-magnet sweep — only the VERTICAL line stays visible
+        //   (line #2 of the sweep IS the crosshair's vertical line; the
+        //   pointer's Y and its price labels are meaningless while the user
+        //   range-places a tool point by X).
+        const _chH = (typeof window._ceRangeHideCrosshairH === 'function') && window._ceRangeHideCrosshairH();
+        const pctText = !_chH ? this._crosshairPctText(snap, yS, my, currentPriceData) : null;
         if (pctText) {
             ctx.font = CH_PCT_FONT;
             const tw  = ctx.measureText(pctText).width;
@@ -37389,8 +37813,10 @@ class OverlayRenderer {
             ctx.fillStyle = UI_COLORS.crosshair;          // the line's color AND alpha
             ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
             ctx.fillText(pctText, tx, strokeRound(my));
-        } else {
+        } else if (!_chH) {
             drawHLine(ctx, strokeRound(my), layout.plotLeft, layout.plotRight);
+            ctx.setLineDash([]);
+        } else {
             ctx.setLineDash([]);
         }
 
@@ -37412,7 +37838,8 @@ class OverlayRenderer {
         // For indicator panels (RSI/MACD/...) the series isn't in config.series,
         // so we look up the indicator's output color. Fallback: accent blue
         // (NOT #ffffff — that would render white-on-white invisible labels).
-        if (layout.axisYMode !== 'none') {
+        // V197: also skipped during a range-magnet sweep (pointer Y unused).
+        if (layout.axisYMode !== 'none' && !_chH) {
             const ser   = this.config.series.find(s => s.panelId === snap.activePanelId);
             let yBg;
             if (ser) {
@@ -37432,7 +37859,8 @@ class OverlayRenderer {
 
         // ── Overlay axis crosshair labels ──
         // Show values from each overlay axis in its column (same pill style as main axis)
-        if (snap.isSnapped && snap.snappedValues && layout.axisYMode !== 'none') {
+        // V197: also skipped during a range-magnet sweep (pointer Y unused).
+        if (snap.isSnapped && snap.snappedValues && layout.axisYMode !== 'none' && !_chH) {
             const pId = snap.activePanelId;
             const panelYAxes = layout._panelYAxes?.[pId];
             if (panelYAxes) {
@@ -38565,6 +38993,250 @@ class AnchorStore {
 // detachAnchor() and applyUpdates() from LineObject / LabelObject.
 
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// V197: RANGE MAGNET — place drawing-tool points by sweeping an X-range.
+//
+// A 3-state toolbar toggle next to the V154 magnet (window.CE_RANGE_MAGNET,
+// persisted in localStorage 'ce_rangemagnet' by the toolbar builder):
+//   0 = off · 1 = low first · 2 = high first.
+// While ON and a multi-point drawing tool is being placed (free/ray/fib/
+// fibtrend/fibexp/zone/gridbot/impulse5/abc/tri/wxy), each tool point is
+// placed with TWO taps instead of one:
+//   • tap #1 drops the FIRST vertical range line — its X is kept in DATA
+//     coords, so a pan/zoom mid-sweep keeps it glued to its candle;
+//   • moving the pointer sweeps the SECOND line — that is the crosshair's
+//     own vertical line (the exact same precision mechanism as the normal
+//     crosshair; the horizontal line + its labels are hidden meanwhile);
+//   • the band between the lines is filled with an almost transparent
+//     polarity color and the LIVE extreme (the range's high or low candle)
+//     is marked with a dot + H/L price label;
+//   • tap #2 commits the tool point AT the extreme candle (its centre time
+//     + its high or low price). The polarity then FLIPS (high → low → high…)
+//     for the next point, until the tool completes.
+// Sweeping over empty space (no candle in the range, e.g. the future) falls
+// back to committing at the pointer — the tool never stalls.
+// V198: the sweep now covers EVERY drawing tool — single-point lines
+// (hline/vline/hray/vray, both alias spellings horizontal/vertical), the
+// multi-vertex polygon (its close-to-first-vertex tap still closes it
+// instead of opening a sweep) and the ruler (both measurement ends).
+// Only 'fibauto' stays native: it is ALREADY a range tool (its own phases
+// sweep an X-range and auto-find min/max with their own toggle) — wrapping
+// the magnet around it would double-derive its points and corrupt its own
+// min/max semantics.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const _CE_RANGE_COLORS = {
+    high: { line: '#f23645', fill: 'rgba(244,67,54,0.09)', text: '#ff7b81' },
+    low:  { line: '#4caf50', fill: 'rgba(76,175,80,0.09)', text: '#7bd97f' },
+};
+
+let _ceRangeModeVal = 0;        // 0 off · 1 low-first · 2 high-first
+let _ceRangeSession = null;     // { panelId, line1DataX, pendingHigh } | null
+let _ceRangePolarity = null;    // 'high' | 'low' | null — polarity of the NEXT point
+
+function _ceRangeMode() { return _ceRangeModeVal; }
+function _ceRangeSetMode(v) {
+    _ceRangeModeVal = (v === 1 || v === 2) ? v : 0;
+    _ceRangeReset();            // any mode change starts placements fresh
+    return _ceRangeModeVal;
+}
+function _ceRangeSupportedMode(mode) {
+    return mode === 'free' || mode === 'ray' || mode === 'fib' || mode === 'fibtrend'
+        || mode === 'fibexp' || mode === 'zone' || mode === 'gridbot'
+        || mode === 'impulse5' || mode === 'abc' || mode === 'tri' || mode === 'wxy'
+        // V198: every remaining drawing tool — single-point lines (both the
+        // short and the TrendLineTool.setMode alias spellings), horizontal/
+        // vertical rays, the polygon and the ruler.
+        || mode === 'hline' || mode === 'horizontal' || mode === 'vline' || mode === 'vertical'
+        || mode === 'hray' || mode === 'vray'
+        || mode === 'polygon' || mode === 'ruler';
+        // ('fibauto' deliberately NOT here — see the module header above.)
+}
+
+/**
+ * V198: true when this tap sits inside the polygon's close-to-first-vertex
+ * radius (the SAME condition ToolBase._polygonOnCommit uses to finish the
+ * polygon). The range hook lets such a tap through so the normal path
+ * completes the polygon instead of opening a new sweep.
+ */
+function _ceRangePolygonCloseTap(t, px) {
+    try {
+        if (!t || !Array.isArray(t._vertices) || t._vertices.length < 3) return false;
+        const first = t._vertices[0];
+        if (!first || typeof first.isSet !== 'function' || !first.isSet()) return false;
+        if (!px || !isFinite(px.x) || !isFinite(px.y)) return false;
+        const th = (t._spec && t._spec.closeThreshold) || 14;
+        return Math.hypot(px.x - first.x, px.y - first.y) <= th;
+    } catch (e) { return false;
+    }
+}
+function _ceRangeReset() { _ceRangeSession = null; _ceRangePolarity = null; }
+/** Close the active sweep (line #1 dropped). true when a sweep was closed. */
+function _ceRangeCancelSession() {
+    if (!_ceRangeSession) return false;
+    _ceRangeSession = null;
+    return true;
+}
+function _ceRangeSessionActive() { return _ceRangeSession !== null; }
+/** Overlay-renderer hook: hide the crosshair's horizontal line while sweeping. */
+function _ceRangeHideCrosshairH() { return _ceRangeSession !== null; }
+
+/** Open a sweep: fix line #1 (data X), init the pending polarity from the mode. */
+function _ceRangeOpenSession(api, panelId, line1PxX) {
+    try {
+        const sc = api && api.scaleCache;
+        if (!sc || !sc.valid || !sc.xScale) return false;
+        const dx = sc.xScale.pixToVal(line1PxX);
+        if (!isFinite(dx)) return false;
+        if (_ceRangePolarity === null) _ceRangePolarity = (_ceRangeModeVal === 1) ? 'low' : 'high';
+        _ceRangeSession = { panelId, line1DataX: dx, pendingHigh: _ceRangePolarity === 'high' };
+        return true;
+    } catch (e) { return false; }
+}
+
+/**
+ * Compute the commit point for the active sweep: the extreme candle (high or
+ * low per the pending polarity) within [line1, current line #2]. Line #2 is
+ * the VISIBLE crosshair X (post magnet-snap — commit what the user sees),
+ * falling back to curPxX. Returns { px:{x,y}, dataX, dataY, extreme:true }
+ * or { px:null, extreme:false } when the sweep covers no candles (the caller
+ * then commits at the pointer — empty-future escape).
+ */
+function _ceRangeCommitExtreme(api, panelId, curPxX) {
+    const s = _ceRangeSession;
+    if (!s) return { px: null, extreme: false };
+    try {
+        const sc = api && api.scaleCache;
+        if (!sc || !sc.valid || !sc.xScale || !sc.yScales[panelId]) return { px: null, extreme: false };
+        const xScale = sc.xScale, yS = sc.yScales[panelId];
+        const lo = (api.layout && isFinite(api.layout.plotLeft)) ? api.layout.plotLeft : -Infinity;
+        const hi = (api.layout && isFinite(api.layout.plotRight)) ? api.layout.plotRight : Infinity;
+        const x1 = Math.max(lo, Math.min(hi, xScale.valToPix(s.line1DataX)));
+        let x2;
+        if (api.crosshair && isFinite(api.crosshair.x)) x2 = api.crosshair.x;
+        else if (isFinite(curPxX)) x2 = curPxX;
+        else x2 = x1;
+        x2 = Math.max(lo, Math.min(hi, x2));
+        const ext = api.dataPort.query({
+            type: 'FIND_RANGE_EXTREME',
+            payload: {
+                xMin: xScale.pixToVal(Math.min(x1, x2)),
+                xMax: xScale.pixToVal(Math.max(x1, x2)),
+                findMax: s.pendingHigh,
+            },
+        });
+        if (ext && isFinite(ext.x) && isFinite(ext.y)) {
+            return {
+                px: { x: xScale.valToPix(ext.x), y: yS.valToPix(ext.y) },
+                dataX: ext.x, dataY: ext.y, extreme: true,
+            };
+        }
+    } catch (e) { /* fall through to the pointer fallback */ }
+    return { px: null, extreme: false };
+}
+
+function _ceRangeFlipPolarity() { _ceRangePolarity = (_ceRangePolarity === 'high') ? 'low' : 'high'; }
+function _ceRangeResetPolarity() { _ceRangePolarity = null; }
+
+/** Compact price text for the live extreme label. */
+function _ceRangeFmtPrice(v) {
+    if (!isFinite(v)) return '—';
+    const a = Math.abs(v);
+    try {
+        if (a >= 10000) return v.toLocaleString('en-US', { maximumFractionDigits: 0 });
+        if (a >= 100)   return v.toLocaleString('en-US', { maximumFractionDigits: 2 });
+        if (a >= 1)     return v.toFixed(4);
+        return v.toPrecision(6);
+    } catch (e) { return String(v); }
+}
+
+/**
+ * V197: draw the range sweep UI on the overlay canvas (inside the tool
+ * preview stage's panel clip). Returns true when a sweep is active — the
+ * caller then SKIPS the tool's rubber-band preview (the pending anchor
+ * chases the pointer's Y, which is meaningless while range-placing).
+ */
+function _ceRangeRenderOverlay(octx, ls, api) {
+    const s = _ceRangeSession;
+    if (!s || !octx) return false;
+    try {
+        const sc = api && api.scaleCache;
+        if (!sc || !sc.valid || !sc.xScale || !sc.yScales[s.panelId]) return true; // suppress preview, draw nothing
+        const xScale = sc.xScale, yS = sc.yScales[s.panelId];
+        const panel = (ls && ls.panels) ? ls.panels[s.panelId] : null;
+        if (!panel) return true;
+        const top = panel.top, bottom = panel.bottom;
+        if (!isFinite(top) || !isFinite(bottom) || bottom <= top) return true;
+        const lo = (ls && isFinite(ls.plotLeft)) ? ls.plotLeft : -Infinity;
+        const hi = (ls && isFinite(ls.plotRight)) ? ls.plotRight : Infinity;
+        const x1 = Math.max(lo, Math.min(hi, xScale.valToPix(s.line1DataX)));
+        const x2 = (api.crosshair && isFinite(api.crosshair.x))
+            ? Math.max(lo, Math.min(hi, api.crosshair.x)) : x1;
+        const col = _CE_RANGE_COLORS[s.pendingHigh ? 'high' : 'low'];
+        const xa = Math.min(x1, x2), xb = Math.max(x1, x2);
+        // band fill
+        if (xb - xa > 0.5) {
+            octx.fillStyle = col.fill;
+            octx.fillRect(xa, top, xb - xa, bottom - top);
+        }
+        // line #1 (placed) — dashed polarity-colored vertical
+        octx.save();
+        octx.strokeStyle = col.line;
+        octx.lineWidth = 1;
+        octx.setLineDash([5, 4]);
+        octx.globalAlpha = 0.9;
+        octx.beginPath();
+        octx.moveTo(Math.round(x1) + 0.5, top);
+        octx.lineTo(Math.round(x1) + 0.5, bottom);
+        octx.stroke();
+        octx.restore();
+        // live extreme marker + H/L price label
+        const ext = api.dataPort.query({
+            type: 'FIND_RANGE_EXTREME',
+            payload: {
+                xMin: xScale.pixToVal(xa),
+                xMax: xScale.pixToVal(xb),
+                findMax: s.pendingHigh,
+            },
+        });
+        if (ext && isFinite(ext.x) && isFinite(ext.y)) {
+            const ex = xScale.valToPix(ext.x);
+            const ey = yS.valToPix(ext.y);
+            if (ex >= lo - 2 && ex <= hi + 2 && ey >= top - 2 && ey <= bottom + 2) {
+                octx.save();
+                octx.beginPath();
+                octx.arc(ex, ey, 3.5, 0, Math.PI * 2);
+                octx.fillStyle = col.line;
+                octx.fill();
+                octx.strokeStyle = 'rgba(255,255,255,0.85)';
+                octx.lineWidth = 1;
+                octx.stroke();
+                const label = (s.pendingHigh ? 'H ' : 'L ') + _ceRangeFmtPrice(ext.y);
+                octx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
+                const tw = octx.measureText(label).width;
+                let tx = ex + 8;
+                if (tx + tw > hi - 4) tx = ex - 8 - tw;  // flip near the right edge
+                const ty = Math.max(top + 10, Math.min(bottom - 5, ey - 7));
+                octx.fillStyle = col.text;
+                octx.textAlign = 'left';
+                octx.textBaseline = 'alphabetic';
+                octx.fillText(label, tx, ty);
+                octx.restore();
+            }
+        }
+    } catch (e) { /* drawing must never break the frame */ }
+    return true;
+}
+
+try {
+    Object.assign(window, {
+        _ceRangeMode, _ceRangeSetMode, _ceRangeSupportedMode, _ceRangeReset,
+        _ceRangeCancelSession, _ceRangeSessionActive, _ceRangeHideCrosshairH,
+        _ceRangeOpenSession, _ceRangeCommitExtreme, _ceRangeFlipPolarity,
+        _ceRangeResetPolarity, _ceRangeRenderOverlay, _ceRangePolygonCloseTap,
+    });
+} catch (e) { /* window unavailable — hooks self-disable via typeof */ }
 
 // ── V39: явный экспорт в window (обратная совместимость) ──
 Object.assign(window, { InputState, SnapContext, CrosshairSnap, Anchor, AnchorPresets, DynamicStylePresets, AnchorStore });
@@ -43904,8 +44576,49 @@ class OverlayManager {
         // object's resolve() result is cached here so render() and hitTest()
         // (called on every mousemove + every animation frame) don't recompute
         // dynamic anchors (range-high, swing-high, etc.) which can scan up to
-        // 10k candles each. Invalidated by _dirty() and invalidateCtx().
+        // 10k candles each. Invalidated by _dirty(), invalidateCtx() and
+        // _checkScaleGen() (V195).
         this._resolvedCache = null;
+        // V195-perf-overlay: scale-identity cache generation. The resolved
+        //   cache + the anchor context depend ONLY on (objects/anchors,
+        //   chart series data, xScale, yScales). Object/anchor mutations
+        //   invalidate via _dirty(); any data or viewport change re-renders
+        //   the main frame, and RenderContext._frame builds a NEW Scale pair
+        //   every main frame (ScaleCache.update then swaps the references).
+        //   So Scale IDENTITY is a complete, O(1) invalidation signal:
+        //   unchanged across frames means the caches stay warm. Before V195
+        //   the caches were destroyed at the END of every overlay frame
+        //   (invalidateCtx in _overlayStage_renderObjects) and the resolve
+        //   results built by the hover hit-test were thrown away at the
+        //   START of render() (V103b reset) — every crosshair move paid
+        //   TWO resolve() passes per object plus a full O(visible)x series
+        //   BUILD_ANCHOR_CONTEXT scan even when nothing had changed.
+        this._genX = null;
+        this._genY = null;
+        // V195: mutation revision — bumped by _dirty() and _checkScaleGen();
+        //   part of the updateHover skip signature (FIX-B).
+        this._rev = 0;
+        // V195: last updateHover signature (rev + pointer px + active tool).
+        this._hoverRev = -1; this._hoverPx = NaN; this._hoverPy = NaN; this._hoverTool = null;
+    }
+
+    /**
+     * V195-perf-overlay: O(1) cache-generation check. Called at the top of
+     * render(), hitTest() and hitTestWithResolve() — i.e. everywhere the
+     * resolved cache / anchor context are about to be consulted. When the
+     * Scale references differ from the generation they were built under,
+     * both caches are dropped and the generation re-stamped. All callers
+     * take their scales from the shared ScaleCache, so the identity key is
+     * stable across overlay-only frames (crosshair moves, countdown-pill
+     * ticks) and flips exactly when a main frame re-rendered the scales.
+     */
+    _checkScaleGen(xScale, yScales) {
+        if (this._genX === xScale && this._genY === yScales) return;
+        this._genX = xScale;
+        this._genY = yScales;
+        this._actx = null;
+        this._resolvedCache = null;
+        this._rev = (this._rev + 1) | 0;
     }
 
     /** Build & cache the anchor context for this frame via DataPort query */
@@ -43931,6 +44644,11 @@ class OverlayManager {
         this._actx = null;
         // and hitTest will rebuild it lazily.
         this._resolvedCache = null;
+        // V195: explicit full invalidation — drop the scale generation too,
+        // so the next consult rebuilds both caches from scratch.
+        this._genX = null;
+        this._genY = null;
+        this._rev = (this._rev + 1) | 0;
     }
 
     /**
@@ -44090,7 +44808,7 @@ class OverlayManager {
     }
 
     getAllObjects() { return Array.from(this.objects.values()); }
-    get visibleCount() { return Array.from(this.objects.values()).filter(o => o.visible).length; }
+    get visibleCount() { let n = 0; for (const o of this.objects.values()) if (o.visible) n++; return n; }
 
     // V37: persistence — save/load overlays to localStorage per ticker.
     // V183: the bucket now also carries the ANCHOR STORE. Anchors used to be
@@ -44195,9 +44913,18 @@ class OverlayManager {
 
     // ── Rendering ──
     render(ctx, layout, xScale, yScales) {
-        // V103b: invalidate resolved cache at start of each render frame
-        //   so style changes (from settings modal) are picked up.
-        this._resolvedCache = new Map();
+        // V195-perf-overlay: scale-identity generation check replaces the
+        //   V103b unconditional `this._resolvedCache = new Map()` that used
+        //   to open this method. V103b's goal (pick up style changes from
+        //   the settings modal) is fully covered by _dirty() — EVERY
+        //   object/anchor mutation path (updateObject / addObject /
+        //   removeObject / anchor CRUD / undo-redo commands / worker-driven
+        //   stateSync applies) routes through _dirty(), which nulls the
+        //   cache. Dropping the unconditional reset lets this method REUSE
+        //   the resolve results the hover hit-test (updateHover, stage 1)
+        //   built moments earlier in the same frame — before V195 every
+        //   visible object's resolve() ran TWICE per overlay frame.
+        this._checkScaleGen(xScale, yScales);
         const selectedKey = this._selectedTrendLineKey;
         // highlights so existing overlays don't show endpoint/vertex markers.
         const activeTool = this._ctx.config?._activeToolName;
@@ -44333,6 +45060,10 @@ class OverlayManager {
     hitTest(px, py, threshold = RENDER_CONSTANTS.HIT_THRESHOLD_PX) {
         const sc = this._ctx.scaleCache;
         if (!sc.valid) return null;
+        // V195: validate the cache generation against the current scales —
+        // external callers (trendline tool, API) may hit-test after a main
+        // frame rebuilt the scales; the stale cache must not be reused.
+        this._checkScaleGen(sc.xScale, sc.yScales);
 
         // V37 step 13: respect ticker/timeframe filter on hit-test so
         // scoped-out objects can't be selected either.
@@ -44360,6 +45091,7 @@ class OverlayManager {
     hitTestWithResolve(px, py, threshold = RENDER_CONSTANTS.HIT_THRESHOLD_PX) {
         const sc = this._ctx.scaleCache;
         if (!sc.valid) return null;
+        this._checkScaleGen(sc.xScale, sc.yScales);   // V195: cache-generation check
 
         const filterCtx = {
             currentTicker:    this._currentTicker    || null,
@@ -44395,6 +45127,32 @@ class OverlayManager {
         const inp = this._ctx.inputState;
         const px = inp.logicalX;
         const py = inp.logicalY;
+        // V195-perf-overlay: skip the hit-test entirely when nothing that
+        //   could change its result changed since the previous pass — the
+        //   pointer position, the mutation revision (objects/anchors via
+        //   _dirty(), scales/data via _checkScaleGen()) and the active tool.
+        //   The once-per-second countdown-pill tick and any other
+        //   overlay-only repaint at a static pointer used to run a full
+        //   O(objects) hit-test (and, before the V195 cache-generation
+        //   fix, a full resolve + BUILD_ANCHOR_CONTEXT rebuild) for nothing.
+        // V195b: pointer off-plot — the never-moved sentinel (-100) or any
+        //   negative coordinate means the hover hit-test CANNOT hit an
+        //   object regardless of scales/data, so a data tick flipping the
+        //   cache generation must not pay a full O(objects) hit-test for it
+        //   (idle chart + live WS stream: pointer parked off-chart is the
+        //   common desktop case).
+        if (px < 0 || py < 0) {
+            if (this.hoveredId !== null) {
+                this.hoveredId = null;
+                this._ctx.dirtyFlags.set(DirtyFlags.OVERLAY);
+            }
+            return;
+        }
+        const rev = this._rev;
+        if (rev === this._hoverRev && px === this._hoverPx && py === this._hoverPy && activeTool === this._hoverTool) {
+            return;
+        }
+        this._hoverRev = rev; this._hoverPx = px; this._hoverPy = py; this._hoverTool = activeTool;
         const obj = this.hitTest(px, py, RENDER_CONSTANTS.HIT_THRESHOLD_PX);
         const newId = obj ? obj._key : null;
         if (newId !== this.hoveredId) {
@@ -44442,6 +45200,9 @@ class OverlayManager {
         this._ctx.dirtyFlags.set(DirtyFlags.OVERLAY);
         // picks up the latest anchor/object mutations.
         this._resolvedCache = null;
+        // V195: bump the mutation revision — updateHover's skip signature
+        // (and any future cache validation) sees objects changed.
+        this._rev = (this._rev + 1) | 0;
         // V37 step 16: bump overlay state version for worker polling.
         if (this.stateSync) this.stateSync.bumpVersion();
         this._ctx.requestRender();
@@ -46829,8 +47590,12 @@ class ChartAPI {
                 return false;
             }
         }
-        await this._ctx.dataPort.send({ type: 'UPDATE_LAST_POINT', payload: dataObj });
-        this._ctx.markAllDirtyAndRender();
+        const res = await this._ctx.dataPort.send({ type: 'UPDATE_LAST_POINT', payload: dataObj });
+        // V194 noop-tick-skip: when the tick was value-identical to the stored
+        //   candle (res.changed === false), the DataStore did NOT bump its
+        //   version — skip the full dirty+render too, the picture cannot
+        //   change. Real ticks behave exactly as before.
+        if (!res || res.changed !== false) this._ctx.markAllDirtyAndRender();
         return true;
     }
 
@@ -50113,6 +50878,9 @@ class TrendLineTool extends InteractionTool {
         this._cursorPx = null;
         this._polygonPoints = [];
         this._rulerData = null;
+        // V197: range-magnet — a mode switch abandons any active sweep and
+        // restarts the high/low alternation.
+        if (typeof window._ceRangeReset === 'function') window._ceRangeReset();
 
         // V37: always exit the previous tool's active state, even if trend
         // tool is not currently active (prevents stale preview lines when
@@ -50153,6 +50921,9 @@ class TrendLineTool extends InteractionTool {
         ctx.api.setInputDragLocked(true);
         this._phase = 'idle';
         this._point1Px = null;
+        // V197: range-magnet — a fresh tool activation restarts the sweep
+        // state and the high/low alternation.
+        if (typeof window._ceRangeReset === 'function') window._ceRangeReset();
         // V37: do not write _cursorPx directly here — let crosshair be the
         // single source. We still reset our local cache to null so any stale
         // value from a previous tool activation doesn't leak through.
@@ -50194,6 +50965,9 @@ class TrendLineTool extends InteractionTool {
         ctx.api.setInputDragLocked(false);
         this._phase = 'idle';
         this._point1Px = null;
+        // V197: range-magnet — leaving the tool (pan/zoom switch, completed
+        // drawing → _resetToolbar) abandons any active sweep + alternation.
+        if (typeof window._ceRangeReset === 'function') window._ceRangeReset();
         this._cursorPx = null;
         this._polygonPoints = [];
         // the measurement should stay visible after the tool deactivates.
@@ -50299,6 +51073,24 @@ class TrendLineTool extends InteractionTool {
         const lockedPanel = this._drawingLockedPanel(t);
         if (lockedPanel) this._clampPxToPanel(px, ctx.api, lockedPanel);
         const drawPanelId = lockedPanel || panelId || 'main';
+        // V197/V198: RANGE MAGNET — two-tap range placement (tap #1 drops range
+        // line #1, pointer sweeps line #2 = the crosshair's vertical line,
+        // tap #2 commits the point AT the range's high/low). The hook consumes
+        // the tap entirely when it opens a sweep or commits a point; the
+        // normal single-tap path below is untouched otherwise. V198: this now
+        // covers EVERY drawing tool (single-point lines, polygon, ruler too);
+        // a polygon close-tap falls through so the polygon still completes.
+        if (t && typeof window._ceRangeMode === 'function' && window._ceRangeMode() !== 0
+            && window._ceRangeSupportedMode(this._mode) && t.isDrawing && t.isDrawing()) {
+            // V198: polygon close-tap passthrough — a tap inside the
+            // close-to-first-vertex radius is the polygon's completion
+            // gesture; it must CLOSE the polygon, not open a sweep.
+            if (!(t._spec && t._spec.anchors === 'variable'
+                    && typeof window._ceRangePolygonCloseTap === 'function'
+                    && window._ceRangePolygonCloseTap(t, px))) {
+                if (this._handleRangeTap(ctx.api, t, px, drawPanelId)) return;
+            }
+        }
         // V154: magnet — the committed anchor snaps to the nearest candle
         // (above the body → high, below → low). All drawing tools, mouse+touch.
         if (typeof window._ceMagnetSnapPx === 'function') {
@@ -50332,6 +51124,49 @@ class TrendLineTool extends InteractionTool {
             t.onCommit(ctx.api, px);
         } else {
             t.onCommit(ctx.api);
+        }
+    }
+
+    /**
+     * V197: RANGE MAGNET tap flow. Returns true when the tap was consumed.
+     *   • no active sweep → tap #1: drop range line #1 at the tap's X
+     *     (kept in DATA coords — pan/zoom mid-sweep keeps it on its candle);
+     *   • active sweep → tap #2: commit the CURRENT tool point at the
+     *     range's extreme (high/low per the alternating polarity) by pointing
+     *     the crosshair at it and running the tool's regular onCommit path
+     *     (no magnet snap here — the extreme IS the exact snap target).
+     *     Then the polarity flips for the next point; when the tool finished,
+     *     the polarity resets so the next placement starts from the mode's
+     *     first side again.
+     */
+    _handleRangeTap(api, t, px, panelId) {
+        try {
+            if (!window._ceRangeSessionActive()) {
+                // Tap #1 — open the sweep at the tap's X.
+                if (!window._ceRangeOpenSession(api, panelId, px.x)) return false;
+                api.dirty.set(DirtyFlags.OVERLAY);
+                api.requestRender();
+                return true;
+            }
+            // Tap #2 — commit at the range extreme (or at the pointer when
+            // the sweep covers no candles — empty-future escape).
+            const ext = window._ceRangeCommitExtreme(api, panelId, px.x);
+            const commitPx = (ext && ext.px) ? ext.px : px;
+            api.crosshair.set(commitPx.x, commitPx.y);
+            t._panelId = panelId;
+            if (toolRegistry.needsPxArg(this._mode)) t.onCommit(api, commitPx);
+            else t.onCommit(api);
+            window._ceRangeFlipPolarity();
+            // Tool finished → the next placement starts from the mode's
+            // first polarity again (onEnter resets it too — belt & braces).
+            if (t.isDrawing && !t.isDrawing()) window._ceRangeResetPolarity();
+            window._ceRangeCancelSession();
+            api.dirty.set(DirtyFlags.OVERLAY);
+            api.requestRender();
+            return true;
+        } catch (e) {
+            try { window._ceRangeCancelSession(); } catch (e2) { /* ignore */ }
+            return false;
         }
     }
 
@@ -52621,6 +53456,15 @@ class PointerController {
         }
         // Escape — deselect.
         if (key === 'Escape') {
+            // V197: range-magnet — Esc first closes the active range sweep
+            // (line #1 dropped); the tool keeps its normal Esc semantics
+            // below (second Esc cancels the draft / deselects).
+            if (typeof window._ceRangeCancelSession === 'function' && window._ceRangeCancelSession()) {
+                e.preventDefault();
+                this.api.dirty.set(DirtyFlags.OVERLAY);
+                this.api.requestRender();
+                return;
+            }
             // V148-impulse5: first cancel the in-progress markup draft
             //   (Esc = cancel current markup), then fall through to deselect.
             //   V156: the corrective patterns (ABC/tri/WXY) behave the same.
@@ -55339,6 +56183,9 @@ class EngineRendering {
     /** Inject PanelLabelRenderer into the MainRenderer (after API is created). */
     setPanelLabelRenderer(renderer) {
         this.renderContext.main._labelRenderer = renderer;
+        // V194-countdown-overlay: direct ref for the overlay render stage —
+        //   the countdown pill is painted on the overlay canvas from there.
+        this._panelLabelRenderer = renderer || null;
     }
 
     /** Schedule a render frame via requestAnimationFrame. */
@@ -55689,6 +56536,14 @@ class EngineRendering {
             this._overlayStage_renderToolPreview(vp, l, ls);
         }
 
+        // V194-countdown-overlay: paint the candle-close countdown pill on the
+        //   overlay canvas (cheap layer). The pill's slot is recorded by the
+        //   main-canvas label pass; its once-per-second text change marks ONLY
+        //   OVERLAY dirty now, so the candles/indicators layer is untouched.
+        if (this._panelLabelRenderer && typeof this._panelLabelRenderer.renderCountdown === 'function') {
+            try { this._panelLabelRenderer.renderCountdown(this.overlayCanvas.getContext('2d')); } catch (_) {}
+        }
+
         // Stage 6: clear OVERLAY dirty flag
         this._overlayStage_clearDirty(vp, l, ls);
 
@@ -55722,7 +56577,16 @@ class EngineRendering {
                 this.overlayCanvas.getContext('2d'), ls, sc.xScale, sc.yScales
             );
         }
-        this._overlay.invalidateCtx();
+        // V195-perf-overlay: the unconditional `this._overlay.invalidateCtx()`
+        //   that used to close this stage destroyed the anchor context
+        //   (O(visible) x series BUILD_ANCHOR_CONTEXT scan) and every
+        //   cached object resolve at the end of EVERY overlay frame —
+        //   including crosshair-only moves where NOTHING they depend on
+        //   changed. Invalidation is now event-driven instead:
+        //   _dirty() for object/anchor mutations, _checkScaleGen() (scale
+        //   identity — flips on every main-frame re-render, which is also
+        //   the only way data/layout/viewport can change) for everything
+        //   else. Overlay-only frames now reuse the previous frame's caches.
     }
 
     _overlayStage_syncRuler(vp, l, ls) {
@@ -55769,7 +56633,14 @@ _overlayStage_renderToolPreview(vp, l, ls) {
                 octx.rect(ls.plotLeft, pb.top, ls.plotWidth, pb.height);
                 octx.clip();
             }
-            tool.renderPreview(octx, ls, this.api);
+            // V197: range-magnet sweep — draw the range UI INSTEAD of the
+            //   tool's rubber-band preview: the pending anchor chases the
+            //   pointer's Y, which is meaningless while range-placing, and
+            //   the sweep's own band/lines/label take the stage.
+            if (!(typeof window._ceRangeRenderOverlay === 'function'
+                    && window._ceRangeRenderOverlay(octx, ls, this.api))) {
+                tool.renderPreview(octx, ls, this.api);
+            }
             octx.restore();
             this._previewRendered = true;
     }
@@ -60562,28 +61433,55 @@ class BinanceAdapter extends WebSocketExchangeAdapter {
             if (startTime) u += `&startTime=${Math.round(startTime)}`;
             return u;
         };
+        // V191-anchor-blank: tryFetch must DISTINGUISH "network/HTTP failure"
+        //   from "genuinely no history". The old `catch { return []; }` +
+        //   `if (!resp.ok) return [];` turned a transient proxy failure (the
+        //   user's CORS-proxy chain returns 403/429 regularly) into an EMPTY
+        //   response, which _prefetchOne classified as 'no-data' → 60 s
+        //   backoff → anchored indicator lines BLANK after a coin switch
+        //   («меняю монету — якорные линии не отобразились; ухожу на след
+        //   монету и возвращаюсь — на месте»: switching away+back cleared the
+        //   backoff, so the retry then succeeded). Now: network errors and
+        //   HTTP 5xx/403/429 REJECT (→ 'error' path, short retry), while
+        //   HTTP 200 with an empty array stays a genuine "no data". HTTP 400
+        //   (Binance "invalid symbol" for spot-only coins queried on fapi or
+        //   vice versa) is ALSO a genuine "not listed on this market" → [].
         const tryFetch = async (perp) => {
-            try {
-                const resp = await fetch(buildUrl(perp));
-                if (!resp.ok) return [];
-                const data = await resp.json();
-                if (!Array.isArray(data) || data.length === 0) return [];
-                return this._transformKlines(data);
-            } catch (e) { return []; }
+            const resp = await fetch(buildUrl(perp));
+            if (resp.status === 400) return [];   // invalid symbol/interval = not listed on this market
+            if (!resp.ok) throw new Error(`anchor klines HTTP ${resp.status}`);
+            const data = await resp.json();
+            if (!Array.isArray(data)) return [];  // defensive: malformed body
+            return this._transformKlines(data);
         };
-        // Fire both in parallel — primary returns first if it has data,
-        // fallback is the safety net for spot-only / perp-only coins.
-        const [primary, fallback] = await Promise.all([
+        // V50.2: fire BOTH endpoints in parallel. V191: allSettled — a
+        //   rejection on one leg must not kill the other leg's good data.
+        //   Return data if ANY leg has it; [] only when BOTH legs completed
+        //   successfully-but-empty (genuinely no history anywhere); rethrow
+        //   when no leg produced data and at least one FAILED (network) so
+        //   the caller's 'error' path (short retry) applies instead of the
+        //   60 s 'no-data' backoff.
+        const results = await Promise.allSettled([
             tryFetch(this.isPerp),
             tryFetch(!this.isPerp),
         ]);
-        if (primary.length > 0) return primary;
-        if (fallback.length > 0 && (typeof isDevMode === 'function') && isDevMode()) {
-            try { devLog(`[BinanceAdapter] fetchHistoryTf fallback ${this.isPerp ? 'perp' : 'spot'}→${!this.isPerp ? 'perp' : 'spot'} hit`, {
-                symbol: this.symbol, tf, count: fallback.length,
-            }); } catch (_) {}
+        for (const r of results) {
+            if (r.status === 'fulfilled' && r.value.length > 0) {
+                const other = results.find(x => x !== r);
+                if (other && other.status === 'rejected' && (typeof isDevMode === 'function') && isDevMode()) {
+                    try { devLog(`[BinanceAdapter] fetchHistoryTf: one market failed but the other returned data`, {
+                        symbol: this.symbol, tf, error: String(other.reason?.message || other.reason),
+                    }); } catch (_) {}
+                }
+                return r.value;
+            }
         }
-        return fallback;
+        const failed = results.filter(r => r.status === 'rejected');
+        if (failed.length > 0) {
+            throw failed[0].reason instanceof Error ? failed[0].reason
+                : new Error(`anchor klines failed: ${failed.map(f => String(f.reason?.message || f.reason)).join('; ')}`);
+        }
+        return [];
     }
 
     // ── Transform Binance kline array ──
@@ -60953,18 +61851,22 @@ class ByBitAdapter extends WebSocketExchangeAdapter {
             return u;
         };
         const tryFetch = async (cat) => {
-            try {
-                const resp = await fetch(buildUrl(cat));
-                if (!resp.ok) return [];
-                const data = await resp.json();
-                // ByBit V5 returns { retCode: 0, result: { list: [...] } }.
-                // If the symbol doesn't exist on this category, ByBit returns
-                // retCode != 0 OR retCode=0 with empty list. Handle both.
-                if (data?.retCode && data.retCode !== 0) return [];
-                const list = data?.result?.list;
-                if (!Array.isArray(list) || list.length === 0) return [];
-                return this._transformKlines(data);
-            } catch (e) { return []; }
+            // V191-anchor-blank: failure-vs-empty distinction (see the Binance
+            //   adapter). Network errors / HTTP !ok (proxy 403/429/5xx) REJECT
+            //   → caller's short 'error' retry; Bybit retCode != 0 ("symbol
+            //   not found on this category") or HTTP 200 with an empty list
+            //   is a GENUINE "no history on this market" → [].
+            const resp = await fetch(buildUrl(cat));
+            if (resp.status === 404) return [];   // not listed on this category
+            if (!resp.ok) throw new Error(`anchor klines HTTP ${resp.status}`);
+            const data = await resp.json();
+            // ByBit V5 returns { retCode: 0, result: { list: [...] } }.
+            // If the symbol doesn't exist on this category, ByBit returns
+            // retCode != 0 OR retCode=0 with empty list. Handle both.
+            if (data?.retCode && data.retCode !== 0) return [];
+            const list = data?.result?.list;
+            if (!Array.isArray(list) || list.length === 0) return [];
+            return this._transformKlines(data);
         };
         // V50.2 FIX: fire BOTH categories in parallel. Previously we did
         //   sequential primary→fallback which doubled latency for coins
@@ -60972,18 +61874,23 @@ class ByBitAdapter extends WebSocketExchangeAdapter {
         //   primary + 500ms fallback = 1s). Parallel = max latency = 500ms.
         //   We still prefer the primary category's result if BOTH return
         //   data (it matches the chart's active market).
+        //   V191: allSettled — one leg's rejection must not kill the other
+        //   leg's good data; rethrow only when NO leg has data and at least
+        //   one failed (rationale in the Binance adapter's V191 comment).
         const fallbackCategory = primaryCategory === 'linear' ? 'spot' : 'linear';
-        const [primary, fallback] = await Promise.all([
+        const results = await Promise.allSettled([
             tryFetch(primaryCategory),
             tryFetch(fallbackCategory),
         ]);
-        if (primary.length > 0) return primary;
-        if (fallback.length > 0 && (typeof isDevMode === 'function') && isDevMode()) {
-            try { devLog(`[ByBitAdapter] fetchHistoryTf fallback ${primaryCategory}→${fallbackCategory} hit`, {
-                symbol: this.symbol, tf, count: fallback.length,
-            }); } catch (_) {}
+        for (const r of results) {
+            if (r.status === 'fulfilled' && r.value.length > 0) return r.value;
         }
-        return fallback;
+        const failed = results.filter(r => r.status === 'rejected');
+        if (failed.length > 0) {
+            throw failed[0].reason instanceof Error ? failed[0].reason
+                : new Error(`anchor klines failed: ${failed.map(f => String(f.reason?.message || f.reason)).join('; ')}`);
+        }
+        return [];
     }
 
     // ── Transform ByBit kline array (newest-first → oldest-first) ──
@@ -61343,23 +62250,34 @@ class CoinbaseAdapter extends WebSocketExchangeAdapter {
         const g = tfMap[tf] || 3600;
         const sym = this._toCoinbaseSymbol(this.symbol);
         const tryFetch = async (productId) => {
-            try {
-                let url = `https://api.exchange.coinbase.com/products/${encodeURIComponent(productId)}/candles?granularity=${g}`;
-                if (startTime) url += `&start=${encodeURIComponent(new Date(startTime).toISOString())}`;
-                const resp = await fetch(url);
-                if (!resp.ok) return [];
-                const data = await resp.json();
-                if (!Array.isArray(data) || data.length === 0) return [];
-                return this._transformKlines(data);
-            } catch (e) { return []; }
+            let url = `https://api.exchange.coinbase.com/products/${encodeURIComponent(productId)}/candles?granularity=${g}`;
+            if (startTime) url += `&start=${encodeURIComponent(new Date(startTime).toISOString())}`;
+            // V191-anchor-blank: failure-vs-empty distinction (see the Binance
+            //   adapter). Network errors / HTTP 5xx/403/429 REJECT → caller's
+            //   short 'error' retry; 404 (product not found) or HTTP 200 with
+            //   an empty array is a GENUINE "no history" → [].
+            const resp = await fetch(url);
+            if (resp.status === 404) return [];
+            if (!resp.ok) throw new Error(`anchor klines HTTP ${resp.status}`);
+            const data = await resp.json();
+            if (!Array.isArray(data) || data.length === 0) return [];
+            return this._transformKlines(data);
         };
         // Try USDT form first, fall back to USD (most Coinbase pairs are USD)
-        const [primary, fallback] = await Promise.all([
+        // V191: allSettled — one leg's rejection must not kill the other leg's
+        //   good data; rethrow when no leg has data and at least one failed.
+        const [primaryResult, fallbackResult] = await Promise.allSettled([
             tryFetch(sym),
             sym.endsWith('-USDT') ? tryFetch(sym.replace(/-USDT$/, '-USD')) : Promise.resolve([]),
         ]);
-        if (primary.length > 0) return primary;
-        return fallback;
+        if (primaryResult.status === 'fulfilled' && primaryResult.value.length > 0) return primaryResult.value;
+        if (fallbackResult.status === 'fulfilled' && fallbackResult.value.length > 0) return fallbackResult.value;
+        const failed = [primaryResult, fallbackResult].filter(r => r.status === 'rejected');
+        if (failed.length > 0) {
+            throw failed[0].reason instanceof Error ? failed[0].reason
+                : new Error(`anchor klines failed: ${failed.map(f => String(f.reason?.message || f.reason)).join('; ')}`);
+        }
+        return [];
     }
 
     // ── Transform Coinbase kline array ──
@@ -62624,18 +63542,24 @@ class RatioAdapter extends DataSourceAdapter {
      *  chain — the label kept showing the correct pair («SOL/ETH») while the
      *  candles stayed USDT-priced, and nothing ever retried («закрываю
      *  страницу с quote currency не usdt… открываю — пара правильная, график
-     *  usdt»). Two bounded attempts (3 s, then 10 s) ride out transient
-     *  rate-limit windows — a chain that failed FAST (hard block / tight
-     *  quota) can burn attempt #1 before connectivity returns, so attempt #2
-     *  uses a wider window; the counter keeps it from looping forever.
-     *  Skips silently when the generation went stale or the store already
+     *  usdt»).
+     *  V192-retry-window: two attempts (3 s, 10 s) were not enough on a
+     *  congested proxy chain — the quote switch's legs compete with the
+     *  scanner's 100-coin background fetches, both attempts could burn
+     *  inside the same rate-limit window, and the chart stayed on the OLD
+     *  instrument's candles/indicator lines INDEFINITELY («тупит и не
+     *  обновляет индикаторные линии»). Now: 3 s → 10 s → then a steady
+     *  20 s cadence up to 8 attempts total (~2.5 minutes of self-healing),
+     *  and a SUCCESSFUL composite load resets the counter (a later switch
+     *  gets its own fresh budget). Each retry re-checks the store first and
+     *  skips silently when the generation went stale or the store already
      *  shows our composite (someone else fixed it in the meantime). */
     _scheduleForeignDataRetry(gen) {
         if (gen !== undefined && gen !== this._switchGen) return;
         const attempt = this._foreignRetryCount || 0;
-        if (attempt >= 2) return;
+        if (attempt >= 8) return;
         this._foreignRetryCount = attempt + 1;
-        const delay = attempt === 0 ? 3000 : 10000;
+        const delay = attempt === 0 ? 3000 : attempt === 1 ? 10000 : 20000;
         setTimeout(() => {
             if (gen !== undefined && gen !== this._switchGen) return;
             let dsSym = null;
@@ -62962,15 +63886,23 @@ class RatioAdapter extends DataSourceAdapter {
         if (gen === this._switchGen) this._loading = true;
         this._updateStatus('Loading ratio...');
         const isStale = () => gen !== undefined && gen !== this._switchGen;
+        // V192-tf-poison: capture the tf THIS load started with. A concurrent
+        //   anchor-TF prefetch (render-loop _maybeLazyPrefetchAnchorTfs) calls
+        //   fetchHistoryTf('1d') which TEMPORARILY mutates this.timeframe for
+        //   the duration of its own awaits — reading this.timeframe AFTER our
+        //   leg-fetch awaits used to stamp the chart DataStore (and the IDB
+        //   cache keys) with the ANCHOR tf ('1d') while holding 4h candles,
+        //   and made the market-stamp identity unstable across switches.
+        const tfStart = this.timeframe;
         try {
-            const intervalMs = this._tfToMs(this.timeframe);
+            const intervalMs = this._tfToMs(tfStart);
 
             this._markRequest();
-            const { factor: _aggFactor } = this._nativeTfFor(this.timeframe);
+            const { factor: _aggFactor } = this._nativeTfFor(tfStart);
             const effFetchLimit = this.fetchLimit * _aggFactor;
 
             // V117: check denominator cache first
-            const denCacheKey = `${this.denominator}:${this.timeframe}:${this.denominatorPerp}`;
+            const denCacheKey = `${this.denominator}:${tfStart}:${this.denominatorPerp}`;
             const cachedDen = this._denCache.get(denCacheKey);
             const denCacheFresh = cachedDen && (Date.now() - cachedDen.fetchTime < this._denCacheTtl);
 
@@ -62998,11 +63930,11 @@ class RatioAdapter extends DataSourceAdapter {
                         this._klineStartTime = ratioCandles[ratioCandles.length - 1]._x;
 
                         this.chartApi?._ctx?.invalidateYRangeCache?.();
-                        // V121-cache-truth: pass this.symbol/this.timeframe
-                        //   (which are "NUMERATOR/DENOMINATOR" composite + tf
-                        //   for RatioAdapter) so the DataStore stamps them.
+                        // V121-cache-truth: pass this.symbol/tf (V192: the tf
+                        //   CAPTURED at load start — see tfStart above) so the
+                        //   DataStore stamps them.
                         const result = await this.chartApi.loadHistory(ratioCandles, {
-                            symbol: this.symbol, tf: this.timeframe
+                            symbol: this.symbol, tf: tfStart
                         });
                         if (isStale()) return;
 
@@ -63017,6 +63949,7 @@ class RatioAdapter extends DataSourceAdapter {
                             this.chartApi.setAutoFitY(true);
                         }
 
+                        this._foreignRetryCount = 0;   // V192: success — fresh budget for the next switch
                         this._updateStatus(`Ratio: ${this.symbol}`);
                         this._startPolling();
 
@@ -63061,7 +63994,7 @@ class RatioAdapter extends DataSourceAdapter {
                 candles: denCandles,
                 usedPerp: denRes.usedPerp,
                 fetchTime: Date.now(),
-                tf: this.timeframe,
+                tf: tfStart,
             });
             // V117: clean old cache entries (different symbols/timeframes)
             for (const [key, entry] of this._denCache) {
@@ -63083,9 +64016,11 @@ class RatioAdapter extends DataSourceAdapter {
             this.chartApi?._ctx?.invalidateYRangeCache?.();
             // V121-cache-truth: stamp the store with this.symbol/this.timeframe
             //   (composite "NUM/DEN" + tf) so _saveCacheFromChart saves under
-            //   the right key.
+            //   the right key. V192: tf is the value CAPTURED at load start —
+            //   this.timeframe may legitimately be mid-mutation by a
+            //   concurrent anchor-TF fetchHistoryTf at this exact moment.
             const result = await this.chartApi.loadHistory(ratioCandles, {
-                symbol: this.symbol, tf: this.timeframe
+                symbol: this.symbol, tf: tfStart
             });
             if (isStale()) return;
 
@@ -63100,6 +64035,7 @@ class RatioAdapter extends DataSourceAdapter {
                 this.chartApi.setAutoFitY(true);
             }
 
+            this._foreignRetryCount = 0;   // V192: success — fresh budget for the next switch
             this._updateStatus(`Ratio: ${this.symbol}`);
             this._startPolling();
         } catch (err) {
@@ -63319,12 +64255,20 @@ class RatioAdapter extends DataSourceAdapter {
                 this._fetchJson(numUrl),
                 this._fetchJson(denUrl),
             ]);
+            // V191-anchor-blank: _fetchJson returns NULL on network/HTTP
+            //   failure. The old `catch { return []; }` + the null-to-empty
+            //   fallthrough classified a transient proxy failure as "no
+            //   history" → _prefetchOne marked the store 'no-data' with a
+            //   60 s backoff → anchored lines blank after a coin/ratio
+            //   switch. A null leg is a FAILURE → throw (short 'error'
+            //   retry); only genuinely empty candle arrays → [].
+            if (numData == null || denData == null) {
+                throw new Error('ratio anchor fetch failed (network/HTTP)');
+            }
             const numCandles = this._transformKlines(numData);
             const denCandles = this._transformKlines(denData);
             if (numCandles.length === 0 || denCandles.length === 0) return [];
             return this._computeRatio(numCandles, denCandles);
-        } catch (e) {
-            return [];
         } finally {
             this.timeframe = savedTf;
         }
@@ -63334,6 +64278,15 @@ class RatioAdapter extends DataSourceAdapter {
         this._stopPolling();
         const pollGen = this._switchGen;
         const isStale = () => pollGen !== undefined && pollGen !== this._switchGen;
+        // V192-poll-den: the poll fetched BOTH legs every 5 s — a constant
+        //   24 requests/min through the user's rate-limited proxy chain, on
+        //   top of the scanner + alert background traffic. The denominator's
+        //   recent candles change once per candle, not once per 5 s: reuse
+        //   the previous poll's den candles for 60 s and fetch only the
+        //   numerator meanwhile (halves the poll traffic; the merge path
+        //   only applies candles at/after the chart's last timestamp, so
+        //   two recent candles are enough).
+        const DEN_POLL_TTL = 60000;
         const scheduleNext = () => {
             this._pollTimer = setTimeout(async () => {
                 if (!this._active || !this.chartApi) return;
@@ -63343,14 +64296,26 @@ class RatioAdapter extends DataSourceAdapter {
                     //   initial fetch — avoids a wasted spot request on
                     //   every 5s tick for perp-only numerators.
                     const urlNum = this._buildKlineUrl(this.numerator, 2, null, null, !!this._numPerp);
-                    const urlDen = this._buildKlineUrl(this.denominator, 2, null, null, !!this._denPerp);
+                    const denFresh = this._pollDenCandles
+                        && this._pollDenTs
+                        && (Date.now() - this._pollDenTs < DEN_POLL_TTL);
+                    const urlDen = denFresh ? null : this._buildKlineUrl(this.denominator, 2, null, null, !!this._denPerp);
                     const [numData, denData] = await Promise.all([
                         this._fetchJson(urlNum),
-                        this._fetchJson(urlDen),
+                        denFresh ? Promise.resolve(null) : this._fetchJson(urlDen),
                     ]);
                     if (isStale() || !this.chartApi) return;
                     const numCandles = this._transformKlines(numData);
-                    const denCandles = this._transformKlines(denData);
+                    let denCandles;
+                    if (denFresh) {
+                        denCandles = this._pollDenCandles;
+                    } else {
+                        denCandles = (denData == null) ? [] : this._transformKlines(denData);
+                        if (denCandles.length > 0) {
+                            this._pollDenCandles = denCandles;
+                            this._pollDenTs = Date.now();
+                        }
+                    }
                     const ratioCandles = this._computeRatio(numCandles, denCandles);
                     if (ratioCandles.length > 0) {
                         const latest = ratioCandles[ratioCandles.length - 1];
@@ -66588,6 +67553,28 @@ class ToolbarController {
 //     • Streaming interval tracking (startStreaming/stopStreaming)
 //     • Lazy-load prefetching (checkLazyLoad)
 // ═══════════════════════════════════════════════════════════════════════════════
+// ── V192-switch-window: give the INTERACTIVE market switch a clear network
+//    window. The scanner's auto-refresh (100 coins × TF × 1000 candles, ~25 s
+//    after boot and every 4 h) and the alert background evaluations fetch
+//    through the SAME (often rate-limited CORS-proxy) chain the chart's own
+//    quote-currency / coin / timeframe load uses — a switch issued mid-storm
+//    queued behind dozens of requests, got 418/429'd, burned its two
+//    self-repair attempts and stayed on the PREVIOUS instrument's candles +
+//    indicator lines («тупит и не обновляет индикаторные линии, когда
+//    переключаю quote currency»). During the hold the scan workers /
+//    ensureBaseSeries / alert background fetches START no new kline requests
+//    (in-flight ones finish; evaluation serves cached data for ≤12 s).
+window.__ceSwitchHoldUntil = 0;
+window.__ceHoldForMarketSwitch = function (ms) {
+    try {
+        const until = Date.now() + (isFinite(ms) ? ms : 12000);
+        if (until > (window.__ceSwitchHoldUntil || 0)) window.__ceSwitchHoldUntil = until;
+    } catch (_) {}
+};
+window.__ceSwitchHeld = function () {
+    try { return Date.now() < (window.__ceSwitchHoldUntil || 0); } catch (_) { return false; }
+};
+
 class DataSourceOrchestrator {
     /**
      * @param {EventBus} bus
@@ -66760,6 +67747,10 @@ class DataSourceOrchestrator {
     async _onSwitch(evt) {
         const src = evt.payload.src;
         if (!src) return;
+        // V192-switch-window: every source transition opens the network hold
+        //   so this switch's own fetches don't queue behind the scanner /
+        //   alert background traffic (see the helper block above).
+        try { if (typeof window.__ceHoldForMarketSwitch === 'function') window.__ceHoldForMarketSwitch(12000); } catch (_) {}
         // V120-fix-debug: log every source:switch entry
         try { console.log('[V120-switch-debug] entry', {
             src, srcMode: this.srcMode,
@@ -66994,6 +67985,10 @@ class DataSourceOrchestrator {
             trendTool._rulerData = null;
             this.api.requestRender();
         }
+
+        // V192-switch-window: param-driven transitions (symbol pick, quote
+        //   change, tf / spot-perp toggles) open the network hold too.
+        try { if (typeof window.__ceHoldForMarketSwitch === 'function') window.__ceHoldForMarketSwitch(12000); } catch (_) {}
 
         // Whitelist allowed params to prevent arbitrary property overwrite
         const ALLOWED_PARAMS = ['symbol', 'timeframe', 'bybitCategory', 'ratioConfig', 'isPerp'];
@@ -71402,6 +72397,54 @@ class ChartFactory {
             //   filled tips) already shows the mode (user request).
         });
 
+        // V197: RANGE MAGNET — 3-state toggle RIGHT NEXT to the magnet:
+        //   off → low first (L) → high first (H) → off. While ON, multi-point
+        //   tools (fib/trend/ray/fibexp/zone/gridbot/5W/ABC/TRI/WXY) place
+        //   each point with a two-tap X-range sweep and the point lands on
+        //   the range's HIGH or LOW (alternating high → low → high …).
+        //   Persists ('ce_rangemagnet'). The glyph: two vertical posts with a
+        //   translucent band between them; the badge letter shows the mode.
+        const rangeBtn = document.createElement('button');
+        rangeBtn.dataset.role = 'btn-range-magnet';
+        const _rangeIcon = '<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" '
+            + 'style="display:block;margin:auto">'
+            + '<rect x="7" y="5" width="10" height="14" fill="currentColor" opacity="0.28"/>'
+            + '<rect x="4" y="3" width="2.6" height="18" rx="1.2" fill="currentColor"/>'
+            + '<rect x="17.4" y="3" width="2.6" height="18" rx="1.2" fill="currentColor"/>'
+            + '</svg>';
+        const _rangeBadge = (m) => m === 1
+            ? '<span style="position:absolute;right:-4px;bottom:-2px;font:bold 8px/1 -apple-system,BlinkMacSystemFont,sans-serif;color:#4caf50">L</span>'
+            : m === 2
+            ? '<span style="position:absolute;right:-4px;bottom:-2px;font:bold 8px/1 -apple-system,BlinkMacSystemFont,sans-serif;color:#f23645">H</span>'
+            : '';
+        const _rangeRefresh = () => {
+            const m = window.CE_RANGE_MAGNET || 0;
+            rangeBtn.innerHTML = '<span style="position:relative;display:block;margin:auto;width:13px;height:13px">'
+                + _rangeIcon + _rangeBadge(m) + '</span>';
+            rangeBtn.classList.toggle('active', m !== 0);
+        };
+        rangeBtn.title = 'Range magnet: place ANY tool\u2019s points (fib, trend, waves, hline/vline/rays, polygon, ruler \u2026) '
+            + 'by sweeping an X-range \u2014 tap line 1, move to sweep line 2, tap again: the point lands on the range\u2019s '
+            + 'HIGH or LOW (first high or first low \u2014 your pick; they alternate). Polygon: tap on its first vertex still closes it. '
+            + 'FibAuto keeps its own native range flow. Click to cycle: off \u2192 low first (L) \u2192 high first (H).';
+        rangeBtn.setAttribute('role', 'button');
+        rangeBtn.setAttribute('tabindex', '0');
+        rangeBtn.setAttribute('aria-label', 'Range magnet \u2014 place points by X-range high/low');
+        magnetGrp.appendChild(rangeBtn);
+        window.CE_RANGE_MAGNET = 0;
+        try {
+            window.CE_RANGE_MAGNET = Math.max(0, Math.min(2, parseInt(_safeStorage.getItem('ce_rangemagnet') || '0', 10) || 0));
+        } catch (e) { /* sandbox */ }
+        if (typeof window._ceRangeSetMode === 'function') window._ceRangeSetMode(window.CE_RANGE_MAGNET);
+        _rangeRefresh();
+        rangeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            window.CE_RANGE_MAGNET = ((window.CE_RANGE_MAGNET || 0) + 1) % 3;
+            try { _safeStorage.setItem('ce_rangemagnet', String(window.CE_RANGE_MAGNET)); } catch (e2) { /* sandbox */ }
+            if (typeof window._ceRangeSetMode === 'function') window._ceRangeSetMode(window.CE_RANGE_MAGNET);
+            _rangeRefresh();
+        });
+
         // Ruler first (most-used measurement tool)
         const rulerGrp = document.createElement('div');
         rulerGrp.className = 'grp';
@@ -73678,7 +74721,11 @@ class ChartFactory {
                 html += `<div class="s-section-div">`;
                 html += `<div class="s-section-label collapsed">Reference overlays</div>`;
                 for (const lv of (meta.levels || [])) {
-                    const lbl = lv.label ? `${lv.label} (level @ ${lv.value})` : `level @ ${lv.value}`;
+                    // V193: show the level's EFFECTIVE value in the label — for
+                    // dynamic levels (valueParam, e.g. Z-Score ±threshold) the
+                    // value tracks the existing indicator's live param.
+                    const lvEff = lv.levelValue ? lv.levelValue(isExisting ? existingInd : null) : lv.value;
+                    const lbl = lv.label ? `${lv.label} (level @ ${+lvEff.toFixed(2)})` : `level @ ${+lvEff.toFixed(2)}`;
                     const checked = isExisting ? (existingInd.levelVisible?.[lv.name] !== false) : lv.defaultVisible;
                     html += `<div class="s-check-row"><input type="checkbox" class="s-check" data-levelshow="${lv.name}" ${checked ? 'checked' : ''}><span class="s-check-label">${lbl}</span></div>`;
                     selectedParams[`${lv.name}_show`] = checked !== false;
@@ -77007,7 +78054,33 @@ class CoinPicker {
         const tfChanged = this._chartTf !== (opts.chartTf || '');
         this._chartTf = opts.chartTf || '';
         this._chartXRange = newChartXRange;
-        if ((xRangeChanged || tfChanged) && this._sparklines) {
+        // V192: only treat a window change as DATA-stale when the visible
+        //   range moved by more than one candle of the picker interval. The
+        //   old any-pixel-difference rule marked every key stale whenever a
+        //   candle tick / minor zoom shifted the range — each picker open
+        //   then background-refetched every visible minichart (through the
+        //   same rate-limited proxies the chart needs for its own loads).
+        //   A sub-candle shift is covered by the cached candles (the last
+        //   candle may be one tick fresher — the refresh tickers keep the
+        //   row prices live anyway).
+        let rangeStale = xRangeChanged;
+        if (rangeStale && this._chartXRange && newChartXRange) {
+            try {
+                const pickerToBinance = { '1': '1m', '5': '5m', '15': '15m', '60': '1h', '240': '4h', 'D': '1d' };
+                const ivMs = tfToMs(pickerToBinance[this._options.chartInterval] || this._options.chartInterval);
+                if (ivMs > 0) {
+                    const prev = this._prevStaleXRange;
+                    if (prev &&
+                        Math.abs(prev.min - newChartXRange.min) <= ivMs * 1.5 &&
+                        Math.abs(prev.max - newChartXRange.max) <= ivMs * 1.5) {
+                        rangeStale = false;   // sub-candle jitter — cache still covers the window
+                    }
+                }
+            } catch (_) { /* fall through to the old behavior */ }
+        }
+        if (rangeStale) this._prevStaleXRange = newChartXRange ? { min: newChartXRange.min, max: newChartXRange.max } : null;
+        if (tfChanged || rangeStale) {
+            if (tfChanged) this._prevStaleXRange = newChartXRange ? { min: newChartXRange.min, max: newChartXRange.max } : null;
             // V123-fix(minichart persistence): do NOT wipe the cache — live
             //   ticks / panning change chartXRange between EVERY two opens, so
             //   the old V121 hard-clear left all minicharts blank on each
@@ -78551,20 +79624,15 @@ class CoinPicker {
             //   sparkline fetch) caused ReferenceError because the loop ran first.
             let savedQuote = null;
             try { savedQuote = _safeStorage.getItem('chartEngine_quoteCurrency'); } catch (e) {}
-            // V49n-fix: if sparkline cache version changed (quote currency
-            //   was set/reset), clear the entire sparkline cache so all rows
-            //   re-fetch with the new quote.
-            // CRITICAL: initialize _sparklineCacheVersion to 0 if undefined,
-            //   otherwise undefined !== 0 is true → cache cleared on EVERY
-            //   scroll → sparklines disappear constantly.
-            const curVersion = window._cpSparklineCacheVersion || 0;
-            if (this._sparklineCacheVersion === undefined) this._sparklineCacheVersion = curVersion;
-            if (this._sparklineCacheVersion !== curVersion) {
-                this._sparklines.clear();
-                this._quoteSparkCache = null;
-                this._quoteSparkCacheKey = null;
-                this._sparklineCacheVersion = curVersion;
-            }
+            // V192: the old V49n version-wipe is GONE. It cleared the ENTIRE
+            //   sparkline cache whenever the quote currency changed — but the
+            //   cache key has carried the quote for a long time now
+            //   (base:quote:perp:quote:mc/sp), so per-quote entries coexist
+            //   safely and the wipe was a pure regression: every quote
+            //   roundtrip (ETH→USDT→ETH) blanked all minicharts and forced a
+            //   full refetch on the next picker open («миничарты
+            //   перезагружаются заново», 26 requests measured live). The
+            //   per-key LRU cap below still bounds memory.
             const pending = [];
             for (let i = startIdx; i < endIdx; i++) {
                 const coin = this._filtered[i];
@@ -84673,6 +85741,10 @@ async function ensureBaseSeries() {
         for (const tf of tfs) {
             const btKey = `${q}|${tf}`;
             if (S.baseData[q][tf] && S.baseData[q][tf].length) { state.baseTasks[btKey] = 1; continue; }
+            // V192-switch-window: don't compete with an in-flight market switch
+            while (typeof window.__ceSwitchHeld === 'function' && window.__ceSwitchHeld()) {
+                await sleep(700);
+            }
             let candles = [];
             for (const sym of QUOTE_BASE_SYMS[q] || [q + 'USDT']) {
                 candles = await scanFetch(ad, ex, sym, tf, MAX_CANDLES);
@@ -84785,6 +85857,14 @@ async function workerLoop() {
     try { ad = makeAdapter(ex); } catch (_) { ad = null; }
     while (true) {
         if (S.stopFlag || state.status !== 'running') break;
+        // V192-switch-window: a market switch is in flight — hold NEW scan
+        //   fetches so the chart's own load gets the (rate-limited) proxy
+        //   chain to itself. Sleep instead of break: the scan resumes
+        //   automatically when the window closes.
+        if (typeof window.__ceSwitchHeld === 'function' && window.__ceSwitchHeld()) {
+            await sleep(700);
+            continue;
+        }
         if (!ad) { try { ad = makeAdapter(ex); } catch (_) { break; } }
         let task = nextTask();
         if (!task) break;
@@ -84797,7 +85877,8 @@ async function workerLoop() {
             // Average request rate stays well under the visible-mode rate.
             const t0 = Date.now();
             let batch = 0;
-            while (!S.stopFlag && state.status === 'running' && batch < 12 && (Date.now() - t0) < 15000) {
+            while (!S.stopFlag && state.status === 'running' && batch < 12 && (Date.now() - t0) < 15000
+                   && !(typeof window.__ceSwitchHeld === 'function' && window.__ceSwitchHeld())) {
                 task = nextTask();
                 if (!task) break;
                 await runTask(ad, task);
@@ -86271,6 +87352,9 @@ const ChartAlerts = {
     // EXCH_GAP_FLOOR) and does NOT go through this budget.
     _BG_BUDGET: 20,
     _mayFetch() {
+        // V192-switch-window: during a market switch the chart's own load has
+        //   priority — background alert fetches serve the cache for ≤12 s.
+        if (typeof window.__ceSwitchHeld === 'function' && window.__ceSwitchHeld()) return false;
         const now = Date.now();
         this._fetchLog = this._fetchLog.filter(t => now - t < 60000);
         if (this._fetchLog.length >= this._BG_BUDGET) return false;
