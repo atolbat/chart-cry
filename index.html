@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Chart Engine v49p — series.js v6 foundation · V198 range magnet covers EVERY drawing tool: single-point lines (hline/vline/hray/vray + the horizontal/vertical alias spellings TrendLineTool.setMode actually uses), the multi-vertex polygon (a tap inside the close-to-first-vertex radius still CLOSES the polygon — the close gesture wins over opening a new sweep, same 14 px condition as _polygonOnCommit) and the ruler (both measurement ends placed by sweeps; the 3-tap deactivation semantics untouched — a completed ruler is not “drawing” so its deactivation tap never opens a sweep); only FibAuto stays native (it is already a range tool — its own phases sweep an X-range and auto-find min/max with their own toggle, wrapping the magnet around it would double-derive its points and corrupt its min/max semantics); polarity (high↔low) alternates across every tool’s points exactly as before and resets when the tool completes/exits · V197 range magnet: a 3-state toggle next to the magnet (off → low first (L) → high first (H), persisted 'ce_rangemagnet') — multi-point tools (free/ray/fib/fibtrend/fibexp/zone/gridbot/5W/ABC/TRI/WXY) place each point with a two-tap X-RANGE sweep instead of a raw crosshair click: tap #1 drops a vertical range line (kept in DATA coords — pan/zoom mid-sweep stays glued to its candle), moving the pointer sweeps the second line (the crosshair's OWN vertical line — the same precision mechanism, but the horizontal line, its price label and the pointer-Y axis tag are hidden while sweeping) over an almost-transparent polarity-colored band with a LIVE extreme marker (dot + H/L price label on the range's high or low candle), and tap #2 commits the tool point AT that extreme (candle center + its high/low) — then the polarity FLIPS for the next point (high → low → high …) until the tool completes; sweeping empty space (no candle in range, e.g. the future) falls back to a normal pointer placement, Esc closes the active sweep, and single-point tools (hline/vline/hray/vray/fibauto), polygon and ruler keep the normal flow · V196 volume-profile draw-path optimization: the developing-POC line (on by default) ran a full 64-bin volume accumulation plus a full 64-bin running-POC argmax scan PER CANDLE PER FRAME (~128k iterations/frame on 1000 candles — the largest measured main-frame cost); it is now incremental — each candle adds volume only to its ~1-5 COVERED bins (the uniform bin grid makes the window directly computable, log-level logs are precomputed once per rebuild instead of 128k Math.log calls) and the running POC is maintained as a monotonic running max (volumes only grow, so a full rescan can never change the result — tie-breaking preserved bit-for-bit); computeModel no longer builds a throwaway Histogram per rebuild (its poc/va outputs were dead — poc read .midpoint off the scalar Histogram.poc() return, va stored the valueArea FUNCTION, and render() recomputes both indices from the level arrays itself) and its cache key is quantized to 1/8 of a bin so autoscale jitter between ticks no longer rebuilds the whole accumulation (sub-bin shift ≤ bin/8 — sub-pixel) · V195 overlay/crosshair draw-path optimization: the overlay's two per-frame caches (per-object resolve results + the BUILD_ANCHOR_CONTEXT anchor snapshot, an O(visible)×series scan feeding dynamic anchors like range/swing-high) were destroyed and rebuilt on EVERY overlay frame — the end-of-frame invalidateCtx() ran unconditionally and render() opened with the V103b full reset that threw away the resolve results the hover hit-test had built moments earlier in the SAME frame — so every crosshair move paid TWO resolve() passes per drawing plus a fresh anchor-context scan even though nothing the caches depend on had changed; invalidation is now event-driven and O(1): OverlayManager._checkScaleGen() keys the caches on Scale IDENTITY (RenderContext._frame builds a new Scale pair every main frame, so pan/zoom/data/layout changes always flip it; object/style/anchor mutations flip it via _dirty(), which every mutation path — settings modal, undo/redo, worker stateSync — already routes through), and updateHover() skips its O(objects) hit-test entirely when the pointer position, mutation revision and active tool are unchanged (the once-per-second countdown-pill tick at a static pointer used to run a full hit-test for nothing) and skips it outright when the pointer is off-plot — a live WS tick flipping the scale generation no longer pays a full hit-test for a cursor parked outside the chart; visibleCount dropped its per-frame Array.from allocation · V194 render-pipeline optimization (drawing charts &amp; candles): the developing-POC pass that ran on EVERY rendered frame was rewritten — it used to rebuild a 24-bin Histogram per frame with per-candle hist.add() plus a full 24-bin scan per candle for hist.poc() (O(visible×24) + several allocations on every frame, pan path included), and because Histogram.poc() returns a scalar while the code read «poc.midpoint» off it, it wrote NaN into every slot — the whole computation was dead weight AND the volumeHighMark POC tick marks never drew; the rewrite is an O(N) single pass with a running argmax (exact, tie-breaking identical, zero allocations, cached by data-version + visible window so Y-pans/re-renders skip it) and the POC marks now actually render when volumeHighMark is on and candles are wide enough; the candle-close countdown pill moved to the overlay canvas — its once-per-second text change used to fire markAllDirtyAndRender (a FULL grid+candles+indicators redraw 1-2×/s even on a completely idle chart), now only the cheap overlay layer repaints and a full relayout render happens only when the pill’s width actually changes; and no-op WS/REST ticks (payload value-identical to the stored candle) no longer bump the DataStore version — they used to invalidate every indicator’s compute cache and force a full recompute + redraw up to 5×/s in a quiet market · V193 z-score anomaly: configurable dot radius + RSI-style threshold lines — the anomaly dots the Z-Score panel draws above/below the threshold are no longer hard-coded 4 px (new 'Anomaly dot radius' setting, 0.5–12, default 4 = the old look; small 1–2 px dots keep dense charts readable), and the panel gained optional ±threshold reference lines in the RSI/MFI style (dashed red above / green below, on by default, un-checkable in settings → Reference overlays like RSI's 70/30) — implemented as a new BrickLevel valueParam/valueScale mechanism so the lines' Y value and their drawn labels ('+2.5' / '-4') track the Threshold param LIVE (change the threshold and both lines move with it, they can never go stale), and the panel auto-fit expands to keep visible threshold lines on-screen · V192 quote switches win the network + picker minicharts survive quote roundtrips: every source:switch / symbol / ratioConfig / timeframe / isPerp transition opens a 12 s switch window during which the background scanner workers (the 100-coin × TF auto-scan) and the alert background evaluations hold NEW kline fetches — the interactive quote-currency / coin load no longer queues behind dozens of rate-limited 1000-candle scan requests (418/429 storms measured live; «тупит и не обновляет индикаторные линии» was the switch starving), the RatioAdapter now stamps the chart DataStore with the tf CAPTURED at load start (a concurrent anchor-TF prefetch's temporary this.timeframe mutation could stamp 4h candles as '1d' — poisoning the market-stamp identity and the IndexedDB cache keys), the foreign-data self-repair keeps retrying every 20 s for ~2.5 minutes instead of giving up after two attempts (a failed composite load self-heals as soon as the network window opens), and the 5 s ratio poll reuses the previous denominator candles for 60 s (halves the constant poll traffic); minicharts: the V49n version-wipe (a relic from before the sparkline key carried the quote currency) is gone — ETH→USDT→ETH reopens the picker with INSTANT cached charts (was a full 26-request refetch, «миничарты перезагружаются заново»), and the open()-time stale-marking only fires when the chart window moved by more than a candle (live-tick jitter no longer schedules background refetches of every visible minichart) · V191 anchored lines survive coin switches + perp funding on spot: anchor-TF fetches no longer misread a transient network/proxy failure as "no history" — Binance/ByBit/Coinbase/Ratio fetchHistoryTf now DISTINGUISH failure (network error / HTTP 403·429·5xx → short 'error' retry) from a genuine empty history (HTTP 200 + [] → 60 s no-data), allSettled keeps one market's good data when the other leg fails, the first error retry waits 2.5 s instead of 15-30 s (one-off proxy hiccup self-heals invisibly), a late in-flight fetch of the PREVIOUS coin can no longer poison the new coin's error backoff (generation guard in the catch), and the funding/OI aux pipeline discards stale fetches across a coin switch (gen guard in _computeAuxSeries — the old coin's points no longer merge into the new chart and the failure backoff resets), so «меняю монету — якорные линии не отобразились, ухожу и возвращаюсь — на месте» is fixed at the fetch-identity level; the Funding Rate indicator also gained a perp fallback for spot charts — when Binance futures has no funding history for the coin, ByBit's linear funding history is fetched and shown (perp data on a spot chart, «данные с перпа, если есть») · V190 tap-to-select drawings + persistent fib level settings: overlay objects are no longer selected (and body-dragged away) on the touch that starts on them — a touch on an UNSELECTED drawing parks the hit and only a QUICK TAP (release within 300 ms / 15 px) selects it on release, while a drag beyond the 10 px pan slop re-classifies the gesture as a chart pan (mid-gesture dragstart → drag → dragend, identical to the plain pan recognizer; already-selected objects keep the immediate endpoint/vertex/body drag so moving a drawing still works, locks still protect), and fib tools (fib / fibtrend / fibexp / fib-auto) gained persistent settings: the Fib Settings modal lists every level with a visibility checkbox (hidden levels are neither drawn nor hit-tested), a per-level color picker and a delete button, an «Add level» row for custom ratios, and a «Save as defaults for future fibs» checkbox persisting the whole set (levels + colors + hidden map) to localStorage 'ce_fib_style_v1' — new fibs are committed with the saved level set and the placement preview honors it too, while already-saved fibs keep their own serialized style on reload · V189 ref% refresh + placement points anchored to price: the coin picker's «⚡ Compute» no longer replays the PREVIOUS markers' cached diffs (the ref cache was never invalidated — the resume branch skipped every coin after a marker move or interval change, so re-clicking Compute «не обновляет ref% значения»; the cache is now stamped with markers+interval and dropped when they change, failed/null coins are retried on re-click, and badges refresh live without sort mode), and in-progress tool points (trendline family / polygon / 5W impulse / ABC·tri·WXY) are data-anchored while placing: every frozen point carries a data snapshot and each preview render re-projects it through the CURRENT scale, so a zoom/pan/autoscale mid-placement moves already-placed points with their price/time instead of leaving them in screen space and committing wrong values (the ruler already worked this way) · V188 quote-currency restore repair: the ratio restore no longer fires THREE racing full composite loads (connect + isPerp switchAsset + delayed switchAsset — each gen bump aborted the in-flight fetches mid-air, up to 6 klines requests in ~1 s, and through the user's rate-limited CORS proxies the LAST load failed, leaving the bootstrap mono USDT chart under the correct composite label — «пара написана правильная, но график usdt»); the saved timeframe now lands on the orchestrator BEFORE the switch (the first load already fetches the right tf), isPerp no longer forwarded to ratio adapters (flags are baked in at construction), the delayed switchAsset is a mismatch-only fixup, and a failed/empty ratio load now retries ONCE after 3 s when the DataStore still holds a foreign instrument (self-repair instead of a stuck wrong chart) · V187 stale indicator lines fixed at the cache-key level: every indicator result carries a market stamp (DataStore symbol|tf + adapter symbol) and every reuse path refuses foreign stamps — the anchor-TF version key now includes the store’s symbol identity (different markets share the same UTC candle grid, so size:firstX:lastX alone collided across a switch and kept ANCHORED indicator lines on the previous instrument), the shared compute cache is market-keyed, and a ratio-config (denominator) change drops anchor data immediately · V186 switching fixes: indicators recompute after a quote-currency / symbol change (chained indicators' fast-path was keyed on constant version+mutation and froze on the previous instrument when the bar count matched; Volume Profile's model cache had no data identity), coin-picker exchange races fixed (a slower previous-exchange fetch no longer repaints the list, fetch results no longer published under the wrong exchange label, dedup slot no longer clobbered) + stale-while-revalidate so expired lists paint instantly, cross-exchange coin picks apply right after the adapter connects (the synchronous bus made the 'source:connected' listener miss its own event — picks waited on the 5 s fallback or never landed) · V185 alert-scale perf (the «hundreds of alerts lag» report): alert evaluation is ONE batched worker job per pass with a worker-side candle cache (was a sequential round-trip per alert per TF), background alerts staggered (each ≥24 s apart, oldest first, capped per pass — the open chart's alerts keep the 4 s cadence, «Check now» forces a full pass), per-frame hasFor is O(1) via a drawing index, alert persistence is debounced + flushed on pagehide (was a full multi-MB JSON.stringify + synchronous setItem on every trigger), object lookup is one Map per pass (was a fresh getAllObjects per alert) · V184 perf: debugLog gated + rAF-throttled (was per-object-per-frame 200-line innerHTML+reflow — the lag), settings poll hashes settings only, overlay resolve cached per alert tick · V183 alert list keeps its scroll on group expand/collapse; anchors now persist (bucket + global state) and swap per ticker — anchored lines no longer show the other divisor's levels or vanish after a reload · V182 alerts + scan detection computed in a Web Worker, Events tab (events → one click to the chart, day separators), alerts grouped by coin collapsed by default · V181 ratio-chart boot-guard (hlines with alerts no longer wiped on reload of a synthetic pair), working «Apply to future lines» (persisted), alert default = Both touch + cross, click an alert card → open its chart · V180 Elliott rule texts in English (violation list, OK chip, tool settings) + top-left rule panel dropped below the source label · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
+    <title>Chart Engine v49p — series.js v6 foundation · V200 SafeTrade + BigONE exchanges added (13 sources): SafeTradeAdapter — kouda/Peatio v2 spot, k-line GET /api/v2/trade/public/markets/{mkt}/k-line?period={min}&time_from=&time_to= (probed: WITHOUT the window the endpoint anchors at its OLDEST candle, so every builder passes an explicit now-anchored window; rows [sec,o,h,l,c,v] ASC, max 1000), native periods 1…10080 min incl. 2h/6h/12h/3d, 3m=1m×3 and 8h=4h×2 via the V55 aggregation, 1M built client-side by grouping dailies into UTC calendar months (_stMonthly — Peatio has no month period and a fixed factor-30 would drift off the calendar; the trailing partial month is kept so the developing candle lands, merges are _x-deduped so re-merging a partial month is idempotent); coin list from the platform-wide tickers map (56 USDT markets — the legacy /markets route exposes only 1 enabled USDT market); Origin-reflecting CORS → direct fetches, proxy chain as fallback; Cloudflare-fronted WS (403 for non-browser TLS) → REST-poll like MEXC/Gate. BigOneAdapter — spot v3 asset-pair API, candles GET /api/v3/asset_pairs/{NAME}/candles?period={min1…month1}&limit≤500, data NEWEST-first, the `time` anchor is EXCLUSIVE (probed) so load-more passes firstX for an overlap-free continuation; refresh/poll fetch the latest window (merges dedupe); 2h and 1M native, 3m=1m×3, 8h=4h×2; no CORS headers (probed) → all fetches ride the proxy chain (MEXC pattern); coin list from /asset_pairs/tickers (~900 USDT pairs incl. leveraged tokens and tokenized stocks, kept); daily_change is an absolute delta → percent derived from open/close. Both wired through every registry: adapter classes (+window export +CE module), orchestrator _initAdapters, CoinPicker KNOWN_SOURCES/CP_ALL_EXCHANGES/exchange dropdown/names, CoinListService fetch+sparkline branches, ScanStats ADAPTER_CLASSES/EXCH_NAMES/EXCH_GAP_FLOOR (600/650 ms floors) · V199 anchored lines vs quote-currency switches on rate-limited networks: (a) the anchor-TF prefetch cycle that was IN-FLIGHT when a quote/coin/exchange switch fired no longer wedges the pipeline for up to 90 s — the render-loop gate now captures the MultiTfDataManager generation at cycle start and treats a generation change (clearAnchorData bumped it; the stale cycle's writes are gen-guarded no-ops anyway) as "cycle is void", starting the NEW instrument's anchor fetch immediately instead of waiting out the old cycle's 20 s-per-fetch crawl or the 90 s watchdog, with an epoch guard so the superseded cycle's late .finally() cannot clear the live cycle's in-flight flag (duplicate cycles were otherwise possible after both the gen override and the watchdog reset); (b) source:switch now fires the SAME early prefetchAnchorTfs kick the timeframe-param path already had (V50.2) — the ratio rebuild branch (quote-currency change) and the plain-exchange branch both kick the anchor fetch IN PARALLEL with the composite load using the viewport-range dsProxy, so anchored lines land with (or before) the new candles instead of after the full sequential load; no-op when no anchor-TF store exists (prefetchAll iterates only referenced stores, zero extra requests otherwise); (c) _anchorTfGet's EQUAL-TF path (anchor TF === chart TF → chart's own data) gained the same foreign-instrument identity check the TfStore path has had since V124: when the chart DataStore's symbol stamp and the serving adapter's symbol are both present and differ (the failed/queued composite-load window where the chart still shows the PREVIOUS quote's candles under the new pair label), the equal-TF anchor read returns null → the brick takes the anchor-pending NaN path → an anchored line shows NO data instead of the previous quote's values («показывают старые» during the transition), self-healing when the composite load lands or the V188/V192 foreign-data retry repairs it; on a healthy network the mismatch window is a single load (~instant) — no visible change · V198 range magnet covers EVERY drawing tool: single-point lines (hline/vline/hray/vray + the horizontal/vertical alias spellings TrendLineTool.setMode actually uses), the multi-vertex polygon (a tap inside the close-to-first-vertex radius still CLOSES the polygon — the close gesture wins over opening a new sweep, same 14 px condition as _polygonOnCommit) and the ruler (both measurement ends placed by sweeps; the 3-tap deactivation semantics untouched — a completed ruler is not “drawing” so its deactivation tap never opens a sweep); only FibAuto stays native (it is already a range tool — its own phases sweep an X-range and auto-find min/max with their own toggle, wrapping the magnet around it would double-derive its points and corrupt its min/max semantics); polarity (high↔low) alternates across every tool’s points exactly as before and resets when the tool completes/exits · V197 range magnet: a 3-state toggle next to the magnet (off → low first (L) → high first (H), persisted 'ce_rangemagnet') — multi-point tools (free/ray/fib/fibtrend/fibexp/zone/gridbot/5W/ABC/TRI/WXY) place each point with a two-tap X-RANGE sweep instead of a raw crosshair click: tap #1 drops a vertical range line (kept in DATA coords — pan/zoom mid-sweep stays glued to its candle), moving the pointer sweeps the second line (the crosshair's OWN vertical line — the same precision mechanism, but the horizontal line, its price label and the pointer-Y axis tag are hidden while sweeping) over an almost-transparent polarity-colored band with a LIVE extreme marker (dot + H/L price label on the range's high or low candle), and tap #2 commits the tool point AT that extreme (candle center + its high/low) — then the polarity FLIPS for the next point (high → low → high …) until the tool completes; sweeping empty space (no candle in range, e.g. the future) falls back to a normal pointer placement, Esc closes the active sweep, and single-point tools (hline/vline/hray/vray/fibauto), polygon and ruler keep the normal flow · V196 volume-profile draw-path optimization: the developing-POC line (on by default) ran a full 64-bin volume accumulation plus a full 64-bin running-POC argmax scan PER CANDLE PER FRAME (~128k iterations/frame on 1000 candles — the largest measured main-frame cost); it is now incremental — each candle adds volume only to its ~1-5 COVERED bins (the uniform bin grid makes the window directly computable, log-level logs are precomputed once per rebuild instead of 128k Math.log calls) and the running POC is maintained as a monotonic running max (volumes only grow, so a full rescan can never change the result — tie-breaking preserved bit-for-bit); computeModel no longer builds a throwaway Histogram per rebuild (its poc/va outputs were dead — poc read .midpoint off the scalar Histogram.poc() return, va stored the valueArea FUNCTION, and render() recomputes both indices from the level arrays itself) and its cache key is quantized to 1/8 of a bin so autoscale jitter between ticks no longer rebuilds the whole accumulation (sub-bin shift ≤ bin/8 — sub-pixel) · V195 overlay/crosshair draw-path optimization: the overlay's two per-frame caches (per-object resolve results + the BUILD_ANCHOR_CONTEXT anchor snapshot, an O(visible)×series scan feeding dynamic anchors like range/swing-high) were destroyed and rebuilt on EVERY overlay frame — the end-of-frame invalidateCtx() ran unconditionally and render() opened with the V103b full reset that threw away the resolve results the hover hit-test had built moments earlier in the SAME frame — so every crosshair move paid TWO resolve() passes per drawing plus a fresh anchor-context scan even though nothing the caches depend on had changed; invalidation is now event-driven and O(1): OverlayManager._checkScaleGen() keys the caches on Scale IDENTITY (RenderContext._frame builds a new Scale pair every main frame, so pan/zoom/data/layout changes always flip it; object/style/anchor mutations flip it via _dirty(), which every mutation path — settings modal, undo/redo, worker stateSync — already routes through), and updateHover() skips its O(objects) hit-test entirely when the pointer position, mutation revision and active tool are unchanged (the once-per-second countdown-pill tick at a static pointer used to run a full hit-test for nothing) and skips it outright when the pointer is off-plot — a live WS tick flipping the scale generation no longer pays a full hit-test for a cursor parked outside the chart; visibleCount dropped its per-frame Array.from allocation · V194 render-pipeline optimization (drawing charts &amp; candles): the developing-POC pass that ran on EVERY rendered frame was rewritten — it used to rebuild a 24-bin Histogram per frame with per-candle hist.add() plus a full 24-bin scan per candle for hist.poc() (O(visible×24) + several allocations on every frame, pan path included), and because Histogram.poc() returns a scalar while the code read «poc.midpoint» off it, it wrote NaN into every slot — the whole computation was dead weight AND the volumeHighMark POC tick marks never drew; the rewrite is an O(N) single pass with a running argmax (exact, tie-breaking identical, zero allocations, cached by data-version + visible window so Y-pans/re-renders skip it) and the POC marks now actually render when volumeHighMark is on and candles are wide enough; the candle-close countdown pill moved to the overlay canvas — its once-per-second text change used to fire markAllDirtyAndRender (a FULL grid+candles+indicators redraw 1-2×/s even on a completely idle chart), now only the cheap overlay layer repaints and a full relayout render happens only when the pill’s width actually changes; and no-op WS/REST ticks (payload value-identical to the stored candle) no longer bump the DataStore version — they used to invalidate every indicator’s compute cache and force a full recompute + redraw up to 5×/s in a quiet market · V193 z-score anomaly: configurable dot radius + RSI-style threshold lines — the anomaly dots the Z-Score panel draws above/below the threshold are no longer hard-coded 4 px (new 'Anomaly dot radius' setting, 0.5–12, default 4 = the old look; small 1–2 px dots keep dense charts readable), and the panel gained optional ±threshold reference lines in the RSI/MFI style (dashed red above / green below, on by default, un-checkable in settings → Reference overlays like RSI's 70/30) — implemented as a new BrickLevel valueParam/valueScale mechanism so the lines' Y value and their drawn labels ('+2.5' / '-4') track the Threshold param LIVE (change the threshold and both lines move with it, they can never go stale), and the panel auto-fit expands to keep visible threshold lines on-screen · V192 quote switches win the network + picker minicharts survive quote roundtrips: every source:switch / symbol / ratioConfig / timeframe / isPerp transition opens a 12 s switch window during which the background scanner workers (the 100-coin × TF auto-scan) and the alert background evaluations hold NEW kline fetches — the interactive quote-currency / coin load no longer queues behind dozens of rate-limited 1000-candle scan requests (418/429 storms measured live; «тупит и не обновляет индикаторные линии» was the switch starving), the RatioAdapter now stamps the chart DataStore with the tf CAPTURED at load start (a concurrent anchor-TF prefetch's temporary this.timeframe mutation could stamp 4h candles as '1d' — poisoning the market-stamp identity and the IndexedDB cache keys), the foreign-data self-repair keeps retrying every 20 s for ~2.5 minutes instead of giving up after two attempts (a failed composite load self-heals as soon as the network window opens), and the 5 s ratio poll reuses the previous denominator candles for 60 s (halves the constant poll traffic); minicharts: the V49n version-wipe (a relic from before the sparkline key carried the quote currency) is gone — ETH→USDT→ETH reopens the picker with INSTANT cached charts (was a full 26-request refetch, «миничарты перезагружаются заново»), and the open()-time stale-marking only fires when the chart window moved by more than a candle (live-tick jitter no longer schedules background refetches of every visible minichart) · V191 anchored lines survive coin switches + perp funding on spot: anchor-TF fetches no longer misread a transient network/proxy failure as "no history" — Binance/ByBit/Coinbase/Ratio fetchHistoryTf now DISTINGUISH failure (network error / HTTP 403·429·5xx → short 'error' retry) from a genuine empty history (HTTP 200 + [] → 60 s no-data), allSettled keeps one market's good data when the other leg fails, the first error retry waits 2.5 s instead of 15-30 s (one-off proxy hiccup self-heals invisibly), a late in-flight fetch of the PREVIOUS coin can no longer poison the new coin's error backoff (generation guard in the catch), and the funding/OI aux pipeline discards stale fetches across a coin switch (gen guard in _computeAuxSeries — the old coin's points no longer merge into the new chart and the failure backoff resets), so «меняю монету — якорные линии не отобразились, ухожу и возвращаюсь — на месте» is fixed at the fetch-identity level; the Funding Rate indicator also gained a perp fallback for spot charts — when Binance futures has no funding history for the coin, ByBit's linear funding history is fetched and shown (perp data on a spot chart, «данные с перпа, если есть») · V190 tap-to-select drawings + persistent fib level settings: overlay objects are no longer selected (and body-dragged away) on the touch that starts on them — a touch on an UNSELECTED drawing parks the hit and only a QUICK TAP (release within 300 ms / 15 px) selects it on release, while a drag beyond the 10 px pan slop re-classifies the gesture as a chart pan (mid-gesture dragstart → drag → dragend, identical to the plain pan recognizer; already-selected objects keep the immediate endpoint/vertex/body drag so moving a drawing still works, locks still protect), and fib tools (fib / fibtrend / fibexp / fib-auto) gained persistent settings: the Fib Settings modal lists every level with a visibility checkbox (hidden levels are neither drawn nor hit-tested), a per-level color picker and a delete button, an «Add level» row for custom ratios, and a «Save as defaults for future fibs» checkbox persisting the whole set (levels + colors + hidden map) to localStorage 'ce_fib_style_v1' — new fibs are committed with the saved level set and the placement preview honors it too, while already-saved fibs keep their own serialized style on reload · V189 ref% refresh + placement points anchored to price: the coin picker's «⚡ Compute» no longer replays the PREVIOUS markers' cached diffs (the ref cache was never invalidated — the resume branch skipped every coin after a marker move or interval change, so re-clicking Compute «не обновляет ref% значения»; the cache is now stamped with markers+interval and dropped when they change, failed/null coins are retried on re-click, and badges refresh live without sort mode), and in-progress tool points (trendline family / polygon / 5W impulse / ABC·tri·WXY) are data-anchored while placing: every frozen point carries a data snapshot and each preview render re-projects it through the CURRENT scale, so a zoom/pan/autoscale mid-placement moves already-placed points with their price/time instead of leaving them in screen space and committing wrong values (the ruler already worked this way) · V188 quote-currency restore repair: the ratio restore no longer fires THREE racing full composite loads (connect + isPerp switchAsset + delayed switchAsset — each gen bump aborted the in-flight fetches mid-air, up to 6 klines requests in ~1 s, and through the user's rate-limited CORS proxies the LAST load failed, leaving the bootstrap mono USDT chart under the correct composite label — «пара написана правильная, но график usdt»); the saved timeframe now lands on the orchestrator BEFORE the switch (the first load already fetches the right tf), isPerp no longer forwarded to ratio adapters (flags are baked in at construction), the delayed switchAsset is a mismatch-only fixup, and a failed/empty ratio load now retries ONCE after 3 s when the DataStore still holds a foreign instrument (self-repair instead of a stuck wrong chart) · V187 stale indicator lines fixed at the cache-key level: every indicator result carries a market stamp (DataStore symbol|tf + adapter symbol) and every reuse path refuses foreign stamps — the anchor-TF version key now includes the store’s symbol identity (different markets share the same UTC candle grid, so size:firstX:lastX alone collided across a switch and kept ANCHORED indicator lines on the previous instrument), the shared compute cache is market-keyed, and a ratio-config (denominator) change drops anchor data immediately · V186 switching fixes: indicators recompute after a quote-currency / symbol change (chained indicators' fast-path was keyed on constant version+mutation and froze on the previous instrument when the bar count matched; Volume Profile's model cache had no data identity), coin-picker exchange races fixed (a slower previous-exchange fetch no longer repaints the list, fetch results no longer published under the wrong exchange label, dedup slot no longer clobbered) + stale-while-revalidate so expired lists paint instantly, cross-exchange coin picks apply right after the adapter connects (the synchronous bus made the 'source:connected' listener miss its own event — picks waited on the 5 s fallback or never landed) · V185 alert-scale perf (the «hundreds of alerts lag» report): alert evaluation is ONE batched worker job per pass with a worker-side candle cache (was a sequential round-trip per alert per TF), background alerts staggered (each ≥24 s apart, oldest first, capped per pass — the open chart's alerts keep the 4 s cadence, «Check now» forces a full pass), per-frame hasFor is O(1) via a drawing index, alert persistence is debounced + flushed on pagehide (was a full multi-MB JSON.stringify + synchronous setItem on every trigger), object lookup is one Map per pass (was a fresh getAllObjects per alert) · V184 perf: debugLog gated + rAF-throttled (was per-object-per-frame 200-line innerHTML+reflow — the lag), settings poll hashes settings only, overlay resolve cached per alert tick · V183 alert list keeps its scroll on group expand/collapse; anchors now persist (bucket + global state) and swap per ticker — anchored lines no longer show the other divisor's levels or vanish after a reload · V182 alerts + scan detection computed in a Web Worker, Events tab (events → one click to the chart, day separators), alerts grouped by coin collapsed by default · V181 ratio-chart boot-guard (hlines with alerts no longer wiped on reload of a synthetic pair), working «Apply to future lines» (persisted), alert default = Both touch + cross, click an alert card → open its chart · V180 Elliott rule texts in English (violation list, OK chip, tool settings) + top-left rule panel dropped below the source label · V179 refreshable caches live in IndexedDB: cp.coins.*, paprika index/details/tags, btc_realized_data moved out of localStorage (one-time auto-migration frees the quota — they can no longer fill it, V178 was the rescue, V179 is the prevention) · V178 storage-full rescue: quota-full localStorage no longer silently kills ALL persistence except presets (the «everything resets on reload» bug), refreshable coin caches auto-evicted, pagehide can't save pre-restore defaults · V177 offline persistence repair: drawings save on every change (draw/drag/style/delete), late-connect bucket race fixed, restore lost drawings from alert snapshots · V176 alerts: escalating backoff for failed coins (20s→40s→…→5min), coarse-TF-first touch gate · V175 sound+glow, budget 20/min, result+side filters · V174 background alerts</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -5593,7 +5593,7 @@ const _safeStorage = (() => {
 
     // V178: EVICT REFRESHABLE CACHES ONLY — never user data. Called when a
     // probe or write hits QuotaExceeded. The coin-picker caches (cp.coins.*
-    // for 11 exchanges, coinpicker_paprika_* index/details/tags) and the
+    // for 13 exchanges, coinpicker_paprika_* index/details/tags) and the
     // btc_realized_data indicator cache are all re-fetchable, so freeing
     // them is always safe. Empty per-ticker overlay buckets ('[]' left
     // behind by coin switching) are noise and pruned too. chartEngine_state,
@@ -5753,7 +5753,7 @@ const _safeStorage = (() => {
 // ─── _idbCache — IndexedDB home for the REFRESHABLE caches (V179) ──────────
 // User: «А че ты не пренесешь кэш в idb?». V178 made a quota-full
 // localStorage SURVIVABLE (evict + retry + caps); V179 makes it (nearly)
-// IMPOSSIBLE: the refreshable caches — cp.coins.* (×11 exchanges),
+// IMPOSSIBLE: the refreshable caches — cp.coins.* (×13 exchanges),
 // coinpicker_paprika_index, coinpicker_paprika_detail_<id>,
 // coinpicker_paprika_tags_cache, btc_realized_data — no longer touch
 // localStorage AT ALL. They are re-fetchable by definition, can total
@@ -19541,6 +19541,29 @@ class IndicatorManager {
         if (tf === this.multiTf._chartTf) {
             const ds = this._lastDataStore;
             if (!ds || ds.size === 0) return null;
+            // V199-equal-tf-foreign: the TfStore path has had the V124
+            //   foreign-instrument check since day one, but this EQUAL-TF
+            //   path (anchor TF === chart TF → the chart's own candles)
+            //   never did. During a failed/queued composite load (quote
+            //   switch through a rate-limited proxy chain) the DataStore
+            //   legitimately keeps the PREVIOUS instrument's candles under
+            //   the NEW pair's label — an anchored line computed here kept
+            //   the previous quote's values («якорные линии показывают
+            //   старые») for the whole transition window. Same identity
+            //   source as the store path / _marketStamp: the DataStore's
+            //   V121 symbol stamp vs the serving adapter's symbol. Both
+            //   present and different → transition window → return null so
+            //   the brick takes the anchor-pending NaN path (NO data beats
+            //   WRONG data); the check self-heals when the composite load
+            //   lands (stamp flips) or the V188/V192 foreign-data retry
+            //   repairs the store. Adapters that never stamp ds.symbol are
+            //   unaffected (null/empty stamp → check skipped).
+            {
+                const _eqAd = this.multiTf?._adapter;
+                const _dsSym = ds.symbol || null;
+                const _adSym = _eqAd?.symbol || null;
+                if (_dsSym && _adSym && _dsSym !== _adSym) return null;
+            }
             try {
                 // FIX V49n-perf: cache candles array — don't rebuild every frame.
                 // Cache key: ds.size + ds._version. Only rebuild when data changes.
@@ -56322,15 +56345,23 @@ class EngineRendering {
         const im = this._indicatorManager;
         if (!im || typeof im.prefetchAnchorTfs !== 'function') return;
         if (this._anchorPrefetchInflight) {
-            // V168-anchor-stall watchdog: a prefetch cycle whose promise never
-            //   settles (a hung raw fetch inside an adapter we don't control)
-            //   would keep this flag TRUE forever — anchor prefetching silently
-            //   disabled until a page reload. The 20s fetch race in _prefetchOne
-            //   already prevents the known hang; this 90s watchdog is the
-            //   safety net for any future path that stalls. After a forced
-            //   reset the stale cycle may still resolve later — its writes are
-            //   generation-guarded, so a late result can't poison the store.
-            if (Date.now() - (this._anchorPrefetchStartTs || 0) < 90000) return;
+            // V199-prefetch-supersede: a cycle that was IN-FLIGHT when a
+            //   quote-currency / symbol / exchange switch fired must not
+            //   wedge the pipeline. clearAnchorData() bumps
+            //   multiTf._generation and the stale cycle's writes are
+            //   generation-guarded no-ops — but this flag stayed TRUE until
+            //   the old cycle's crawl settled (a 20 s per-fetch timeout ×
+            //   up to 8 walk-back iterations, watchdog 90 s), so the NEW
+            //   instrument's anchor fetch could not even START: anchored
+            //   lines stayed missing for up to 90 s after every switch on a
+            //   rate-limited network («якорные линии не обновляются /
+            //   не показываются»). If the generation moved since the cycle
+            //   started, the cycle is VOID — clear the flag and start a
+            //   fresh cycle immediately. The 90 s watchdog below stays as
+            //   the fallback for a generation-less stall.
+            const _genNow = im.multiTf ? (im.multiTf._generation || 0) : 0;
+            if (_genNow === (this._anchorPrefetchGen || 0) &&
+                Date.now() - (this._anchorPrefetchStartTs || 0) < 90000) return;
             this._anchorPrefetchInflight = false;
         }
         // Cheap pre-check: any visible indicator with a non-'chart' TF?
@@ -56350,13 +56381,19 @@ class EngineRendering {
         if (!adapter) return;
         // Mark in-flight so subsequent frames don't kick off a duplicate
         // cycle. The flag clears when prefetchAnchorTfs() resolves.
+        // V199: epoch guard — a SUPERSEDED cycle's late .finally() (gen
+        //   override above or the 90 s watchdog) must not clear the flag
+        //   while a NEWER cycle is running, or the next frames would start
+        //   duplicate concurrent cycles.
         this._anchorPrefetchInflight = true;
         this._anchorPrefetchStartTs = Date.now();   // V168-anchor-stall watchdog timestamp
+        this._anchorPrefetchGen = im.multiTf ? (im.multiTf._generation || 0) : 0;
+        const _pfEpoch = (this._anchorPrefetchEpoch = (this._anchorPrefetchEpoch || 0) + 1);
         // Issue the prefetch asynchronously. We DON'T await — render()
         // must remain synchronous. _onAnchorTfReady will trigger the
         // re-render once each TF's candles arrive.
         im.prefetchAnchorTfs(adapter, ds).finally(() => {
-            this._anchorPrefetchInflight = false;
+            if (this._anchorPrefetchEpoch === _pfEpoch) this._anchorPrefetchInflight = false;
         });
     }
 
@@ -63311,6 +63348,264 @@ class MexcAdapter extends WebSocketExchangeAdapter {
     }
 }
 
+// ─── V200: SafeTradeAdapter — SafeTrade spot (kouda/Peatio v2, poll-only) ────
+//   REST  GET https://safetrade.com/api/v2/trade/public/markets/{mkt}/k-line
+//         ?period={min}&limit={n}&time_from={sec}&time_to={sec}
+//         → [[openTime(SEC), "o","h","l","c","v"(base)], …] — ASC, max 1000.
+//         GOTCHA (probed): WITHOUT time_from the endpoint anchors at the
+//         OLDEST candle, so every URL builder passes an explicit window.
+//   Tickers (coin list) GET /api/v2/peatio/public/markets/tickers → a MAP
+//         keyed by market id (the platform-wide quote feed — 56 USDT rows,
+//         while the legacy /markets list exposes only 25 markets, 1 USDT).
+//   CORS: the gateway REFLECTS the request Origin (probed) → direct browser
+//         fetches work; _fetchJson's proxy chain stays as the fallback.
+//   WS    wss://…/api/v2/websocket/public ({event:'subscribe',streams:[…]}) is
+//         Cloudflare-fronted (403 for non-browser TLS, probed) → REST-poll
+//         fallback only, same call as MEXC/Gate.
+//   Native periods (minutes): 1 5 15 30 60 120 240 360 720 1440 4320 10080
+//         — 2h/6h/12h/3d are NATIVE. 3m aggregates 1m×3, 8h aggregates 4h×2,
+//         and 1M has NO Peatio period: it is built client-side by grouping
+//         daily candles into UTC calendar months (_stMonthly — a fixed
+//         factor-30 aggregation would drift off the calendar).
+class SafeTradeAdapter extends WebSocketExchangeAdapter {
+    constructor(config = {}) {
+        super(config);
+        this.restBase = config.restBase || 'https://safetrade.com/api/v2';
+        this.fetchLimit         = config.fetchLimit || 1000;
+        this.minRequestInterval = config.minRequestInterval || 600;
+    }
+
+    /** REST-poll-only adapter (kline data has no public WS route that passes
+     *  the platform's Cloudflare front for embedded/local charts, probed). */
+    _openWebSocket() { this._startPollingFallback(); }
+
+    /** BTCUSDT → market id "btcusdt" (ids are lowercase concatenations). */
+    _toStMarket(symbol) { return String(symbol || '').toLowerCase(); }
+
+    _nativeTfFor(tf) {
+        if (tf === '1M') return { nativeTf: '1d', factor: 1 };   // + _stMonthly in _transformKlines
+        const agg = { '3m': ['1m', 3], '8h': ['4h', 2], '2w': ['1w', 2] }[tf];
+        return agg ? { nativeTf: agg[0], factor: agg[1] } : { nativeTf: tf, factor: 1 };
+    }
+    /** Native period in MINUTES for the CURRENT timeframe (after _nativeTfFor). */
+    _stPeriod() {
+        const map = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120,
+                      '4h': 240, '6h': 360, '12h': 720, '1d': 1440, '3d': 4320, '1w': 10080 };
+        const { nativeTf } = this._nativeTfFor(this.timeframe);
+        return map[nativeTf] || 60;
+    }
+    /** Daily-candle multiplier: 1M fetches/aggregates ~30 dailies per month. */
+    _stSpanMult() { return this.timeframe === '1M' ? 31 : 1; }
+
+    _buildCacheMeta() {
+        const meta = super._buildCacheMeta();
+        const [base, quote] = _splitQuoteCurrency(this.symbol);
+        meta.exchangeName = 'SafeTrade';
+        meta.exchangeUrl  = `https://safetrade.com/exchange/${base}-${quote || 'USDT'}`;
+        meta.restApiUrl   = `${this.restBase}/trade/public/markets/${this._toStMarket(this.symbol)}/k-line`;
+        return meta;
+    }
+
+    _klineUrl(fromSec, toSec, limit) {
+        let url = `${this.restBase}/trade/public/markets/${encodeURIComponent(this._toStMarket(this.symbol))}/k-line?period=${this._stPeriod()}&limit=${limit}`;
+        if (fromSec) url += `&time_from=${fromSec}`;
+        if (toSec)   url += `&time_to=${toSec}`;
+        return url;
+    }
+    _buildHistoryUrl(limit) {
+        const eff = Math.min((limit || this.fetchLimit) * this._nativeTfFor(this.timeframe).factor * this._stSpanMult(), 1000);
+        const now = Math.floor(Date.now() / 1000);
+        // Anchor at "now" — the endpoint defaults to the OLDEST candles (probed).
+        return this._klineUrl(now - eff * this._stPeriod() * 60, now + this._stPeriod() * 60, eff);
+    }
+    _buildLoadMoreUrl(limit, firstX) {
+        const eff = Math.min((limit || this.fetchLimit) * this._nativeTfFor(this.timeframe).factor * this._stSpanMult(), 1000);
+        const to = Math.floor(firstX / 1000) - 1;
+        return this._klineUrl(to - eff * this._stPeriod() * 60, to, eff);
+    }
+    _buildRefreshUrl(startTime) {
+        const eff = Math.min((this._refreshCandleLimit || 50) * this._stSpanMult(), 1000);
+        return this._klineUrl(Math.floor(startTime / 1000), Math.floor(Date.now() / 1000) + this._stPeriod() * 60, eff);
+    }
+    _buildPollUrl() {
+        const eff = Math.max(2, this._pollCandleLimit || 5) * Math.max(1, this._nativeTfFor(this.timeframe).factor);
+        const periodSec = this._stPeriod() * 60;
+        return this._klineUrl(Math.floor(Date.now() / 1000) - eff * periodSec, Math.floor(Date.now() / 1000) + periodSec, Math.min(eff, 1000));
+    }
+    _buildGapFillUrl(afterX, beforeX) {
+        return this._klineUrl(Math.floor((afterX + 1) / 1000), Math.floor(beforeX / 1000), 1000);
+    }
+
+    _validateFetchResponse(json) {
+        if (!Array.isArray(json)) {
+            throw new Error(`SafeTrade API error: ${typeof json === 'object' && json ? JSON.stringify(json).slice(0, 120) : String(json)}`);
+        }
+    }
+
+    _transformKlines(klines) {
+        if (!Array.isArray(klines)) return [];
+        // Rows: [openTime(SEC), o, h, l, c, v] — oldest-first.
+        const raw = [];
+        for (const k of klines) {
+            if (!Array.isArray(k)) continue;
+            const c = _mkCandle(Number(k[0]) * 1000, k[1], k[2], k[3], k[4], k[5]);
+            if (c) raw.push(c);
+        }
+        if (this.timeframe === '1M') return this._stMonthly(raw);
+        const { factor } = this._nativeTfFor(this.timeframe);
+        return factor > 1 ? this._aggregateCandles(raw, factor, this.timeframe) : raw;
+    }
+
+    /** Group daily candles into UTC calendar months for the 1M timeframe.
+     *  The trailing (incomplete) month is KEPT so the developing candle still
+     *  lands — merges are _x-deduped, so re-merging a partial month is
+     *  idempotent (a load-more window ending at a month boundary simply
+     *  produces a complete group). Every group's _x is the UTC month START
+     *  (not the first daily's _x): a fetch window that opens mid-month would
+     *  otherwise stamp the first partial month with a sliding _x, and a later
+     *  load-more would re-derive the SAME month under the real month-start _x
+     *  → duplicate month bars. With a fixed month-start _x the two merge into
+     *  one candle. */
+    _stMonthly(dailies) {
+        if (!Array.isArray(dailies) || dailies.length === 0) return [];
+        const out = [];
+        let cur = null, curKey = NaN;
+        for (const c of dailies) {
+            const d = new Date(c._x);
+            const key = d.getUTCFullYear() * 12 + d.getUTCMonth();
+            if (!cur || key !== curKey) {
+                if (cur) out.push(cur);
+                cur = { _x: Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1),
+                        open: c.open, high: -Infinity, low: Infinity,
+                        close: c.close, vol: 0, price: c.close, pocPrice: NaN };
+                curKey = key;
+            }
+            cur.close = c.close;
+            cur.price = c.close;
+            if (isFinite(c.high) && c.high > cur.high) cur.high = c.high;
+            if (isFinite(c.low) && c.low < cur.low) cur.low = c.low;
+            if (isFinite(c.vol)) cur.vol += c.vol;
+        }
+        if (cur) out.push(cur);
+        for (const m of out) {
+            if (!isFinite(m.high)) m.high = m.close;
+            if (!isFinite(m.low)) m.low = m.close;
+        }
+        return out;
+    }
+}
+
+// ─── V200: BigOneAdapter — BigONE spot v3 (asset-pair API, poll-only) ────────
+//   REST  GET https://big.one/api/v3/asset_pairs/{NAME}/candles
+//         ?period=hour4&limit=500[&time=ISO8601]
+//         → {code:0, data:[{time:"2026-09-25T23:00:00Z", open, high, low,
+//         close, volume}]} — data is NEWEST-first, max 500/request. The
+//         optional `time` anchor is EXCLUSIVE (probed: returns candles with
+//         open time strictly BEFORE it) → _buildLoadMoreUrl passes firstX and
+//         gets a clean, overlap-free continuation; there is no forward anchor,
+//         so refresh/poll just fetch the latest candles (merges dedupe).
+//   Tickers (coin list) GET /api/v3/asset_pairs/tickers → {data:[{…}]}, ~900
+//         USDT pairs (incl. leveraged tokens & tokenized stocks — kept).
+//   CORS: NO Access-Control headers (probed) → every fetch rides
+//         WebSocketExchangeAdapter._fetchJson's proxy chain (MEXC pattern).
+//   Native periods: min1 min5 min15 min30 hour1 hour2 hour3 hour4 hour6
+//   hour12 day1 week1 month1 (2h and 1M native!). 3m aggregates min1×3,
+//   8h aggregates hour4×2. No public kline WS used → REST-poll fallback.
+class BigOneAdapter extends WebSocketExchangeAdapter {
+    constructor(config = {}) {
+        super(config);
+        this.restBase = config.restBase || 'https://big.one/api/v3';
+        this.fetchLimit         = config.fetchLimit || 500;
+        this.minRequestInterval = config.minRequestInterval || 650;
+    }
+
+    /** REST-poll-only adapter (proxy-chain friendly; no kline WS in v1). */
+    _openWebSocket() { this._startPollingFallback(); }
+
+    /** BTCUSDT → asset pair name "BTC-USDT". */
+    _toBoPair(symbol) {
+        const [base, quote] = _splitQuoteCurrency(symbol);
+        return quote ? `${base}-${quote}` : String(symbol || '').toUpperCase();
+    }
+    _nativeTfFor(tf) {
+        const agg = { '3m': ['1m', 3], '8h': ['4h', 2], '2w': ['1w', 2] }[tf];
+        return agg ? { nativeTf: agg[0], factor: agg[1] } : { nativeTf: tf, factor: 1 };
+    }
+    _boPeriod() {
+        const map = { '1m': 'min1', '5m': 'min5', '15m': 'min15', '30m': 'min30',
+                      '1h': 'hour1', '2h': 'hour2', '4h': 'hour4', '6h': 'hour6',
+                      '12h': 'hour12', '1d': 'day1', '1w': 'week1', '1M': 'month1' };
+        const { nativeTf } = this._nativeTfFor(this.timeframe);
+        return map[nativeTf] || 'hour1';
+    }
+    _boPeriodSec() {
+        const map = { min1: 60, min5: 300, min15: 900, min30: 1800, hour1: 3600,
+                      hour2: 7200, hour3: 10800, hour4: 14400, hour6: 21600,
+                      hour12: 43200, day1: 86400, week1: 604800, month1: 2592000 };
+        return map[this._boPeriod()] || 3600;
+    }
+
+    _buildCacheMeta() {
+        const meta = super._buildCacheMeta();
+        meta.exchangeName = 'BigONE';
+        meta.exchangeUrl  = `https://big.one/trade/${this._toBoPair(this.symbol)}`;
+        meta.restApiUrl   = `${this.restBase}/asset_pairs/${this._toBoPair(this.symbol)}/candles`;
+        return meta;
+    }
+
+    _boCandleUrl(limit, timeIso) {
+        let url = `${this.restBase}/asset_pairs/${encodeURIComponent(this._toBoPair(this.symbol))}/candles?period=${this._boPeriod()}&limit=${limit}`;
+        if (timeIso) url += `&time=${encodeURIComponent(timeIso)}`;
+        return url;
+    }
+    _buildHistoryUrl(limit) {
+        // No `time` anchor → the LATEST candles (probed).
+        return this._boCandleUrl(Math.min((limit || this.fetchLimit) * this._nativeTfFor(this.timeframe).factor, 500));
+    }
+    _buildLoadMoreUrl(limit, firstX) {
+        // Exclusive anchor: candles strictly OLDER than firstX, no overlap.
+        return this._boCandleUrl(Math.min((limit || this.fetchLimit) * this._nativeTfFor(this.timeframe).factor, 500),
+                                 new Date(firstX).toISOString());
+    }
+    _buildRefreshUrl(startTime) {
+        // No forward anchor exists — re-fetch the latest window; merges dedupe.
+        return this._boCandleUrl(Math.min((this._refreshCandleLimit || 50) * this._nativeTfFor(this.timeframe).factor, 500));
+    }
+    _buildPollUrl() {
+        const eff = Math.min(Math.max(2, this._pollCandleLimit || 5) * Math.max(1, this._nativeTfFor(this.timeframe).factor), 500);
+        return this._boCandleUrl(eff);
+    }
+    _buildGapFillUrl(afterX, beforeX) {
+        // beforeX + 1ms (exclusive anchor) → candles at or before beforeX.
+        return this._boCandleUrl(500, new Date(beforeX + 1).toISOString());
+    }
+
+    _validateFetchResponse(json) {
+        if (json && typeof json === 'object' && !Array.isArray(json)) {
+            if (json.code !== undefined && json.code !== 0) {
+                throw new Error(`BigONE API error: ${json.message || json.code}`);
+            }
+            return;
+        }
+        throw new Error(`BigONE API: unexpected response (got ${json === null ? 'null' : typeof json})`);
+    }
+
+    _transformKlines(json) {
+        const rows = (json && Array.isArray(json.data)) ? json.data : [];
+        // NEWEST-first → reverse to oldest-first for the engine.
+        const raw = [];
+        for (let i = rows.length - 1; i >= 0; i--) {
+            const k = rows[i];
+            if (!k) continue;
+            const x = Date.parse(k.time);
+            const c = _mkCandle(x, k.open, k.high, k.low, k.close, k.volume);
+            if (c) raw.push(c);
+        }
+        const { factor } = this._nativeTfFor(this.timeframe);
+        return factor > 1 ? this._aggregateCandles(raw, factor, this.timeframe) : raw;
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // InternalDataSimulator — generates synthetic OHLCV data as a "worker"
 //
@@ -63710,8 +64005,12 @@ class RatioAdapter extends DataSourceAdapter {
         }
     }
 
-    /** Transform Binance kline array → internal candle format. */
-    _transformKlines(klines) {
+    /** Transform Binance kline array → internal candle format.
+     *  V199-tf-leak: optional tfOverride — fetchHistoryTf threads the ANCHOR tf
+     *  explicitly instead of relying on this.timeframe (which it no longer
+     *  mutates across awaits). All other callers pass nothing → unchanged
+     *  behaviour (reads this.timeframe synchronously as before). */
+    _transformKlines(klines, tfOverride) {
         const raw = klines.map(k => ({
             _x: k[0],
             open:  parseFloat(k[1]),
@@ -63724,7 +64023,7 @@ class RatioAdapter extends DataSourceAdapter {
         //   way BinanceAdapter does. Without this, '3d' is passed directly
         //   to Binance API which doesn't support it → error → fallback to
         //   USDT instead of ratio.
-        const { factor, nativeTf } = this._nativeTfFor(this.timeframe);
+        const { factor, nativeTf } = this._nativeTfFor(tfOverride || this.timeframe);
         if (factor > 1) {
             // V88-ratio-align: align aggregated _x to native-TF period
             //   boundaries so numerator and denominator candles have
@@ -64238,19 +64537,44 @@ class RatioAdapter extends DataSourceAdapter {
      *   indicators that use a higher TF (e.g. WMA-1d on a 4h chart).
      *   Without this, anchor-TF indicators show NaN in ratio mode because
      *   prefetchAll returns early (no fetchHistoryTf on the adapter).
-     *   Implementation: temporarily override this.timeframe to the requested
-     *   tf so _buildKlineUrl and _transformKlines use the correct interval
-     *   and aggregation factor. Restore afterwards.
+     *   Implementation: V199-tf-leak — this.timeframe is overridden ONLY for
+     *   the synchronous _buildKlineUrl calls and restored BEFORE the first
+     *   await (the old held-across-await mutation poisoned concurrent
+     *   composite loads, the poll and setChartTf with the anchor tf on slow
+     *   networks); the anchor tf is threaded explicitly to _transformKlines.
      */
     async fetchHistoryTf(tf, limit, startTime) {
         if (!this.numerator || !this.denominator) return [];
         const savedTf = this.timeframe;
+        // V199-tf-leak: the old code held `this.timeframe = tf` across the
+        //   ENTIRE fetch (every await below) — on a rate-limited network that
+        //   is SECONDS. Any concurrent consumer of this adapter that read
+        //   this.timeframe during that window was poisoned:
+        //   • _fetchAndStream's `const tfStart = this.timeframe` (V192
+        //     captured it at load START — but the load itself can START
+        //     inside the window: the V188 foreign-data retry, the boot
+        //     restore, the switch's own connect) → the WHOLE composite load
+        //     built 1d kline URLs and stamped the chart DataStore tf='1d'
+        //     with 24h-spaced candles on a 4h chart (measured live:
+        //     ds.tf='1d', spacing 86400000ms, chartTf='1d' — anchored lines
+        //     then mapped against the wrong grid → «якорные линии не
+        //     обновляются / просто не показываются» intermittently);
+        //   • _buildKlineUrl inside _fetchKlinesWithFallback's pagination
+        //     loop and the 5s poll built 1d URLs between their awaits;
+        //   • setDataAdapter → im.setChartTf(adapter.timeframe) and
+        //     setIntervalMs's tf fallback flipped multiTf._chartTf to '1d'.
+        //   FIX: scope the mutation to the SYNCHRONOUS URL builds only and
+        //   restore it BEFORE the first await; the anchor tf is threaded
+        //   explicitly to _transformKlines (aggregation) so nothing else
+        //   ever observes the temporary value. The finally-restore stays as
+        //   a safety net for the early-throw paths.
         try {
             this.timeframe = tf;
             const { factor } = this._nativeTfFor(tf);
             const effLimit = limit * factor;
             const numUrl = this._buildKlineUrl(this.numerator, effLimit, startTime, null, !!this._numPerp);
             const denUrl = this._buildKlineUrl(this.denominator, effLimit, startTime, null, !!this._denPerp);
+            this.timeframe = savedTf;   // V199-tf-leak: restored before ANY await
             const [numData, denData] = await Promise.all([
                 this._fetchJson(numUrl),
                 this._fetchJson(denUrl),
@@ -64265,8 +64589,8 @@ class RatioAdapter extends DataSourceAdapter {
             if (numData == null || denData == null) {
                 throw new Error('ratio anchor fetch failed (network/HTTP)');
             }
-            const numCandles = this._transformKlines(numData);
-            const denCandles = this._transformKlines(denData);
+            const numCandles = this._transformKlines(numData, tf);
+            const denCandles = this._transformKlines(denData, tf);
             if (numCandles.length === 0 || denCandles.length === 0) return [];
             return this._computeRatio(numCandles, denCandles);
         } finally {
@@ -64387,7 +64711,8 @@ class BybitRatioAdapter extends RatioAdapter {
     }
 
     // Override: transform ByBit response (newest-first, wrapped in retCode/result)
-    _transformKlines(data) {
+    // V199-tf-leak: optional tfOverride — same contract as RatioAdapter.
+    _transformKlines(data, tfOverride) {
         // ByBit V5 wraps in { retCode, result: { list: [...] } }
         let list;
         if (Array.isArray(data)) {
@@ -64413,7 +64738,7 @@ class BybitRatioAdapter extends RatioAdapter {
                 isFinite(c.low) && isFinite(c.close) && isFinite(c.vol)
             );
         // V85-ratio-3d: aggregate non-native TFs (3d, 2w) same as RatioAdapter
-        const { factor, nativeTf } = this._nativeTfFor(this.timeframe);
+        const { factor, nativeTf } = this._nativeTfFor(tfOverride || this.timeframe);
         if (factor > 1) {
             const nativeMs = tfToMs(nativeTf);
             const groupMs = nativeMs * factor;
@@ -64750,6 +65075,14 @@ class CoinListService {
         } else if (exchange === 'mexc') {
             // V159: MEXC spot tickers (USDT pairs, Binance-compatible v3).
             const markets = await this._fetchMexc();
+            for (const m of markets) this._mergeCoin(coins, m);
+        } else if (exchange === 'safetrade') {
+            // V200: SafeTrade tickers (USDT markets, kouda/Peatio v2).
+            const markets = await this._fetchSafeTrade();
+            for (const m of markets) this._mergeCoin(coins, m);
+        } else if (exchange === 'bigone') {
+            // V200: BigONE asset-pair tickers (USDT pairs, v3).
+            const markets = await this._fetchBigOne();
             for (const m of markets) this._mergeCoin(coins, m);
         } else {
             // Fallback: try all
@@ -65625,6 +65958,80 @@ class CoinListService {
         return results;
     }
 
+    /** V200 SafeTrade: /api/v2/peatio/public/markets/tickers → a MAP keyed
+     *  by market id: { btcusdt: { ticker: { last, open, volume, … } } }. The
+     *  platform-wide quote feed lists 56 USDT markets while the legacy
+     *  /markets route exposes only 25 markets (1 USDT) — the tickers map is
+     *  the authoritative tradeable universe. volume is BASE turnover → the
+     *  picker's quote-volume column is approximated as last × volume. */
+    async _fetchSafeTrade() {
+        const results = [];
+        try {
+            const data = await this._fetchJsonWithCors('https://safetrade.com/api/v2/peatio/public/markets/tickers', 15000);
+            if (data && typeof data === 'object' && !Array.isArray(data)) {
+                for (const [mkt, row] of Object.entries(data)) {
+                    const sym = String(mkt || '').toUpperCase();
+                    if (!sym.endsWith('USDT')) continue;
+                    const t = (row && row.ticker) || {};
+                    const last = parseFloat(t.last);
+                    if (!isFinite(last) || last <= 0) continue;
+                    const open = parseFloat(t.open);
+                    const baseVol = parseFloat(t.volume) || 0;
+                    results.push({
+                        exchange: 'safetrade',
+                        symbol: sym,
+                        baseCoin: sym.slice(0, -4),
+                        quoteCoin: 'USDT',
+                        isPerp: false,
+                        price: last,
+                        change24h: (isFinite(open) && open > 0) ? (last - open) / open * 100 : null,
+                        volume: isFinite(baseVol) ? baseVol * last : 0,
+                        fundingRate: null, openInterest: null, launchTime: null,
+                    });
+                }
+            }
+        } catch (e) { /* CORS or timeout — skip */ }
+        return results;
+    }
+
+    /** V200 BigONE: /api/v3/asset_pairs/tickers → {data:[{asset_pair_name,
+     *  close, open, daily_change, volume}]}. NO CORS headers (probed) — the
+     *  proxy fallback chain carries the request; on total proxy failure the
+     *  list stays empty. daily_change is an ABSOLUTE 24h delta (not a
+     *  percent) — prefer deriving the percent from open/close. volume is
+     *  BASE turnover → quote volume ≈ close × volume. */
+    async _fetchBigOne() {
+        const results = [];
+        try {
+            const data = await this._fetchJsonWithCors('https://big.one/api/v3/asset_pairs/tickers', 15000);
+            const rows = (data && Array.isArray(data.data)) ? data.data : [];
+            for (const t of rows) {
+                const name = String(t.asset_pair_name || '');
+                if (!name.endsWith('-USDT')) continue;
+                const base = name.slice(0, -5);
+                if (!base) continue;
+                const close = parseFloat(t.close);
+                if (!isFinite(close) || close <= 0) continue;
+                const open = parseFloat(t.open);
+                const chg = parseFloat(t.daily_change);
+                const baseVol = parseFloat(t.volume) || 0;
+                results.push({
+                    exchange: 'bigone',
+                    symbol: base + 'USDT',
+                    baseCoin: base,
+                    quoteCoin: 'USDT',
+                    isPerp: false,
+                    price: close,
+                    change24h: (isFinite(open) && open > 0) ? (close - open) / open * 100
+                             : ((isFinite(chg) && isFinite(close - chg) && close - chg > 0) ? chg / (close - chg) * 100 : null),
+                    volume: isFinite(baseVol) ? baseVol * close : 0,
+                    fundingRate: null, openInterest: null, launchTime: null,
+                });
+            }
+        } catch (e) { /* CORS or timeout — skip */ }
+        return results;
+    }
+
     /** Fetch kline data for a mini chart. Returns array of {c: close} or null.
      *  Includes an 8s per-request timeout (Binance fapi sometimes hangs),
      *  retry-once with backoff on HTTP 418/429 (Binance Futures IP-bans when
@@ -65765,6 +66172,23 @@ class CoinListService {
                 const mIntMap = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '60m', '2h': '60m', '4h': '4h', '6h': '60m', '12h': '60m', '1d': '1d', '1w': '1W' };
                 const mIv = mIntMap[interval] || interval || '60m';
                 return `https://api.mexc.com/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${mIv}&limit=${Math.min(limit, 1000)}`;
+            } else if (exchange === 'safetrade') {
+                // V200: SafeTrade k-line — window anchored at "now" (the
+                // endpoint otherwise returns its OLDEST candles, probed).
+                const sIntMap = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240, '6h': 360, '12h': 720, '1d': 1440, '1w': 10080 };
+                const sIv = sIntMap[interval] || 60;
+                const sMkt = String(symbol).toLowerCase();
+                const nowSec = Math.floor(Date.now() / 1000);
+                const to = nowSec + sIv * 60;
+                const from = nowSec - Math.min(limit || 48, 1000) * sIv * 60;
+                return `https://safetrade.com/api/v2/trade/public/markets/${encodeURIComponent(sMkt)}/k-line?period=${sIv}&limit=${Math.min(limit || 48, 1000)}&time_from=${from}&time_to=${to}`;
+            } else if (exchange === 'bigone') {
+                // V200: BigONE v3 candles — latest window, newest-first.
+                const b1IntMap = { '1m': 'min1', '5m': 'min5', '15m': 'min15', '30m': 'min30', '1h': 'hour1', '2h': 'hour2', '4h': 'hour4', '6h': 'hour6', '12h': 'hour12', '1d': 'day1', '1w': 'week1' };
+                const b1Iv = b1IntMap[interval] || 'hour1';
+                const b1Pair = String(symbol).endsWith('USDT')
+                    ? String(symbol).slice(0, -4) + '-USDT' : String(symbol);
+                return `https://big.one/api/v3/asset_pairs/${encodeURIComponent(b1Pair)}/candles?period=${b1Iv}&limit=${Math.min(limit || 48, 500)}`;
             }
             return null;
         };
@@ -65820,6 +66244,14 @@ class CoinListService {
                     // V159: MEXC v3 Binance-format array, oldest-first.
                     if (!Array.isArray(data)) return null;
                     return data.map(k => ({ o: parseFloat(k[1]), h: parseFloat(k[2]), l: parseFloat(k[3]), c: parseFloat(k[4]) }));
+                } else if (exchange === 'safetrade') {
+                    // V200: SafeTrade [[sec,o,h,l,c,v],…] array, oldest-first.
+                    if (!Array.isArray(data)) return null;
+                    return data.map(k => ({ o: parseFloat(k[1]), h: parseFloat(k[2]), l: parseFloat(k[3]), c: parseFloat(k[4]) }));
+                } else if (exchange === 'bigone') {
+                    // V200: BigONE {data:[{time,o,h,l,c,v}]} newest-first.
+                    const b1rows = (data && Array.isArray(data.data)) ? data.data : [];
+                    return b1rows.slice().reverse().map(k => ({ o: parseFloat(k.open), h: parseFloat(k.high), l: parseFloat(k.low), c: parseFloat(k.close) }));
                 }
                 return null;
             } catch (e) {
@@ -66468,10 +66900,10 @@ function _wireCoinInfoTagClicks(container, coinPicker) {
 
 
 // ── V39: явный экспорт в window (обратная совместимость) ──
-Object.assign(window, { ADAPTER_DEFAULTS, DataSourceAdapter, WebSocketExchangeAdapter, BinanceAdapter, ByBitAdapter, CoinbaseAdapter, OkxAdapter, KrakenAdapter, GateAdapter, BitgetAdapter, HtxAdapter, HyperliquidAdapter, AsterAdapter, MexcAdapter, InternalDataSimulator, RatioAdapter, BybitRatioAdapter, COIN_FAV_TYPES, _coinHashColor, _formatPct, _formatPrice, _formatCompact, _parseMultiplier, _timeAgo, STABLECOINS, _isStable, CoinListService, CP_CANONICAL_TAGS, CP_CANONICAL_TAG_SET, CP_TAG_ALIASES, _normalizeTag, _normalizeTags, PaprikaService, CoinFavorites, _coinListService, _paprikaService, _coinFavorites, _renderCoinInfoBaseHTML, _renderCoinInfoDetailHTML, _wireCoinInfoTagClicks });
+Object.assign(window, { ADAPTER_DEFAULTS, DataSourceAdapter, WebSocketExchangeAdapter, BinanceAdapter, ByBitAdapter, CoinbaseAdapter, OkxAdapter, KrakenAdapter, GateAdapter, BitgetAdapter, HtxAdapter, HyperliquidAdapter, AsterAdapter, MexcAdapter, SafeTradeAdapter, BigOneAdapter, InternalDataSimulator, RatioAdapter, BybitRatioAdapter, COIN_FAV_TYPES, _coinHashColor, _formatPct, _formatPrice, _formatCompact, _parseMultiplier, _timeAgo, STABLECOINS, _isStable, CoinListService, CP_CANONICAL_TAGS, CP_CANONICAL_TAG_SET, CP_TAG_ALIASES, _normalizeTag, _normalizeTags, PaprikaService, CoinFavorites, _coinListService, _paprikaService, _coinFavorites, _renderCoinInfoBaseHTML, _renderCoinInfoDetailHTML, _wireCoinInfoTagClicks });
 
 // ── V39: регистрация в реестре модулей ──
-CE.registerModule('chart-engine-adapters', ['ce-data-layer', 'ce-infra'], ['ADAPTER_DEFAULTS', 'DataSourceAdapter', 'WebSocketExchangeAdapter', 'BinanceAdapter', 'ByBitAdapter', 'CoinbaseAdapter', 'OkxAdapter', 'KrakenAdapter', 'GateAdapter', 'BitgetAdapter', 'HtxAdapter', 'HyperliquidAdapter', 'AsterAdapter', 'MexcAdapter', 'InternalDataSimulator', 'RatioAdapter', 'BybitRatioAdapter', 'COIN_FAV_TYPES', '_coinHashColor', '_formatPct', '_formatPrice', '_formatCompact', '_parseMultiplier', '_timeAgo', 'STABLECOINS', '_isStable', 'CoinListService', 'CP_CANONICAL_TAGS', 'CP_CANONICAL_TAG_SET', 'CP_TAG_ALIASES', '_normalizeTag', '_normalizeTags', 'PaprikaService', 'CoinFavorites', '_coinListService', '_paprikaService', '_coinFavorites'], 'MAIN-THREAD ONLY');
+CE.registerModule('chart-engine-adapters', ['ce-data-layer', 'ce-infra'], ['ADAPTER_DEFAULTS', 'DataSourceAdapter', 'WebSocketExchangeAdapter', 'BinanceAdapter', 'ByBitAdapter', 'CoinbaseAdapter', 'OkxAdapter', 'KrakenAdapter', 'GateAdapter', 'BitgetAdapter', 'HtxAdapter', 'HyperliquidAdapter', 'AsterAdapter', 'MexcAdapter', 'SafeTradeAdapter', 'BigOneAdapter', 'InternalDataSimulator', 'RatioAdapter', 'BybitRatioAdapter', 'COIN_FAV_TYPES', '_coinHashColor', '_formatPct', '_formatPrice', '_formatCompact', '_parseMultiplier', '_timeAgo', 'STABLECOINS', '_isStable', 'CoinListService', 'CP_CANONICAL_TAGS', 'CP_CANONICAL_TAG_SET', 'CP_TAG_ALIASES', '_normalizeTag', '_normalizeTags', 'PaprikaService', 'CoinFavorites', '_coinListService', '_paprikaService', '_coinFavorites'], 'MAIN-THREAD ONLY');
 })(window.CE, window);
 
 (function CE$module$chart$engine$app(CE, window) {
@@ -67706,6 +68138,15 @@ class DataSourceOrchestrator {
             symbol: this.symbol, timeframe: this.timeframe,
             fetchLimit: 1000, minRequestInterval: 500, sourceId: 'mexc'
         });
+        // ── V200: two more exchanges (CORS-probed before implementation) ──
+        this._adapters.safetrade = new SafeTradeAdapter({
+            symbol: this.symbol, timeframe: this.timeframe,
+            fetchLimit: 1000, minRequestInterval: 600, sourceId: 'safetrade'
+        });
+        this._adapters.bigone = new BigOneAdapter({
+            symbol: this.symbol, timeframe: this.timeframe,
+            fetchLimit: 500, minRequestInterval: 650, sourceId: 'bigone'
+        });
         // Wire cache to adapters
         if (this.dataCache) {
             for (const adapter of Object.values(this._adapters)) {
@@ -67951,11 +68392,50 @@ class DataSourceOrchestrator {
             api.updateSourceInfo({ symbol: this.symbol, timeframe: this.timeframe });
             adapter.setRangeAnchor(anchor);
             this._connectAdapter(adapter);
+            // V199-anchor-kick: fire the anchor-TF prefetch IN PARALLEL with
+            //   the composite load (same early-kick the timeframe-param path
+            //   has had since V50.2). The quote-currency rebuild cleared the
+            //   anchor stores; without this kick the refetch waits for the
+            //   render loop — which the in-flight old cycle (now superseded
+            //   by the V199 gen guard) or the slow composite load delayed.
+            //   With it, anchored lines land with (or before) the new chart
+            //   candles. No-op when no anchor-TF store is referenced
+            //   (prefetchAll iterates only _stores with refcount > 0).
+            try {
+                const engine = this.api?._ctx?.engine || window._chart?.engine;
+                const im = engine?.indicatorManager;
+                if (im && typeof im.prefetchAnchorTfs === 'function') {
+                    const dsReal = engine?.dataContext?.dataStore;
+                    const vp = engine?.viewport;
+                    const ds = (dsReal && dsReal.size > 0)
+                        ? dsReal
+                        : { size: 1, getFirstX: () => vp?.xMin, getLastX: () => vp?.xMax };
+                    im.prefetchAnchorTfs(adapter, ds).catch(() => {});
+                }
+            } catch (_) { /* best-effort — render loop will retry */ }
         } else {
             const adapter = this._adapters[src];
             if (adapter) {
                 adapter.setRangeAnchor(anchor);
                 this._connectAdapter(adapter);
+                // V199-anchor-kick: same early anchor prefetch as the ratio
+                //   branch — covers the quote-currency RESET (ratio → plain
+                //   exchange) and cross-exchange switches; the anchor stores
+                //   were cleared by the switch and the plain adapter's
+                //   switchAsset-based paths don't always kick the prefetch
+                //   themselves.
+                try {
+                    const engine = this.api?._ctx?.engine || window._chart?.engine;
+                    const im = engine?.indicatorManager;
+                    if (im && typeof im.prefetchAnchorTfs === 'function') {
+                        const dsReal = engine?.dataContext?.dataStore;
+                        const vp = engine?.viewport;
+                        const ds = (dsReal && dsReal.size > 0)
+                            ? dsReal
+                            : { size: 1, getFirstX: () => vp?.xMin, getLastX: () => vp?.xMax };
+                        im.prefetchAnchorTfs(adapter, ds).catch(() => {});
+                    }
+                } catch (_) { /* best-effort — render loop will retry */ }
             }
         }
 
@@ -68818,10 +69298,10 @@ class SourceUIController {
                         this.bus.emit('source:switch', { src: 'ratio' }, 'CoinPicker');
                         return;
                     }
-                    // V158/V159: all eleven registered sources pass straight
-                    //   through (the orchestrator's _adapters registry has a
-                    //   matching key).
-                    const KNOWN_SOURCES = ['binance', 'bybit', 'coinbase', 'okx', 'kraken', 'gate', 'bitget', 'htx', 'hyperliquid', 'aster', 'mexc'];
+                    // V158/V159/V200: all thirteen registered sources pass
+                    //   straight through (the orchestrator's _adapters
+                    //   registry has a matching key).
+                    const KNOWN_SOURCES = ['binance', 'bybit', 'coinbase', 'okx', 'kraken', 'gate', 'bitget', 'htx', 'hyperliquid', 'aster', 'mexc', 'safetrade', 'bigone'];
                     const src = KNOWN_SOURCES.includes(exchange) ? exchange : 'binance';
                     if (symBtn) window._cpSetSymLabel(symBtn, symbol.replace('USDT', '/USDT'));
                     // V52-active-fix: immediately update this._symbol so that
@@ -77668,7 +78148,7 @@ let _cpCachedExchange = null;     // which exchange the cache is for
 const _cpCoinsByExchange = new Map();   // exchange → { coins, ts }
 const CP_PRELOAD_MEM_TTL = 5 * 60000;
 const CP_ALL_EXCHANGES = ['binance', 'bybit', 'coinbase', 'okx', 'kraken', 'gate',
-                          'bitget', 'htx', 'hyperliquid', 'aster', 'mexc'];
+                          'bitget', 'htx', 'hyperliquid', 'aster', 'mexc', 'safetrade', 'bigone'];
 let _cpPreloadAllRunning = null;        // promise dedup for the full pass
 let _cpCoinsPromiseExchange = null;     // V159: exchange of the in-flight fetch (quiet-preload aware)
 
@@ -78214,7 +78694,7 @@ class CoinPicker {
             </div>
             <div class="cp-exchange-tabs" style="display:flex; gap:4px; padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.06); overflow-x:auto; scrollbar-width:none; align-items:center;">
                 <!-- V158: the exchange BUTTON GROUP became a DROPDOWN menu —
-                     exchanges don't fit a button row on mobile (V159: now 11). Same visual
+                     exchanges don't fit a button row on mobile (V200: now 13). Same visual
                      language as the Quote dropdown (cp-quote-trigger/menu):
                      the trigger shows the active exchange, the active item is
                      disabled + ✓. -->
@@ -78235,6 +78715,8 @@ class CoinPicker {
                         <button data-exch="hyperliquid" role="menuitem">Hyperliquid</button>
                         <button data-exch="aster" role="menuitem">Aster</button>
                         <button data-exch="mexc" role="menuitem">MEXC</button>
+                        <button data-exch="safetrade" role="menuitem">SafeTrade</button>
+                        <button data-exch="bigone" role="menuitem">BigONE</button>
                     </div>
                 </div>
                 <div style="margin-left:auto; display:flex; align-items:center; gap:0; flex-shrink:0;">
@@ -78337,7 +78819,7 @@ class CoinPicker {
         const CP_EXCH_NAMES = { binance: 'Binance', bybit: 'ByBit', coinbase: 'Coinbase',
                                 okx: 'OKX', kraken: 'Kraken', gate: 'Gate.io',
                                 bitget: 'Bitget', htx: 'HTX', hyperliquid: 'Hyperliquid',
-                                aster: 'Aster', mexc: 'MEXC' };
+                                aster: 'Aster', mexc: 'MEXC', safetrade: 'SafeTrade', bigone: 'BigONE' };
         const closeExchMenu = () => {
             if (!exchDropdown) return;
             exchDropdown.classList.remove('open');
@@ -78658,7 +79140,7 @@ class CoinPicker {
         const names = { binance: 'Binance', bybit: 'ByBit', coinbase: 'Coinbase',
                         okx: 'OKX', kraken: 'Kraken', gate: 'Gate.io',
                         bitget: 'Bitget', htx: 'HTX', hyperliquid: 'Hyperliquid',
-                        aster: 'Aster', mexc: 'MEXC' };
+                        aster: 'Aster', mexc: 'MEXC', safetrade: 'SafeTrade', bigone: 'BigONE' };
         if (trigger) {
             const label = trigger.querySelector('[data-role="exch-label"]');
             if (label) label.textContent = names[this._exchange] || (this._exchange || 'Binance');
@@ -84962,7 +85444,7 @@ if (typeof URLSearchParams !== 'undefined' && new URLSearchParams(location.searc
 //     перезагрузке (пресеты хоть остались, могу подгрузить), положение
 //     хэдера сбрасывается, ltr сбрасывается и тд. Линии тоже не
 //     сохраняются». Root cause: the picker's REFRESHABLE caches (cp.coins.*
-//     for 11 exchanges, coinpicker_paprika_index, one coinpicker_paprika_
+//     for 13 exchanges, coinpicker_paprika_index, one coinpicker_paprika_
 //     detail_<id> key per viewed coin, btc_realized_data) slowly filled
 //     localStorage up to the quota; _safeStorage's availability probe then
 //     threw QuotaExceeded ONCE and the old code latched "unavailable" for
@@ -85053,17 +85535,21 @@ const ADAPTER_CLASSES = {
     hyperliquid: window.HyperliquidAdapter,
     aster:       window.AsterAdapter,
     mexc:        window.MexcAdapter,
+    safetrade:   window.SafeTradeAdapter,
+    bigone:      window.BigOneAdapter,
 };
 const EXCH_NAMES = {
     binance: 'Binance', bybit: 'ByBit', coinbase: 'Coinbase', okx: 'OKX',
     kraken: 'Kraken', gate: 'Gate.io', bitget: 'Bitget', htx: 'HTX',
     hyperliquid: 'Hyperliquid', aster: 'Aster', mexc: 'MEXC',
+    safetrade: 'SafeTrade', bigone: 'BigONE',
 };
 // Per-exchange floor for the request gap (ms) — respects the tightest
 // public-API limits (Kraken 1 req/s class, MEXC via proxy chain).
 const EXCH_GAP_FLOOR = {
     binance: 280, bybit: 280, coinbase: 340, okx: 300, kraken: 1300,
     gate: 320, bitget: 320, htx: 320, hyperliquid: 320, aster: 280, mexc: 650,
+    safetrade: 600, bigone: 650,
 };
 // TFs whose native interval needs client-side aggregation on some exchanges
 // (Coinbase has no native weekly → aggregate 7×1d, same as RatioAdapter).
@@ -85190,7 +85676,7 @@ let _saveDirty = false, _saveTimer = null;
 
 // ── IndexedDB mirror ──
 // localStorage on a coin-cache-heavy origin can hit QuotaExceeded (the
-// picker's cp.coins.* caches for 11 exchanges add up to MBs). IndexedDB has
+// picker's cp.coins.* caches for 13 exchanges add up to MBs). IndexedDB has
 // a much larger budget, so every save ALSO goes to IDB; at boot the newer
 // copy (IDB vs LS) wins. IDB writes are async and fire-and-forget.
 function _idbOpen() {
