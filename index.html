@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Chart Engine v49p — series.js v6 foundation · V292 TOPPCT-VISIBLE + PERSIST-CHART-BARS + PCT-SLIDER-FIX + ECON-NULL-FIX (юзер: «Когда я врубаю нойс кат на максимум, то там много полок с шириной в один бар, но тем не менее они все ещё синие почему то… слайдер что меняет перцентиль не указывает нигде текстом сколько щас перцетиль… Render error: Cannot read properties of null (reading '_ohlcClose') at EconEventsBrick.compute»): ① СИНЕЛО ВСЁ ВИДИМОЕ — ПОЧИНЕНО: топ-% перцентиль «горячести» считался по ВСЕМ ячейкам снапшота — при Noise 90% на экране остаются только сильнейшие ~10% ячеек, и они почти все выше порога, посчитанного по ВСЕМ ячейкам → синело всё видимое; теперь и перцентиль, и существование полки считаются по ячейкам, ПЕРЕЖИВШИМ текущий Noise cut (LUT-порог u переведён обратно в USD: v = med·expm1(thrU·logDen), вырожденный линейный случай v = thrU·maxV) — синее = топ-% ТОГО, ЧТО НА ЭКРАНЕ; ② «СУЩЕСТВОВАНИЕ ≥ N БАРОВ» СЧИТАЛО СТОЛБЦЫ СТРИМА: run-length шёл по снапшот-колонкам — при каденции стрима мельче бара графика (ручной интервал мельче авто, саб-интервальные снапшоты CDN) полка шириной в ОДИН бар набирала десятки «подряд идущих» колонок и свободно проходила фильтр; теперь run-length меряется в БАРАХ ГРАФИКА (слот-грид из DataStore графика: binary search по opens + равномерная экстраполяция вне загруженного диапазона; пропуск наблюдения терпится до каденции стрима, maxGap = ⌈dtStream/dtBar⌉ — грубый стрим не рвёт ран; len копит покрытые бары, скачок через бар-дыру ран сбрасывает), и бар засчитывается полке в ран только если в нём полка ВИДИМА (выше Noise-порога); noise добавлен в сигнатуру пересборки pc (merge|pctOn|pct|persist|bars|noise) — синий набор следует за ползунком Noise; ③ СЛАЙДЕР ПЕРЦЕНТИЛЯ БЫЛ МЁРТВ: чекбокс «Highlight top-percentile» и слайдер «Top %» делили ОДИН атрибут data-cgb-pct, а querySelector возвращает ПЕРВЫЙ элемент — чекбокс: у слайдера не было слушателя вовсе (движение ничего не меняло, лэйбл «Top N%» не обновлялся — «не указывает нигде текстом сколько щас перцентиль»), а каждый клик по чекбоксу зажигал input → setPct(parseInt('on')→NaN || 20) и МОЛЧА СБРАСЫВАЛ перцентиль на 20; слайдеру отдан личный атрибут data-cgb-pctv (HTML + input-слушатель + __cgHeatUiSync), лэйбл «Top N%» теперь живой при перетаскивании; чекбокс персистентности уточнён: «Only shelves that persisted ≥ N chart bars»; ④ ECON-NULL-FIX: Render error «Cannot read properties of null (reading '_ohlcClose')» в EconEventsBrick.compute — _computeRaw при изменении rev сервиса обнулял _computed и возвращал null (на первом кадре с прогретым localStorage ce_econ_events_v2 rev уже > 0), базовый compute() падал на result._ohlcClose, а manager.getCached кэшировал null → кирпич падал КАЖДЫЙ кадр; теперь _computeRaw всегда возвращает валидный результат (line = NaN-стаб + count/visibleRange), инвалидация — только через _computeVersion = −1 и перерисовку; + ПОДПИСКА кирпича на сервис: manager.getCached может отдавать кэш, не вызывая _computeRaw (тихий рынок, версия данных не менялась) — подписка доводит свежий rev до _eventsCache и перерисовывает сразу; + самосинхронизация _eventsCache в начале render() — маркеры появляются на первом же кадре после загрузки календаря; в IndicatorBrick защитный _emptyComputeResult: null/undefined из ЛЮБОГО _computeRaw больше не попадает в общий кэш и не доходит до чтений _ohlcClose (оба пути — getCached и прямой) · V291 LIQBOOK-UNHANG + ECON-OVERHAUL (юзер: «Lq book теперь вечно грузится… обнови индикатор экон ивентов. Сделай лучше с лэйблами оч мелкими где написано лишь что за ивент, и возможность смотреть прошлые ивенты тоже на графике но через опцию в настройках. Так же в настройках выбрать какие ивенты показывать а какие нет. Проверь чтобы не было корса. Если экон ивент прошел ровно тогда когда приложение активно, мб даж в другой вкладке, то в тоасте должно показаться событие с данными. Там должна быть кнопка закрыть, типа крестик. И отдельная лента с ними. В статистике (не монеты, а где общая фигня)»): ① LIQBOOK-UNHANG: «LQ book: loading…» мог висеть ВЕЧНО — readNdjson резолвился только по ЗАКРЫТИЮ стрима, а CDN теперь регулярно держит соединение открытым после события «end» (или не отвечает телом вовсе): reader.read() ждал бесконечно, fetchBook навсегда залипал в fetching=true, поллинг умирал; теперь чтение завершается СРАЗУ по событию «end» (соединение отменяется), + idle-страж (аборт после 20 с тишины стрима — ловит «заголовки ок, тело не идёт»), общий soft-дедлайн 90 с, частичные данные рисуются, действительно пустой поток = видимая ошибка, reader.cancel() на КАЖДОМ выходе; + жёсткий потолок 120 с в fetchBook (liqbook) и fetchHeat (ликвидации): fetching больше не может залипнуть принципиально, таймаут = видимая ошибка, полл перезапрашивает; ② ECON-ИСТОЧНИКИ БЕЗ КОРСА: FF (nfs.faireconomy.media) с 2026-11 НЕ ШЛЁТ Access-Control-Allow-Origin вовсе (прямой браузерный fetch падал — «проверь чтобы не было корса»), nextweek/lastweek.json удалены (404, только текущая неделя); TV economic-calendar даёт историю ±месяцы с actual/forecast/previous и важностью, но 403-ит чужой Origin — ОБА источника через proxy-race (direct + allorigins raw/get + codetabs + cors.eu.org + cors.lol параллельно, первый ВАЛИДНЫЙ ответ побеждает, проигравшие абортятся — та же схема, что у биржевых адаптеров), объединение с дедупликацией TV+FF дублей (страна ±10 мин + короткое имя, приоритет у записи с actual) и кэш в localStorage ce_econ_events_v2 — график/лента/тосты переживают полный сетевой сбой; ③ КИРПИЧ ECON EVENTS: лэйблы — 8px-пилюли ТОЛЬКО с именем события («CPI», «Core CPI», «Jobless», «ISM Mfg»… ~60 шаблонов + фолбэк «первые 2 слова без страны»), события одной минуты стекуются вниз (≤7); опция Show Past Events (default ON, прошлые тусклые); фильтры «какие ивенты показывать»: важность High/Medium/Low + страны US/EU/UK/JP/CN/CA/AU/Others (чекбоксы, US+High по умолчанию); ④ ТОСТЫ: вочер window.__econEventsSvc (тик 20 с + догон при возврате во вкладку, потолок 35 мин, ≤3 тостов за раз с приоритетом high) — событие, наступившее при открытом приложении (даже в фоновой вкладке), всплывает тостом с данными (имя+страна+важность, время, полное название, actual/forecast/prev), цветной полосой важности и КНОПКОЙ-КРЕСТИКОМ ✕ (авто-скрытие 20 с); опция «Toast When Event Fires» (default ON, тосты работают и без кирпича на графике); ⑤ ЛЕНТА В СТАТИСТИКЕ: 📊 Statistics → вкладка/секция «🗓 Econ Events» — Upcoming (следующие 9) и Recent (последние 7) с actual/forecast/previous, точкой важности и страной; асинхронно от того же сервиса, обновляется при догрузке календаря, отписывается при закрытии модалки · V290 LIQBOOK-AGG-FIX + CROSSHAIR-SHELF-VALUES + MERGE + TOP-% (юзер: «Проверь аггрегэй. У ликвидэйшн мапы и ликвидити… битгет пишет ошибку, что у них нет монеты и все валится… Например это на aave… лэйбл кроссэйра… добавляется величина ликвидити или ликвидэцшна именно под кроссхэйером… полки схлопывать в менее детальные… слайдер… верхние 20% перцентиль… синеватым цветом… перцентиль слайдером… должны еще и существовать какое-то время, например эн баров»): ① АГРЕГАТ-СТРИМ больше не падает от «No supported futures heatmap pair for AAVE on Bitget» (code 20001, живьём воспроизведено: фьючерсный агрегат AAVE падал целиком из-за Bitget, спотовый — из-за Bitget→Bitfinex→Coinbase по очереди; без виноватых AAVE отвечает на Binance+Hyperliquid): виноватая биржа парсится из текста ошибки («…on Bitget»), запоминается per coin+market на 15 минут (aggSkip-map) и запрос повторяется БЕЗ неё (≤4 попыток за опрос) — агрегат рисуется на тех биржах, где монета есть; стрим, который УЖЕ ответил с данными, ошибочные строки больше не роняет (ошибки собираются в res.errors → тоже в блэклист), битые JSON-строки NDJSON пропускаются; ② ВЕЛИЧИНА ПОЛКИ В ЛЭЙБЛЕ КРОССХЭЙРА: оба хитмапа-модуля получили valueAt(tMs, price) — ликвидационный: ближайший бакет/бар × ближайший уровень (допуск ±0.6 медианного шага уровней, liqMap (bar,level)→USD строится на фетче), ликвидитный: сумма ячеек снапшот-колонки, ближайшей к курсору (±½ dt), в бакете курсора (та же квантизация, что на рендере, merge-aware); семплируется ТОЧКА ПОД КРОССХЭЙРОМ (H-линия × V-линия через pixToVal), а не цена закрытия свечи, к которой приклеен тултип; в компакт-тултипе после Vol добавляются строки «Liq $…» (оранжевый) / «Liquidity $…» (голубой) — только когда под курсором есть полка; опции «Show shelf value in the crosshair tooltip» в настройках ОБОИХ индикаторов (секции Crosshair), default ON, персистятся; ③ СХЛОПЫВАНИЕ ПОЛОК: слайдер «Shelf merge ×1…×20» (секция Detail в ⚙ Liquidity Heatmap) — N соседних уровней стрима квантируются в один грубый бакет (data.size×N), полки становятся толще во столько же (lvlHalf), valueAt учитывает слияние, персистится в ce_cg_liquheat_v1; ④ TOP-% ПОДСВЕТКА: чекбокс «Highlight top-percentile shelves (blue)» (default ON) + слайдер «Top 1–50%» (default 20%) + опция «Only shelves that persisted ≥ N bars» + слайдер 1–50 (default 5, default OFF): ячейка «горячая», когда её resting USD выше (100−pct)-перцентиля СВОЕГО снапшот-колонка (перцентиль на момент времени, обе стороны вместе) и — при включённой опции — её уровень простоял ≥N ПОДРЯД колонок (run-length по снапшотам); горячие ячейки перекрашиваются в синеватый rgba(96,165,250,α) с той же кривой альфы (LUT.hot) в обоих рендерах (paintLayer + bake c битом 512 в ключе стиля), пересчёт hot и геометрии — по сигнатуре merge|pct|persist|bars в renderOverlay; лэйблы слайдеров живые («Shelf merge ×3», «Top 20%», «5 bars») через __cgHeatUiSync · V289 QUERY-DSL-SUGAR: в ƒx-фильтре пикера — САХАР И НОВЫЕ ВОЗМОЖНОСТИ (юзер: «Отлично, а теперь добавь сахар и еще возможности там»): ① новые свечные поля hl2 (h+l)/2, hlc3 (h+l+c)/3, ohlc4, volume (объём бара в базовых единицах), volusd (объём × close, USD-оценка) и range (high−low) — всё с [n], ТФ-префиксами и кросс-коин ссылками (btc.volume[1]); ② ИСТОЧНИК у скользящих: ema(close, 50), sma(hl2, 20), wma(volume, 10), rsi(hlc3, 14) — любой из open/high/low/close/hl2/hlc3/ohlc4/volume/volusd/range (mfi/ao/atr — без источника, у них свои OHLCV-входы); ③ новые MA/линии: roc(n) — % изменение источника за n баров (roc(6) на 4h = рост за сутки, d1.roc(7) — за неделю, roc(6) > btc.roc(6) — кросс-коин сравнение, roc(1) разрешён), atr(n) — Wilder ATR (atr(14) / price > 0.05 = дикая волатильность), bb_up(n, k) / bb_lo(n, k) — полосы Боллинджера SMA(n) ± k·σ, k по умолчанию 2 (close > bb_up(20), bb_lo(20, 2.5)); ④ серии-предикаты: crossed_up(a, b, n) / crossed_down(a, b, n) — пересечение линий за последние n баров, обе линии на одном ТФ (crossed_up(close, wma(10))); rising(x, n) / falling(x, n) — рост/падение на КАЖДОМ из n баров (rising(tema(40), 5)); highest(x, n) / lowest(x, n) — экстремум за последние n ЗАКРЫТЫХ баров без формирующейся свечи: close > highest(high, 20) = честный пробой 20-барного максимума; ⑤ скалярные функции: dist(a, b) — % дистанция |a/b−1|·100 (dist(close, ema(50)) < 2), near(a, b, pct) — близость в % (near(close, poc('3M'), 2)), between(x, a, b) — в диапазоне (between(rsi(14), 40, 60)), pct(a, b) — % изменение от b к a (pct(close, close[10]) > 5), sqrt/pow/log/round/sign; арность функций проверяется парсером с понятными ошибками; ⑥ ⇅ ƒx sort — чип в панели Query: сортировка совпавших монет по ЧИСЛЕННОМУ значению выражения (по убыванию, «нет данных» внизу, персистится в cp.query.v1, статус «⇅ sorted by ƒx value»); ⑦ инспекция: при активном ƒx тултип монеты показывает строку «ƒx ✓/= значение» (компактный формат T/B/M/K) — видно, ЧЕМУ равно выражение для каждой монеты; ⑧ шпаргалка «? Fields»: примеры КЛИКАБЕЛЬНЫ (клик → вставить в редактор и применить), новая категория Sugar & signals (пробои, пересечения, наклоны, дистанции, свои источники, Боллинджер, roc) · V288 QUERY-DSL-MFI-AO-XREF-TOUCH-POC: DSL-фильтр пикера умеет осцилляторы объёма, чужие монеты, касания линий и POC профиля (юзер: «А mfi? А моментум mfi — чтобы сегодня был выше чем вчера. Или ao — меньше нуля но поднимался. Все монеты, у которых процентный рост за день меньше чем у биткоина или эфира. Цена коснулась WMA 10 за последнюю свечу или 3 дня. Цена коснулась POC линии месячной / 3-месячной / годовой»): ① mfi(n) — Money Flow Index 0–100 по типичной цене (h+l+c)/3 × объём бара — моментум через уже существующий индекс баров: mfi(14) > mfi(14)[1]; ② ao() — Awesome Oscillator SMA(5)−SMA(34) медианной (h+l)/2, свои периоды ao(f, s) — «меньше нуля но поднимался»: ao() < 0 and ao() > ao()[1]; ③ кросс-коин ссылки btc.chg / eth.chg / btc.d1.close[1] / sol.tema(40) — ЛЮБОЕ поле или свечная формула ДРУГОЙ монеты текущей биржи (регистр не важен, множители 1000PEPE разворачиваются), «рост за день меньше биткоина»: chg < btc.chg or chg < eth.chg; недостающие данные референса дофетчиваются теми же paced-свипами (sweep-очередь и очередь свечей пополняются монетой-референсом через ctx.xq), кэш резолва тикера живёт один запрос; ④ touch(line, n) — цена коснулась линии (low ≤ line ≤ high) за последние n баров ТФ ЛИНИИ ([0] = текущая формирующаяся, n по умолчанию 1): touch(wma(10), 3) — WMA-10 задета за 3 последних бара, touch(tema(40)) — на текущем баре, touch(d1.ema(50), 2) — на дневном ТФ; ⑤ poc('период') — Point of Control профиля объёма: гистограмма 72 ценовых бинов, объём свечи размазывается равномерно по её диапазону low..high, POC = центр самого тяжёлого бина (бары без объёма считаются массой 1); окно ≤9 месяцев строится по дневным барам (1M=30, 3M=91, 6M=183 — 300-барный кэш покрывает), дольше — по недельным (12M=52), периоды: '1M' '3M' '6M' '12M' '1Y' '2W' 'q' или числом poc(3); касание годового POC: touch(poc('12M'), 5), сравнение с линией: close > poc('3M'); ОБЪЁМ: во все OHLC-мапперы бирж добавлено поле v (binance/bybit/okx/coinbase/kraken[6]/gate[6]/bitget/htx .vol/aster/mexc/safetrade/bigone .v/bitunix .volume/hyperliquid .v) — mfi без объёма честно даёт «нет данных», POC взвешивается объёмом где он есть; +фикс: coinbase получил гранулярности 1d/1w (раньше дневка и неделя скачивались часовыми барами); подсветка: тикер перед точкой — оранжевый жирный (btc.), подсказки после «btc.» — поля и свечи чужой монеты, после «poc('» — периоды профиля, в общем списке — тикеры текущей биржи (топ-4); шпаргалка дополнена категорией примеров · V287 QUERY-DSL-CANDLES: в DSL-фильтре пикера появились СВЕЧИ и СКОЛЬЗЯЩИЕ СРЕДНИЕ — можно фильтровать тикеры положением цены относительно индикаторных линий (user: «как узнать, что цена выше TEMA 40? или что дневная цена закрытия прошлого дня выше этой линии?»): свечные поля open/high/low/close, MA-функции sma(n)/ema(n)/wma(n)/dema(n)/tema(n)/zltema(n)/hull(n)/rsi(n) (свой мини-движок: EMA с SMA-сидом, композиция 3E1−3E2+E3 для TEMA, zero-lag вход 2·P−P[(n−1)/2] для ZLTEMA, Hull = WMA(2·WMA(n/2)−WMA(n), √n), Wilder-сглаживание для RSI; кэш расчёта едет на объекте серии), ТФ-префиксы m5/m15/m30/h1/h2/h4/h6/h12/d1/d3/w1 (без префикса = ТФ мини-графика пикера, по умолчанию 4h) и индексы баров [n] ([0] = текущая формирующаяся свеча, [1] = последняя закрытая — d1.close[1] = вчерашнее закрытие дня; индекс валиден и на MA: d1.tema(40)[1]); примеры: price &gt; tema(40) · d1.close[1] &gt; d1.tema(40) · close / ema(50) &gt; 1.03 · rsi(14) &lt; 30 · кросс-ТФ d1.close &gt; h4.tema(50); данные — OHLC-серии по 300 баров через _coinListService.fetchSparkline (работает для всех бирж пикера), лэзи-фетч той же схемой, что и сетевые поля: монеты, отсеянные только из-за отсутствия свечей, уходят в paced-очередь _ensureQueryKlines (≤300, ~90–150ms/монета, re-filter каждые 5, прогресс «fetching candles… N left» в статусе), кэш _qKl живёт между запросами (свежее 20 мин не рефетчится, отказ — кулдаун 2 мин), закрытие пикера свип останавливает, кэш сохраняет; подсветка: MA-функции цветом функций, свечные поля и ТФ-префиксы цветом полей; подсказки: после точки «d1.» — только валидные там члены (свечи + MA), в общем списке — свечные поля, MA, ТФ-префиксы; шпаргалка «? Fields» — новая категория Candles &amp; MAs с примерами · V286 PICKER-QUERY-DSL: в пикере кнопка ƒx Query (в хедере после ⋯ Options) — панель с DSL-фильтром тикеров по любым метрикам: рынок (price/chg/vol/age/funding/oi/perp/spot/fav/stable), фундаментал (mcap/fdv/circ/max/total/rank/tvl/fees24/fees1y/rev24/rev1y), опционы (pcr/pcrvol/optoi), разблокировки (unlocktokens/unlockusd/unlockdays/unlockpct/unlockenddays/vesting), индикаторы пикера (mom/refdiff/zone='green'|'yellow'|'red'|'out'); арифметика + − × ÷ (tvl / fdv > 1), сравнения > < >= <= = !=, and/or/not, скобки, суффиксы чисел 100m/2.5b/1k, строки 'green', функции has()/min()/max()/abs(); null-семантика: нет данных → условие ложно, has() проверяет наличие; подсветка синтаксиса (overlay-редактор: поля голубые, числа лиловые, операторы красные, ключевые слова оранжевые, неизвестный идентификатор — красным), автодополнение с подсказками (↑↓ Enter Tab Esc, Ctrl+Space — все поля), шпаргалка «? Fields» по категориям с примерами; строка сохраняется по имени (chips: клик = загрузить, ✕ = удалить, до 30 шт, localStorage cp.query.v1), активный фильтр персистится и восстанавливается при открытии пикера; статус-строка: ✓ N of M match / ⚠ ошибка с позицией (предыдущий валидный фильтр остаётся применённым — список не мигает при печатании); сетевые поля (tvl/unlocks/pcr/fundamentals) читаются из страничных кэшей синхронно, а недостающее дофетчивает фоновый paced-свип (как momentum-sweep: очередь из непрошедших монет, ≤300, ~320ms/монета, re-filter каждые 5) — список уточняется по мере поступления данных; sync-ридеры кэшей _cgFundCachedStats/_cgFundCachedOpt/_cgFundCachedUnlock/_llamaCachedStats/_paprikaCachedStats в модуле адаптеров; кнопка ƒx зеленеет + бейдж с числом совпадений когда фильтр активен; Enter = применить, Shift+Enter = новая строка · V285 КНОПКА-В-НАСТРОЙКАХ-ИНДИКАТОРА: чекпоинт «Show chart button (top right)» — иметь ли кнопку вкл/выкл на графике справа вверху — переехал в СОБСТВЕННЫЕ настройки каждого индикатора (user: «Я имел в виду в самих настройках индикатора надо чекпоинт… по умолчанию вкл, а не сами бабблы»); ◉ Big Buys: новый параметр Show chart button (default ON) + кнопка существует ТОЛЬКО когда кирпич Big Buys реально добавлен на график («Очень странно иметь кнопку, когда индикатора ещё нет»); 🔥 Liquidation Heatmap и ▤ Liquidity Heatmap: такой же чекпоинт «Show on/off button on the chart (top right)» в их ⚙-вьюхах модалки индикаторов (__cgBtnHubV284: только liqheat/liqbook, default ON); секция ⚙ Settings → «Chart Buttons» с её биндингами и тултипами удалена; глаз — не индикатор (chrome графика), рисуется всегда; резерв полосы кнопок для лэйблов разблокировок следует за фактическими прямоугольниками кнопок · V284 BIGBUYS-ТФ-ФИКС + КНОПКИ: Big Buys детектит на базовом 4ч для всех ТФ выше 4ч (6h/8h/12h/1d/1w) и закатывает qualifying 4ч-бары в свечу графика ($ = сумма всплесков, цвет = суммарные buy/sell, x = момент крупнейшего всплеска внутри свечи) — дневка показывает ровно те дни, где есть 4ч-всплески (user: «на zec на 4ч … по всему графику, а на дневке всего несколько. То же для бтс на дневку вообще ничего нет»); кэш по базовому ТФ — 1d делит фетч и порог с 4ч; новая canvas-кнопка Big Buys (◉ два бабла, зелёный акцент) в полосе справа сверху слева от пламени — вкл/выкл всех баблов (__cgBbV284, localStorage); ⚙ Settings → секция «Chart Buttons»: каждая кнопка полосы (глаз, 🔥 LiqHeat, ▤ LiqMap, ◉ BigBuys) опциональна и по умолчанию включена (user: «Тоже сделай кнопки опциональными но по умолчанию вкл»), скрытая кнопка убирается с графика, соседи закрывают дыру (__cgBtnHubV284, localStorage); кнопочная полоса-резерв для лэйблов разблокировок учитывает новую кнопку · V283 INFO-КАРТОЧКА: заголовок — одна строка (тикер + рынок, рядом тихими чипами имя/листинг/объём), верхняя строка «Price:» убрана (цена осталась в Market-сетке), description перенесён сразу под заголовок; + TVL (DefiLlama по slug-у fees-протокола) и TVL/FDV с окраской: &gt;1 зелёный, &lt;0.3 красный; + PCR — снапшот опционов CoinGlass /api/option/statistics (проверено: BTC put OI/call OI 0.72, vol 0.53; работает для BTC/ETH и всех монет с опционами; нет опционов → ячейки нет); ДОБАВЛЕН ИНДИКАТОР Big Buys — баблы на барах с аномальным тейкер-объёмом (CoinGlass buy/sell USD, aggregated/bourse, радиус ∝ √$, зелёные покупки/красные продажи, $ внутри крупных, Sensitivity×медиана + Min $, лэзи-лоад через _computeAuxSeries как у CVD); Token Unlocks: description и tooltip сокращены (убрана инфа про обход кнопок — user: «не надо столько громоздить») · V282: «payback ≈ N yr» убран из FDV/Rev (повторял сам множитель); в блоке Unlocks — дата полного разблокирования tracked-остатка (точная по vestingEndDate/последнему событию, иначе экстраполяция темпа с пометкой est.); лэйблы разблокировок: при наезде поверх ЛЕВЫЙ (ближайший) бокс, а не правый; боксы больше не просвечивают под прозрачными кнопками сверху справа (глазик + карты ликвидности/ликвидаций) — полоса кнопок резервируется, gap-линия её обходит · V281 UNLOCKS-FIX: разовая сумма события = ev.unlocked (SUI 20.6M == nextUnlock; бакетные tokens давали 2.79B на КАЖДУЮ дату — «3 раза по 2.7b»), Upcoming в панели тоже; лэйблы линий: токены и % в столбик, непрозрачный фон темы, ближайший поверх (z по |Δt|), реальный разрыв линии в gap-режиме; блок Unlocks: строка Tracked = N% of max + untracked («86.5% of tracked» больше не читается как «80% circulating») · V280 FDV/REV + UNLOCKS-НА-ГРАФИКЕ + TWAP: годовой revenue в Fees &amp; Revenue (DefiLlama total1y, HYPE $687M/год — новая либа v2.0.0), FDV/Rev × и payback ≈ N yr рядом с FDV (фолбэк FDV/Fees); кирпич Token Unlocks — почти прозрачные бесконечные вертикальные линии в будущем на датах разблокировок (CoinGlass/CryptoRank через window.__cgUnlockFetcher = _cgFundUnlocks, фолбэк __cgV267.unlockDetailV2; авто-символ из dataStore: HYPEUSDT/OKX-style/1000PEPE → база; ратио/индексы мимо), спец-лейблы линий drawInlineVLabel с настройками mode gap|left|right + side top|bottom — токены и % supply (+TGE, фильтр мин. %, futureOnly); кирпич TWAP — равновзвешенная по времени средняя: Rolling N / Anchored от даты / сброс Daily|Weekly|Monthly UTC + σ-бэнды + Source · V279 VESTING/UNLOCKS: интегрирована секция 8 новой coinglass_lib v2.0.0 — CoinGlass coin/v2/info (РЕАЛЬНЫЙ circulating supply вместо paprika-вывода mcap/price: HYPE 253M/950M ≈ 26.6%, mcap $21.7B, FDV $81.4B, OI в сетке) + coin/unlock/detail (CryptoRank): блок Token Unlocks — окно вестинга, unlocked/locked прогресс, next unlock, upcoming-события, allocations с бейджами TGE/linear/cliff/untracked; cgGet + extraHeaders (language:en обязателен); 40001 = долговременное «нет данных» (кэш), сеть — транзиентное; фолбэк 1000X → базовый тикер; V278 ИНФО-КАРТОЧКА MARKET: сетка MCap/FDV/Volume/Price + полка Circulating Supply с прогресс-баром и Locked (est.); SUPPLY-ФИКС: circulating = mcap/price (паприка больше не отдаёт circulating_supply, HYPE показывал 95% вместо ~24%); fees/revenue Ищутся ПО ВАРИАНТУ (slug из имени монеты, без наследования чужих протоколов); gen-token против перезаписи нового варианта стейл-загрузом; V277 ИНФО О МОНЕТЕ: MCap/FDV (CoinPaprika tickers) + Fees/Revenue (DefiLlama summary, dataType=dailyRevenue) в попапе «?» и тултипе пикера · V276-hotfix СИНХРОННОЕ ИСЧЕЗНОВЕНИЕ ХИТМАПЫ: в __cgLhV267.renderOverlay использовался НЕОБЪЯВЛЕННЫЙ bkKey — кадр 1 рисовал (вспышка), дальше ReferenceError глотался try/catch и оверлей оставался пустым навсегда; V276 ХИТМАПА: ИСПРАВЛЕН ВЕРТИКАЛЬНЫЙ ПЕРЕВОРОТ бэйка (полки с V269 рисовались ЗЕРКАЛЬНО по цене — потому «прошивали свечи насквозь» и висели в пустоте) + подколонки слота: край поглощения — на под-позиции бакета сбора ВНУТРИ свечи, между свечами ничего нет; V274: бакет ≤ ½ ТФ; V272: CVD кэш/префетч + подпись варианта</title>
+    <title>Chart Engine v49p — series.js v6 foundation · V299 LIQ-LOG-BAND-WARP-FIX · V298 LIQ-XHAIR-BUCKET-FIX · LIQ-AGG-EXCHANGE · V297 MAXPAIN-AUTO-HIDE · V296 MAXPAIN-ANCHORED-LABEL · V295 SQUEEZE-REMOVED · MAXPAIN-EXPIRY-SUM-IN-LABEL · PERF-FIXES (юзер: «Сувиз убери, он очень медленный. Цену у макспаейна тоже. Вместо нее добавь сумму экспирации кратко. И почему все стало медленнее работать, с небольшими фризами щас»): ① SQUEEZE PROBABILITY (squeezeprob) УДАЛЁН ЦЕЛИКОМ — класс, регистрация, fast-path bypass, window-экспорт, список SKIP_TYPES сканера; причина медленности: год часовых klines+funding+OI (десятки запросов подряд, конкурировали с загрузкой графика) + синхронное обучение лог-регрессии на главном потоке (сотни мс — секунды джанка каждые 30 мин TTL и при каждой смене параметров); сохранённые лэйауты с squeezeprob теперь молча пропускают тип (addIndicator warn → null). ② MAX PAIN: цена из инлайн-лэйбла УБРАНА, вместо неё — КРАТКАЯ СУММА ЭКСПИРАЦИИ: Σ OI по всем опционам этой даты, формат «W 26 Dec · $2.4B» (USD notional = Σ OI × spot, контракты Deribit = 1 монета) или «W 26 Dec · 38.5K BTC» — переключатель Sum Unit (usd|coin) + чекбокс Expiry Sum in label (default ON) в настройках; сумма считается в _fetchBook рядом с max-pain, тянется через _rebuildLines в рендер. ③ ПЕРФ: MaxPain._computeRaw выполняется КАЖДЫЙ кадр (bypass fast-path ради TTL-фетча) — раньше аллоцировал новый Float64Array(count) + новый объект _computed на каждый кадр (GC-давление = «небольшие фризы» при панорамировании) — теперь NaN-буфер и _computed переиспользуются; refresh default 120→300 c (парс многометрового JSON Deribit на UI-потоке давал фриз каждые 2 мин). V299 (в силе): LIQ HEATMAP + LIQUIDITY BOOK — ВЕРТИКАЛЬНЫЙ СДВИГ ПОЛОК НА ЛОГ-ШКАЛЕ (user: «кроссхэйр по вертикали неточен… когда кроссхэйр на яркой линии, значение в лэйбле меньше, чем когда кроссхэйр выше неё»): главная панель по умолчанию ЛОГАРИФМИЧЕСКАЯ (V50), а blit запечённого хитмапа тянул каждую полосу из 96 рядов ЛИНЕЙНО между её крайними уровнями — внутри полосы полки уезжали ДО ~0.5–0.7 полки ВНИЗ от истинной цены (живые пробы: расчётный сдвиг блитта +0.44…+0.74 полки на серединах полос; у верхних уровней по значению вообще не было рана на своём месте), лэйбл же (ближайший уровень к цене курсора) точен — итог: кроссхэйр НА яркой линии читает значение полки НИЖЕ, а значение самой линии появляется на полку ВЫШЕ, «запаздывание ровно на 1 полку». Фикс: полоса блитта 96→16 рядов в ОБОИХ overlay-модулях (ошибка линейной интерполяции ∝ BAND² → ~0.02 полки ≈ 0.1 px — точно для log/percent/linear; соседние полосы по-прежнему стыкуются пиксель в пиксель: botP(k)==topP(k+1)). + фикс запасного рисователя ликвидационного модуля: pyA строился по СЫРОМУ порядку grid.y, а ячейки несли РАНГИ после сортировки уровней в rebuildPc — при запуске фолбэка (не-affine X / phaseOk=false) ячейки красились на полки чужих уровней (произвольная перестановка); теперь pyA строится по отсортированному pc.y. Проверено живыми пробами v299 (scaleMode=log, anchor-free замеры до/после). V298 (в силе): LIQ HEATMAP — ① фикс кроссхэйра: лэйбл «Liq» отставал ровно на один бакет данных (user: «запаздывает на 1 полку по вертикали ровно для данных»): рендер (V276) кладёт ячейку бакета c в окно [bt−slotDT/2, bt−slotDT/2+dt), а valueAt брал round((tMs−t0)/dt) — на 4h-графике (бакеты 2h) правая половина каждой свечи читала бакет ЛЕВОЙ половины; теперь берётся бакет, чья ячейка реально под курсором (probe = tMs + slotDT/2 − dt/2) с валидацией окна ячейки; вертикаль (ближайший уровень) на живом payload сверена — точна. ② В настройках Exchange Liquidation Heatmap новый пункт «Aggregated (sum)» — сразу сумма всех бирж (user: «в биржу аггрегэйтед, чтобы сразу сумму смотреть»): агрегированного символа на сервере нет (пробы ALL_/Aggregated_ отвечают «instrument is null»), поэтому Binance + Bybit + Deribit тянутся параллельно и складываются на общей сетке (время — ближайший бакет референса ±dt/2, цена — объединение диапазонов с самым мелким шагом источников), неудавшиеся источники пропускаются. V297 (в силе): MAX PAIN — Currency «Auto»: на тикерах без опционов (всё, кроме BTC/ETH) индикатор больше НЕ рисует данные BTC — ни линий, ни лэйблов, ни пилюль оси Y, фетч не выполняется (user: «когда я на других тикерах, где нет опционов, то там все равно макс пейн показывается от бтс»); раньше auto молча фолбэкался на BTC. Данные BTC/ETH на любом тикере — принудительным выбором Currency = BTC / ETH. V296 (в силе): MAX PAIN — у инлайн-лэйбла (дата · сумма экспирации) новый параметр Label Anchor: «At expiry point» (default) — лэйбл жёстко стоит на одном месте СПРАВА от точки экспирации: на бесконечной линии — сразу справа от маркера day+hour (разрыв линии под лэйблом), в режиме луча — сразу справа от конца луча; при панорамировании лэйбл уезжает вместе с линией, а не прилипает к экрану (user: «лэйбл, который не остается все время на дисплее (смещающийся), а который всегда стоит на одном месте справа от точки (луча или на линии)»); «Screen edge (old)» — прежнее поведение (лэйбл прижат к краю экрана и всегда виден, смещающийся). Label Side right/left действует в обоих режимах (справа/слева от точки якоря). V294 (в силе): MAX PAIN — маркер ТОЧНОГО момента экспирации (сеттл Deribit 08:00 UTC) ●/◯ (Expiry Marker: dot|ring|none, default dot) в обеих модах (infinite и ray-left), Label Font (px, 6–24) для инлайн-лэйбла; TOKEN UNLOCKS — Label Font (px, 6–24) для лэйбл-боксов; ПАНЕЛЬ БЫСТРОГО ДОСТУПА — long-press перетаскивания чипа 1000 мс; MAX PAIN — горизонтальные линии Max Pain ближайших экспираций (Deribit), инлайн-лэйбл даты с гэпом (справа или слева), пилюли цены на оси Y, режим луча влево от экспирации, выбор недельная/месячная/годовая; установочный код V293 и ранее — см. историю в git/comments.©</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -712,6 +712,34 @@
         }
         .wp-chip .wp-delta.up   { color: #3fb950; }
         .wp-chip .wp-delta.down { color: #f85149; }
+        /* ── V293: chip drag-to-reorder — the quick-access panel's chips can
+         *   now be REORDERED by long-press + horizontal drag, exactly like
+         *   the chart's sub-panels are (long-press on a panel label), but
+         *   along the X axis. While a drag is armed the strip must NOT
+         *   scroll natively: .wp-dragging pins touch-action to none (the
+         *   gesture hasn't started at hold-fire — the finger was still for
+         *   the whole hold — so the browser honors the new touch-action and
+         *   the moves keep coming as pointer events). The lifted chip gets
+         *   an accent background + drop shadow + above-everything z; the
+         *   transition is killed so the transform follows the finger 1:1. */
+        .work-panel.wp-dragging {
+            touch-action: none !important;
+            cursor: grabbing;
+            -webkit-overflow-scrolling: auto;
+            scroll-behavior: auto;
+        }
+        .work-panel.wp-dragging .wp-chip { transition: none; }
+        .work-panel.wp-dragging .wp-chip:not(.wp-drag) { cursor: grabbing; }
+        .wp-chip.wp-drag {
+            position: relative;
+            z-index: 5;
+            transition: none;
+            cursor: grabbing !important;
+            background: rgba(76,130,255,.22);
+            color: #c9ddff;
+            box-shadow: 0 0 0 1px rgba(88,166,255,.55), 0 6px 18px rgba(0,0,0,.55);
+        }
+        .wp-chip.wp-drag .wp-delta { opacity: .85; }
         .wp-menu {
             position: fixed;
             z-index: 1200;
@@ -22298,6 +22326,11 @@ class IndicatorBrick extends IndicatorBase {
             // first result is always empty) — must not stick in the fast-path
             // or the fetch would never re-trigger on a quiet market.
             (this.constructor?.META?.type === 'tokenunlocks') ||
+            // V293: MaxPainBrick fetches Deribit max pain asynchronously —
+            // same TTL-fetch pattern as TokenUnlocks: without the bypass the
+            // first empty compute would be cached forever and the lines
+            // would never appear.
+            (this.constructor?.META?.type === 'maxpain') ||
             // V283: BigBuysBrick fetches CoinGlass buy/sell USD through the
             // same _computeAuxSeries pipeline as CVD — the first (empty,
             // pre-fetch) result must not be cached by the fast-path either.
@@ -37841,7 +37874,16 @@ class EconEventsBrick extends IndicatorBrick {
         // а manager.getCached кэшировал null → кирпич падал каждый кадр.
         // Рендер берёт события из _eventsCache, а не из computed — числовая
         // line здесь честный NaN-стаб.
-        const out = { line: new Float64Array(count).fill(NaN), count, visibleRange };
+        // V295-perf: fast-path bypass (event fetch must re-trigger) → this
+        // re-runs on every data update: reuse the NaN buffer (GC pressure,
+        // same fix as MaxPainBrick / TokenUnlocksBrick).
+        if (!this._econLineBuf || this._econLineBuf.length !== count) {
+            this._econLineBuf = new Float64Array(count).fill(NaN);
+        } else {
+            this._econLineBuf.fill(NaN);
+        }
+        const out = this._computed || {};
+        out.line = this._econLineBuf; out.count = count; out.visibleRange = visibleRange;
         this._computed = out;
         const svc = (typeof __econSvc === 'function') ? __econSvc() : null;
         if (!svc) return out;
@@ -38064,6 +38106,8 @@ class TokenUnlocksBrick extends IndicatorBrick {
                     { value: 'bottom', label: 'Bottom' },
                 ] }),
             new BrickParam({ name: 'labelAlpha', label: 'Label Opacity', default: 0.9, min: 0.1, max: 1, step: 0.05, group: 'Label' }),
+            new BrickParam({ name: 'labelFont', label: 'Label Font (px)', default: 9, min: 6, max: 24, step: 1, group: 'Label',
+                tooltip: 'Font size of the label boxes (TGE / tokens / % / date). V294: user asked for a size setting («в индикаторе разлоков у лэйблов тоже надо в настройках размер шрифта менять»).' }),
             new BrickParam({ name: 'showTokens', label: 'Tokens', type: 'bool', default: true, group: 'Label content' }),
             new BrickParam({ name: 'showPct', label: '% of supply', type: 'bool', default: true, group: 'Label content' }),
             new BrickParam({ name: 'showDate', label: 'Date', type: 'bool', default: false, group: 'Label content' }),
@@ -38144,8 +38188,22 @@ class TokenUnlocksBrick extends IndicatorBrick {
     }
 
     _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
-        const line = new Float64Array(count).fill(NaN);
-        this._computed = { line, count, visibleRange };
+        // V295-perf: this brick bypasses the compute fast-path (the schedule
+        // fetch must re-trigger), so _computeRaw re-runs on EVERY data update
+        // — reuse the NaN buffer + the _computed object instead of allocating
+        // fresh ones each tick (GC pressure; same fix as MaxPainBrick).
+        if (!this._unlockLineBuf || this._unlockLineBuf.length !== count) {
+            this._unlockLineBuf = new Float64Array(count).fill(NaN);
+        } else {
+            this._unlockLineBuf.fill(NaN);
+        }
+        const line = this._unlockLineBuf;
+        if (!this._computed) this._computed = { line, count, visibleRange };
+        else {
+            this._computed.line = line;
+            this._computed.count = count;
+            this._computed.visibleRange = visibleRange;
+        }
 
         // resolve the coin this chart is showing. IndicatorManager's multiTf
         // adapter is the live symbol source (same one AuxSeriesBrick uses in
@@ -38236,6 +38294,8 @@ class TokenUnlocksBrick extends IndicatorBrick {
         const labelMode = this.params.labelMode || 'gap';
         const labelSide = this.params.labelSide || 'top';
         const labelAlpha = Math.max(0.1, Math.min(1, Number(this.params.labelAlpha) || 0.9));
+        // V294: configurable label font — the box (and its row height) scale with it
+        const labelFontPx = Math.max(6, Math.min(24, Math.round(Number(this.params.labelFont) || 9)));
         const showTokens = this.params.showTokens !== false;
         const showPct = this.params.showPct !== false;
         const showDate = !!this.params.showDate;
@@ -38291,8 +38351,9 @@ class TokenUnlocksBrick extends IndicatorBrick {
         let bgSolid = '#0d1117';
         try { if (typeof getTheme === 'function' && getTheme() && getTheme().bg) bgSolid = getTheme().bg; } catch (e) {}
 
-        const LH = 11, PADX = 4, PADY = 2, BOXGAP = 3, EDGEOFF = 5;
-        ctx.font = '9px monospace';   // same as the VLine tool's inline labels
+        // V294: row height derives from the configurable font (was a fixed 11 px for the 9 px font)
+        const LH = Math.max(8, Math.round(labelFontPx * 1.22)), PADX = 4, PADY = 2, BOXGAP = 3, EDGEOFF = 5;
+        ctx.font = labelFontPx + 'px monospace';   // same family as the VLine tool's inline labels
         // V282: the top-right CANVAS buttons (👁 hide-all + CoinGlass liquidation
         // / liquidity heatmap toggles) are painted with a TRANSPARENT interior —
         // only a 1px border + glyph — so an opaque label box drawn «under» them
@@ -38388,6 +38449,626 @@ class TokenUnlocksBrick extends IndicatorBrick {
     }
 }
 brickRegistry.register('tokenunlocks', TokenUnlocksBrick);
+
+// ─── V293: Max Pain (Deribit) — horizontal max-pain lines by expiration ────
+// The user: «сделай еще один индикатор: показывает макс боль ближайшей
+// экспирации в виде горизонтальной линии, и лэйбл справа в виде даты (на
+// линии должен быть гэп там, есть такая опция у нас), ну и цены на
+// пространстве оси y. В настройках так же сделай возможность лэйбл с датой
+// поставить слева. Еще как вариант можешь сделать не бесконечную линию, а
+// луч влево с даты экспирации. В настройках надо иметь возможность выбирать
+// ближайшая недельная экспирация или большая месячная, или годовая (или все)».
+//
+// Данные: Deribit public API (без ключа, CORS открыт — тот же эндпоинт, что
+// у кирпича Gamma Exposure):
+//   GET /public/get_book_summary_by_currency?currency=BTC&kind=option
+// Имя инструмента 'BTC-26DEC25-100000-C' несёт страйк/тип/экспирацию
+// (сеттл 08:00 UTC). Max pain экспирации = страйк S, минимизирующий сумму
+// выплат держателям: Σ(S−K)+·OI calls + Σ(K−S)+·OI puts.
+// Это порт §8d новой coinglass_lib v2.0.0 (deribitMaxPain/_maxPainLadder) —
+// в HTML встроен более старый порт библиотеки без секции Options, поэтому
+// логика живёт здесь, самодостаточно.
+//
+// Рендер (overlay на главном панеле, как Token Unlocks — только линии
+// ГОРИЗОНТАЛЬНЫЕ, на уровне цены):
+//   • бесконечная линия (drawInlineHLabel mode 'gap') — лэйбл-дата справа
+//     (или слева — настройка Label Side), линия с разрывом вокруг лэйбла;
+//   • «луч влево» (Line Mode: ray-left) — линия идёт ВЛЕВО от даты
+//     экспирации и заканчивается на ней, лэйбл у конца луча;
+//   • цена max pain — пилюлей в колонке оси Y (как min/max метки серий),
+//     через chart api hooks.draw (кирпичный render зажат клипом plot-области,
+//     хук рисует после индикаторов без клипа — тем же способом, что POC
+//     Volume Profile);
+//   • выбор экспираций: Weekly (ближайшая пятница), Monthly (последняя
+//     пятница месяца, квартальные тоже считаются «большими месячными»),
+//     Yearly (последняя пятница декабря) — чекбоксы, любое сочетание,
+//     включая «все три».
+// Опционы есть только на BTC/ETH — валюта 'auto' берётся из символа графика;
+// на монетах без опционов (HYPEUSDT, SOL, …) индикатор СКРЫТ целиком (V297 —
+// раньше молча рисовался BTC), а BTC/ETH можно форсировать вручную, чтобы
+// видеть их данные на любом тикере.
+
+const MP_MONTHS = { JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5,
+    JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11 };
+const MP_MON_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const MP_EXP_RE = /^([A-Z]+)-(\d{1,2})([A-Z]{3})(\d{2})-(\d+)-([CP])$/;
+
+/** Последняя пятница месяца (UTC) — порт coinglass_lib §8d. */
+function mpLastFridayUTC(y, m) {
+    const d = new Date(Date.UTC(y, m + 1, 0));
+    d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 2) % 7));
+    return d;
+}
+/** Тип экспирации: 'day' | 'week' (пятница) | 'month' | 'quarter' | 'year'. */
+function mpClassifyExpiry(ts) {
+    const d = new Date(ts);
+    if (d.getUTCDay() !== 5) return 'day';
+    const lf = mpLastFridayUTC(d.getUTCFullYear(), d.getUTCMonth());
+    if (d.getUTCDate() !== lf.getUTCDate()) return 'week';
+    const m = d.getUTCMonth();
+    if (m === 11) return 'year';
+    if (m % 3 === 2) return 'quarter';
+    return 'month';
+}
+
+class MaxPainBrick extends IndicatorBrick {
+    static META = {
+        type: 'maxpain',
+        label: 'Max Pain (Deribit)',
+        shortLabel: 'MaxPain',
+        description: 'Horizontal Max Pain price lines of the nearest option expirations (Deribit). Inline date labels (fixed at the expiry point by default — Label Anchor — or pinned to the screen edge) with a gap in the line (right or left side) carrying the expiration OI sum (USD notional or coins), price pills on the Y axis, optional ray-left mode from the expiration date. Pick Weekly / Monthly / Yearly expirations or any combination. Currency auto follows the chart coin and HIDES on coins without options (BTC/ETH only) — force BTC / ETH to pin those lines.',
+        category: 'composite',
+        tags: ['options', 'max pain', 'maxpain', 'deribit', 'expiration', 'expiry', 'oi', 'strike', 'pain'],
+        panelMode: 'overlay',
+        params: [
+            new BrickParam({ name: 'currency', label: 'Currency', type: 'select', default: 'auto', group: 'Data',
+                tooltip: 'auto = BTC/ETH from the chart symbol; on coins without options the indicator is HIDDEN (nothing is drawn, V297). Force BTC / ETH to pin those lines on any chart.',
+                options: [
+                    { value: 'auto', label: 'Auto (chart coin)' },
+                    { value: 'BTC', label: 'BTC' },
+                    { value: 'ETH', label: 'ETH' },
+                ] }),
+            new BrickParam({ name: 'refreshSeconds', label: 'Refresh (sec)', default: 300, min: 30, max: 3600, step: 10, group: 'Data',
+                tooltip: 'Deribit book-summary refetch. V295: default 120→300s — the multi-MB JSON parse runs on the UI thread and was a visible freeze every 2 minutes.' }),
+            new BrickParam({ name: 'weekly', label: 'Nearest weekly', type: 'bool', default: true, group: 'Expirations',
+                tooltip: 'Max Pain of the nearest weekly (Friday) expiration.' }),
+            new BrickParam({ name: 'monthly', label: 'Nearest monthly (big)', type: 'bool', default: false, group: 'Expirations',
+                tooltip: 'Max Pain of the nearest last-Friday-of-month expiration (quarterlies count as big monthlies).' }),
+            new BrickParam({ name: 'yearly', label: 'Nearest yearly', type: 'bool', default: false, group: 'Expirations',
+                tooltip: 'Max Pain of the nearest December (yearly) expiration.' }),
+            new BrickParam({ name: 'lineMode', label: 'Line Mode', type: 'select', default: 'infinite', group: 'Line',
+                tooltip: 'infinite = full-width line; ray-left = the line starts at the expiration date and extends left.',
+                options: [
+                    { value: 'infinite', label: 'Infinite line' },
+                    { value: 'ray-left', label: 'Ray left from expiry' },
+                ] }),
+            new BrickParam({ name: 'lineAlpha', label: 'Line Opacity', default: 0.45, min: 0.05, max: 1, step: 0.05, group: 'Line' }),
+            new BrickParam({ name: 'lineWidth', label: 'Line Width', default: 1, min: 0.5, max: 5, step: 0.5, group: 'Line' }),
+            new BrickParam({ name: 'lineStyle', label: 'Line Style', type: 'select', default: 'dash', group: 'Line',
+                options: [
+                    { value: 'solid', label: '━━ solid' },
+                    { value: 'dash', label: '╌╌ dash' },
+                    { value: 'dot', label: '⋯⋯ dot' },
+                    { value: 'longdash', label: '━╌ long-dash' },
+                ] }),
+            new BrickParam({ name: 'labelSide', label: 'Date Label Side', type: 'select', default: 'right', group: 'Label',
+                tooltip: 'Which side of the anchor the date label sits at (anchor = expiry point or screen edge — see Label Anchor). The line gaps around the label.',
+                options: [
+                    { value: 'right', label: 'Right' },
+                    { value: 'left', label: 'Left' },
+                ] }),
+            new BrickParam({ name: 'labelAnchor', label: 'Label Anchor', type: 'select', default: 'expiry', group: 'Label',
+                tooltip: 'expiry = the label is FIXED just right of the expiration point (marker): it scrolls with the chart and may leave the screen. edge = the label is pinned to the screen edge so it is always visible (it slides along the line while panning). V296.',
+                options: [
+                    { value: 'expiry', label: 'At expiry point' },
+                    { value: 'edge', label: 'Screen edge (old)' },
+                ] }),
+            new BrickParam({ name: 'showAxisPrice', label: 'Price on Y axis', type: 'bool', default: true, group: 'Label',
+                tooltip: 'Draw the max pain price as a pill in the Y-axis column (clamped with an arrow when off-scale).' }),
+            new BrickParam({ name: 'showTypeTag', label: 'W/M/Y tag in label', type: 'bool', default: true, group: 'Label',
+                tooltip: 'Prefix the date with W / M / Y so several expirations can be told apart (only when 2+ lines are shown).' }),
+            new BrickParam({ name: 'showSumLabel', label: 'Expiry Sum in label', type: 'bool', default: true, group: 'Label',
+                tooltip: 'Append the compact SUM of the expiration to the inline date label (e.g. «W 26 Dec · $2.4B») — total open interest expiring there. V295: replaces the max-pain price (user: «цену убери, вместо неё сумму экспирации кратко»).' }),
+            new BrickParam({ name: 'sumUnit', label: 'Sum Unit', type: 'select', default: 'usd', group: 'Label',
+                tooltip: 'usd = OI notional (Σ OI × spot; Deribit options are 1 coin per contract); coin = open interest in coins.',
+                options: [
+                    { value: 'usd', label: 'USD notional ($)' },
+                    { value: 'coin', label: 'Contracts (coin)' },
+                ] }),
+            new BrickParam({ name: 'labelFont', label: 'Label Font (px)', default: 9, min: 6, max: 24, step: 1, group: 'Label',
+                tooltip: 'Font size of the inline date/price label on the line. V294.' }),
+            new BrickParam({ name: 'expiryMarker', label: 'Expiry Marker', type: 'select', default: 'dot', group: 'Label',
+                tooltip: 'Marks the exact expiration day+hour (Deribit settlement 08:00 UTC) on the line — a dot or a ring right at that moment. V294.',
+                options: [
+                    { value: 'dot', label: '● dot' },
+                    { value: 'ring', label: '◯ ring' },
+                    { value: 'none', label: 'none' },
+                ] }),
+        ],
+        inputs: [],
+        outputs: [
+            new BrickOutput({ name: 'line', label: 'Max Pain', type: 'line', color: '#bc8cff', lineWidth: 1 }),
+        ],
+    };
+
+    constructor(cfg) {
+        super(cfg);
+        this._isVisualOnly = true;
+        this._mpCur = null;          // resolved currency ('BTC'|'ETH'|'' = chart coin has no options → hidden)
+        this._mpData = null;         // { currency, spot, expiries:[{expiryTs, type, maxPain}] }
+        this._mpLines = null;        // SELECTED lines [{expiryTs, type, maxPain}] — what render() draws
+        this._mpSig = null;          // selection signature (weekly|monthly|yearly)
+        this._mpAt = 0;              // last successful fetch
+        this._mpNullAt = 0;          // durable miss stamp (5 min quiet retry)
+        this._mpFetching = false;
+        this._mpHookInstalled = false;
+        this._mpAxisHook = null;
+        this._mpLineBuf = null;      // V295: reused NaN line buffer (per-frame alloc → GC freezes)
+    }
+
+    /** Chart pair → Deribit base currency (same normalization as
+     *  TokenUnlocksBrick._baseFromPair): 'HYPEUSDT'→'HYPE', OKX-style prefix
+     *  stripped, multipliers (1000PEPE) stripped. Ratios/indexes → ''. */
+    _baseFromPair(raw) {
+        let t = String(raw || '').toUpperCase().trim();
+        if (!t) return '';
+        if (t.includes('/') || /\.D$/.test(t)) return '';
+        let s = t.split(/[-_:.]/)[0] || t;
+        s = s.replace(/^(1000000|100000|10000|1000|100)(?=[A-Z])/, '');
+        for (const q of ['USDT', 'USDC', 'BUSD', 'FDUSD', 'USD', 'PERP'])
+            if (s.endsWith(q)) return s.slice(0, -q.length);
+        return s;
+    }
+
+    /** Own JSON fetch (IndicatorBrick has no _fetchJson — that lives on
+     *  AuxSeriesBrick; keep this brick independent of that base). */
+    async _mpFetchJson(url, timeoutMs = 15000) {
+        try {
+            const ctrl = new AbortController();
+            const t = setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, timeoutMs);
+            const resp = await fetch(url, { signal: ctrl.signal });
+            clearTimeout(t);
+            if (!resp.ok) return null;
+            return await resp.json();
+        } catch (e) { return null; }
+    }
+
+    /** Deribit book summary → { currency, spot, expiries:[{expiryTs, type,
+     *  maxPain, strikes}] }. One request; OI<0 rows skipped; max pain per
+     *  expiry over its own strike ladder. */
+    async _fetchBook(currency) {
+        const base = 'https://www.deribit.com/api/v2/public';
+        const j = await this._mpFetchJson(
+            `${base}/get_book_summary_by_currency?currency=${encodeURIComponent(currency)}&kind=option`);
+        const rows = j && Array.isArray(j.result) ? j.result : null;
+        if (!rows || !rows.length) return null;
+        const byExp = new Map();
+        let spot = null;
+        for (const r of rows) {
+            const m = MP_EXP_RE.exec(r.instrument_name || '');
+            if (!m) continue;
+            const strike = +m[5], type = m[6];
+            if (!isFinite(strike) || strike <= 0) continue;
+            const ts = Date.UTC(2000 + +m[4], MP_MONTHS[m[3]], +m[2], 8);  // settlement 08:00 UTC
+            if (spot == null && r.underlying_price != null) spot = +r.underlying_price || null;
+            const oi = +r.open_interest || 0;
+            if (oi <= 0) continue;
+            let e = byExp.get(ts);
+            if (!e) { e = { ts, strikes: new Map(), oiCoins: 0, oiUsd: 0 }; byExp.set(ts, e); }
+            let s = e.strikes.get(strike);
+            if (!s) { s = { call: 0, put: 0 }; e.strikes.set(strike, s); }
+            s[type === 'C' ? 'call' : 'put'] += oi;
+            // V295: expiration sum — Σ OI in coins + USD notional (Σ OI × spot)
+            e.oiCoins += oi;
+            e.oiUsd += oi * (+r.underlying_price || 0);
+        }
+        const expiries = [];
+        for (const e of byExp.values()) {
+            const strikes = [...e.strikes.keys()].sort((a, b) => a - b);
+            // max pain = argmin over S of Σ payouts (port of _maxPainLadder)
+            let best = null;
+            for (const S of strikes) {
+                let pay = 0;
+                for (const [K, s] of e.strikes) {
+                    if (S > K) pay += (S - K) * s.call;
+                    else if (S < K) pay += (K - S) * s.put;
+                }
+                if (!best || pay < best.pay) best = { strike: S, pay };
+            }
+            expiries.push({
+                expiryTs: e.ts,
+                type: mpClassifyExpiry(e.ts),
+                maxPain: best ? best.strike : null,
+                strikes: strikes.length,
+                oiCoins: e.oiCoins,   // V295: Σ OI (coins)
+                oiUsd: e.oiUsd,       // V295: Σ OI × spot (USD notional)
+            });
+        }
+        expiries.sort((a, b) => a.expiryTs - b.expiryTs);
+        return { currency, spot, expiries };
+    }
+
+    /** Selection → concrete lines from the cached expiries list. */
+    _rebuildLines() {
+        const d = this._mpData;
+        if (!d || !d.expiries || !d.expiries.length) { this._mpLines = null; return; }
+        const now = Date.now();
+        const pick = (types) => {
+            let best = null;
+            for (const e of d.expiries) {
+                if (e.expiryTs <= now || e.maxPain == null) continue;
+                if (!types.includes(e.type)) continue;
+                if (!best || e.expiryTs < best.expiryTs) best = e;
+            }
+            return best;
+        };
+        const want = [];
+        if (this.params.weekly !== false) { const e = pick(['week']); if (e) want.push(e); }
+        if (this.params.monthly) { const e = pick(['month', 'quarter']); if (e) want.push(e); }
+        if (this.params.yearly) { const e = pick(['year']); if (e) want.push(e); }
+        want.sort((a, b) => a.expiryTs - b.expiryTs);
+        const seen = new Set(), lines = [];
+        for (const e of want) {
+            if (seen.has(e.expiryTs)) continue;
+            seen.add(e.expiryTs);
+            lines.push({ expiryTs: e.expiryTs, type: e.type, maxPain: e.maxPain,
+                         sumUsd: e.oiUsd || 0, sumCoins: e.oiCoins || 0 });
+        }
+        this._mpLines = lines.length ? lines : null;
+    }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        // V295-perf: this brick bypasses the compute fast-path (the TTL fetch
+        // must re-trigger), so _computeRaw runs on EVERY frame. Reuse the NaN
+        // buffer + the _computed object instead of allocating a fresh
+        // Float64Array per frame — per-frame allocations were a visible GC
+        // freeze source during pan/zoom («небольшие фризы»).
+        if (!this._mpLineBuf || this._mpLineBuf.length !== count) {
+            this._mpLineBuf = new Float64Array(count).fill(NaN);
+        } else {
+            this._mpLineBuf.fill(NaN);
+        }
+        const line = this._mpLineBuf;
+        if (!this._computed) this._computed = { line, count, visibleRange };
+        else {
+            this._computed.line = line;
+            this._computed.count = count;
+            this._computed.visibleRange = visibleRange;
+        }
+
+        // resolve currency — 'auto' follows the chart coin (options only
+        // exist on BTC/ETH). V297: any other coin HIDES the indicator
+        // (no lines / label / axis pills, no fetch) instead of silently
+        // drawing BTC data (user: «на других тикерах, где нет опционов,
+        // всё равно макс пейн показывается от бтс»). Force BTC / ETH in
+        // the Currency setting to pin that coin's data on any chart.
+        let cur = String(this.params.currency || 'auto').toUpperCase();
+        if (cur !== 'BTC' && cur !== 'ETH') {
+            let pairRaw = '';
+            try {
+                pairRaw = (manager?.multiTf?._adapter?.symbol) || manager?._lastDataStore?.symbol || '';
+            } catch (e) { pairRaw = ''; }
+            const b = this._baseFromPair(pairRaw);
+            cur = (b === 'BTC' || b === 'ETH') ? b : '';   // '' = no options on this chart → hidden
+        }
+        if (cur !== this._mpCur) {          // coin/currency switched — reset cache
+            this._mpCur = cur;
+            this._mpData = null;
+            this._mpAt = 0;
+            this._mpNullAt = 0;
+            this._mpLines = null;
+        }
+        if (!cur) return this._computed;    // hidden: NaN line → nothing drawn anywhere
+
+        // selection signature — checkboxes changed → rebuild from cache
+        const sig = `${this.params.weekly !== false ? 1 : 0}${this.params.monthly ? 1 : 0}${this.params.yearly ? 1 : 0}`;
+        if (sig !== this._mpSig) { this._mpSig = sig; this._mpLines = null; }
+        if (this._mpData && !this._mpLines) this._rebuildLines();
+
+        // TTL fetch — like TokenUnlocks: misses stay quiet for 5 min,
+        // successes for refreshSeconds. Only a NEW dataset invalidates.
+        const TTL = Math.max(30, Number(this.params.refreshSeconds) || 120) * 1000;
+        const TTL_NULL = 5 * 60000;
+        const now = Date.now();
+        const age = this._mpData ? now - this._mpAt
+            : (this._mpNullAt ? now - this._mpNullAt : Infinity);
+        const stale = this._mpData ? age > TTL : age > TTL_NULL;
+        if (stale && !this._mpFetching) {
+            this._mpFetching = true;
+            const curSnap = cur;
+            this._fetchBook(curSnap).then((data) => {
+                this._mpFetching = false;
+                if (curSnap !== this._mpCur) return;    // switched mid-fetch
+                if (data && data.expiries && data.expiries.length) {
+                    this._mpData = data;
+                    this._mpAt = Date.now();
+                    this._mpNullAt = 0;
+                    this._rebuildLines();
+                    this._computed = null;
+                    this._computeVersion = -1;
+                    this._triggerRerender(manager);
+                } else if (!this._mpData) {
+                    this._mpNullAt = Date.now();        // durable miss — 5 min quiet
+                }
+            }).catch(() => { this._mpFetching = false; });
+        }
+        return this._computed;
+    }
+
+    /** '26 Dec' + ' 26' when the expiry is not in the current UTC year. */
+    _labelText(L, withTag) {
+        const d = new Date(L.expiryTs);
+        const dd = d.getUTCDate();
+        const mon = MP_MON_SHORT[d.getUTCMonth()];
+        const yy = d.getUTCFullYear();
+        const yTag = (yy !== new Date().getUTCFullYear()) ? ' ' + String(yy).slice(-2) : '';
+        const tag = withTag ? (L.type === 'year' ? 'Y ' : L.type === 'quarter' || L.type === 'month' ? 'M ' : 'W ') : '';
+        return `${tag}${dd} ${mon}${yTag}`;
+    }
+
+    /** V295: compact expiration SUM for the inline label («сумму экспирации
+     *  кратко») — USD notional (Σ OI × spot) or coin OI, compact formatter.
+     *  Replaces the V294 max-pain price (user: «Цену у макспаейна тоже.
+     *  Вместо нее добавь сумму экспирации кратко».) */
+    _sumText(L) {
+        try {
+            if (this.params.sumUnit === 'coin') {
+                return formatValue(L.sumCoins || 0, true) + ' ' + (this._mpCur || '');
+            }
+            return '$' + formatValue(L.sumUsd || 0, true);
+        } catch (e) { return '—'; }
+    }
+
+    /** Y-axis price pills — drawn via a chart draw hook (this render() is
+     *  clipped to the plot area, the hook runs AFTER indicators without the
+     *  clip, same escape hatch Volume Profile's POC label / min-max labels
+     *  use). Pills of several lines avoid each other; off-scale pills clamp
+     *  to the panel band with an ↑/↓ arrow (V149 drawing-tool semantics). */
+    _drawAxisPills(ctx, layout, yScales) {
+        const lines = this._mpLines;
+        // V293: the setting is checked HERE too (not only at hook-install
+        // time) — toggling «Price on Y axis» off must silence the already
+        // installed hook on the very next frame.
+        if (!lines || !lines.length || this.visible === false) return;
+        if (this.params.showAxisPrice === false) return;
+        if (!layout || layout.axisYMode === 'none' || !Number.isFinite(layout.axisYX)) return;
+        const pId = this.panelId || 'main';
+        const panel = layout.panels && layout.panels[pId];
+        if (!panel || panel.height <= 0) return;
+        const pb = panelBounds(panel);
+        const yS = yScales && (yScales[pId] || yScales.main);
+        if (!yS || typeof yS.valToPix !== 'function') return;
+        const userColor = (this.outputStyles && this.outputStyles.line && this.outputStyles.line.color) || '#bc8cff';
+        const colW = layout.yColW || 60;
+        const pillH = 15;
+        const taken = [];
+        const freeY = (y) => {
+            let ry = y, g = 0;
+            const dir = ry < (pb.top + pb.bottom) / 2 ? 1 : -1;
+            while (g++ < 24 && taken.some(v => Math.abs(v - ry) < pillH + 1)) ry += dir * (pillH + 1);
+            taken.push(ry);
+            return ry;
+        };
+        for (const L of lines) {
+            const raw = yS.valToPix(L.maxPain);
+            if (!isFinite(raw)) continue;
+            let y = raw, arr = '';
+            if (y < pb.top + pillH / 2 + 1) { y = pb.top + pillH / 2 + 1; arr = ' \u2191'; }
+            else if (y > pb.bottom - pillH / 2 - 1) { y = pb.bottom - pillH / 2 - 1; arr = ' \u2193'; }
+            // compact price: same style the axis labels use
+            let txt;
+            try { txt = formatValue(L.maxPain); } catch (e) { txt = String(Math.round(L.maxPain)); }
+            drawYAxisLabel(ctx, {
+                text: txt + arr, y: freeY(y),
+                axisX: layout.axisYX, colW, axisSide: layout.axisSide || 'right',
+                bgColor: userColor, textColor: '#0d1117', alpha: 0.95, radius: 2,
+            });
+        }
+    }
+
+    _ensureAxisHook() {
+        if (this._mpHookInstalled || this.params.showAxisPrice === false) return;
+        const api = (typeof window !== 'undefined') && window._chart && window._chart.api;
+        if (!api) return;
+        if (!api.hooks) api.hooks = {};
+        if (!api.hooks.draw) api.hooks.draw = [];
+        this._mpAxisHook = (ctx, layout, xScale, yScales) => {
+            try { this._drawAxisPills(ctx, layout, yScales); } catch (e) { /* never break the frame */ }
+        };
+        api.hooks.draw.push(this._mpAxisHook);
+        this._mpHookInstalled = true;
+    }
+
+    dispose() {
+        try {
+            if (this._mpHookInstalled && this._mpAxisHook && typeof window !== 'undefined') {
+                const api = window._chart && window._chart.api;
+                const arr = api && api.hooks && api.hooks.draw;
+                const i = arr ? arr.indexOf(this._mpAxisHook) : -1;
+                if (i >= 0) arr.splice(i, 1);
+            }
+        } catch (e) {}
+        this._mpHookInstalled = false;
+        this._mpAxisHook = null;
+        super.dispose();
+    }
+
+    render(ctx, xScale, yScale, xData, computed, visibleRange, layout) {
+        this._ensureAxisHook();
+        const lines = this._mpLines;
+        if (!lines || !lines.length) return;
+
+        const plotTop = layout?.plotTop ?? 0;
+        const plotBottom = layout?.plotBottom ?? 0;
+        const plotLeft = layout?.plotLeft ?? 0;
+        const plotRight = layout?.plotRight ?? 0;
+        if (plotRight <= plotLeft || plotBottom <= plotTop) return;
+
+        const userColor = (this.outputStyles && this.outputStyles.line && this.outputStyles.line.color) || '#bc8cff';
+        const lineAlpha = Math.max(0.05, Math.min(1, Number(this.params.lineAlpha) || 0.45));
+        const lineWidth = Number(this.params.lineWidth) || 1;
+        const lineStyle = this.params.lineStyle || 'dash';
+        const labelSide = this.params.labelSide === 'left' ? 'left' : 'right';
+        // V296: 'expiry' = label FIXED at the expiration point (just right
+        // of the day+hour marker / ray end — scrolls off-screen with the
+        // line); 'edge' = old screen-edge-pinned label (always visible,
+        // «смещающийся»). Missing param (old layouts) → 'expiry'.
+        const anchorExpiry = this.params.labelAnchor !== 'edge';
+        const rayLeft = this.params.lineMode === 'ray-left';
+        const multi = lines.length > 1;
+        const withTag = multi && this.params.showTypeTag !== false;
+        const dashPatterns = { solid: [], dash: [6, 4], dot: [2, 4], longdash: [12, 4] };
+        // V295: expiry SUM in the inline label (price removed per user) +
+        // configurable label font + expiry-moment marker (dot/ring) at the
+        // exact day+hour (V294).
+        const withSum = this.params.showSumLabel !== false;
+        const labelFontPx = Math.max(6, Math.min(24, Math.round(Number(this.params.labelFont) || 9)));
+        const labelFont = labelFontPx + 'px monospace';
+        const marker = this.params.expiryMarker || 'dot';
+        let bgSolid = '#0d1117';
+        try { if (typeof getTheme === 'function' && getTheme() && getTheme().bg) bgSolid = getTheme().bg; } catch (e) {}
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(plotLeft, plotTop, plotRight - plotLeft, plotBottom - plotTop);
+        ctx.clip();
+
+        for (const L of lines) {
+            const y = yScale.valToPix(L.maxPain);
+            if (!isFinite(y)) continue;
+            const text = this._labelText(L, withTag)
+                + (withSum ? ' \u00b7 ' + this._sumText(L) : '');   // V295: date · expiry sum
+            if (!rayLeft) {
+                if (anchorExpiry) {
+                    // V296 anchored: the label stands at ONE place on the
+                    // chart — just right of the exact expiration point (the
+                    // same X the day+hour marker uses) — and scrolls with
+                    // the line; the line gaps around the label box. No
+                    // screen-edge fallback: off-screen → gone with the point.
+                    ctx.save();
+                    ctx.font = labelFont;
+                    const ex = xScale.valToPix(L.expiryTs);
+                    const anchorX = isFinite(ex) ? ex : plotRight;
+                    const tw = ctx.measureText(text).width;
+                    const GAP = 6, OFF = 9;   // OFF clears the marker dot/ring
+                    const tx = labelSide === 'left' ? anchorX - OFF - tw : anchorX + OFF;
+                    ctx.strokeStyle = userColor;
+                    ctx.globalAlpha = lineAlpha;
+                    ctx.lineWidth = lineWidth;
+                    ctx.setLineDash(dashPatterns[lineStyle] || dashPatterns.dash);
+                    ctx.beginPath();
+                    if (tx - GAP > plotLeft) { ctx.moveTo(plotLeft, y); ctx.lineTo(tx - GAP, y); }
+                    if (tx + tw + GAP < plotRight) { ctx.moveTo(tx + tw + GAP, y); ctx.lineTo(plotRight, y); }
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.globalAlpha = Math.min(1, lineAlpha + 0.5);
+                    ctx.fillStyle = userColor;
+                    ctx.textAlign = 'left';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(text, tx, y);
+                    ctx.restore();
+                } else {
+                // Infinite line — the shared inline-label helper draws the
+                // line in segments around the label box (mode 'gap'):
+                // side right → [plotLeft … label], side left → [label … plotRight].
+                drawInlineHLabel(ctx, {
+                    text, y, color: userColor,
+                    mode: 'gap', side: labelSide,
+                    plotLeft, plotRight,
+                    font: labelFont,
+                    lineStyle: { style: lineStyle, width: lineWidth, alpha: lineAlpha },
+                    textAlpha: Math.min(1, lineAlpha + 0.5),
+                });
+                }
+            } else {
+                // Ray LEFT from the expiration date: the line spans
+                // [plotLeft … expiryX] and stops at the date. The date label
+                // sits just left of the ray end (side right) or at the plot's
+                // left edge (side left) — with a gap in the line under it.
+                const rawX = xScale.valToPix(L.expiryTs);
+                const fromX = Math.max(plotLeft, Math.min(plotRight, isFinite(rawX) ? rawX : plotRight));
+                ctx.save();
+                ctx.font = labelFont;
+                const tw = ctx.measureText(text).width;
+                const GAP = 6, OFF = 6;
+                let tx;
+                if (anchorExpiry) {
+                    // V296 anchored: no screen-edge fallback — side right =
+                    // just RIGHT of the ray end, side left = just left of it
+                    // (the ray gaps around the label); when the expiry point
+                    // is off-screen the label leaves with it.
+                    tx = isFinite(rawX)
+                        ? (labelSide === 'left' ? rawX - OFF - tw : rawX + OFF)
+                        : (labelSide === 'left' ? plotLeft + OFF : plotRight - OFF - tw);
+                } else if (labelSide === 'left') {
+                    tx = plotLeft + OFF;
+                } else {
+                    tx = Math.max(plotLeft + OFF, Math.min(fromX - OFF - tw, plotRight - OFF - tw));
+                }
+                ctx.strokeStyle = userColor;
+                ctx.globalAlpha = lineAlpha;
+                ctx.lineWidth = lineWidth;
+                ctx.setLineDash(dashPatterns[lineStyle] || dashPatterns.dash);
+                ctx.beginPath();
+                // segment 1: plot left edge → label gap (skip in side-left: the
+                // label occupies the very left)
+                if (labelSide !== 'left' && tx - GAP > plotLeft) {
+                    ctx.moveTo(plotLeft, y); ctx.lineTo(tx - GAP, y);
+                }
+                // segment 2: after the label → ray end
+                const seg2a = tx + tw + GAP, seg2b = fromX;
+                if (seg2b > seg2a + 1) { ctx.moveTo(seg2a, y); ctx.lineTo(seg2b, y); }
+                ctx.stroke();
+                ctx.setLineDash([]);
+                // the label itself
+                ctx.globalAlpha = Math.min(1, lineAlpha + 0.5);
+                ctx.fillStyle = userColor;
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(text, tx, y);
+                ctx.restore();
+            }
+
+            // V294: exact-expiry marker — a dot/ring right at the expiration
+            // day+hour (Deribit settlement 08:00 UTC) on the line, so the
+            // precise moment is visible even in infinite mode (the date
+            // label only gives the day). Skipped when off-screen.
+            if (marker !== 'none') {
+                const mx = xScale.valToPix(L.expiryTs);
+                if (isFinite(mx) && mx >= plotLeft + 2 && mx <= plotRight - 2) {
+                    ctx.save();
+                    ctx.globalAlpha = Math.min(1, lineAlpha + 0.35);
+                    if (marker === 'ring') {
+                        const rr = Math.max(4, 3 + lineWidth);
+                        ctx.beginPath();
+                        ctx.arc(mx, y, rr, 0, Math.PI * 2);
+                        ctx.fillStyle = bgSolid;
+                        ctx.fill();
+                        ctx.lineWidth = Math.max(1, lineWidth);
+                        ctx.strokeStyle = userColor;
+                        ctx.stroke();
+                    } else {
+                        const rr = Math.max(2, 1.2 + lineWidth);
+                        ctx.beginPath();
+                        ctx.arc(mx, y, rr, 0, Math.PI * 2);
+                        ctx.fillStyle = userColor;
+                        ctx.fill();
+                    }
+                    ctx.restore();
+                }
+            }
+        }
+
+        ctx.restore();
+    }
+
+    getAutoFitRange(computed, count, visibleRange) {
+        return null;   // a price line must never stretch the Y auto-fit
+    }
+}
+brickRegistry.register('maxpain', MaxPainBrick);
+
+
 
 // ─── V283: Big Buys (bubbles) ──────────────────────────────────────────────
 // Пузыри на барах, где тейкер-объём резко выше нормы: круг на цене закрытия
@@ -40214,10 +40895,9 @@ class VolumeProfileRenderer {
 
 
 // ── V39: явный экспорт в window (обратная совместимость) ──
-Object.assign(window, { MA_SPECS, createMABrick, OSCILLATOR_SPECS, createOscillatorBrick, AUX_DATA_SPECS, createAuxBrick, IndicatorBase, EMACloudIndicator, AOIndicator, EMABufferPool, INDICATOR_TYPES, IndicatorManager, BrickParam, BrickOutput, ColorScheme, _darkenHex, BrickInput, BrickLevel, BrickBand, IndicatorBrick, BrickRegistry, brickRegistry, _maSMA, _maEMA, _maWMA, _maLSMA, _maHMA, _maJMA, _maTEMA, _maDEMA, _maTMA, _maVAMA, _maMF, _maEDSMA, _maKijun, _resolveSrc, MACDBrick, StochasticBrick, BandsBrick, AOBrick, ZigZagBrick, SupportResistanceBrick, OrderBlockBrick, GapDetectorBrick, VolRevFractalsBrick, ZScoreBrick, ZScoreEnsembleBrick, OUBandsBrick, HistoricalPocBrick, HPResidualBrick, KNNAnomalyBrick, VolNormCandlesBrick, AuxDataManager, AuxSeriesBrick, FundingRateBrick, OpenInterestBrick, RelPerfBrick, GammaExposureBrick, EconEventsBrick, TokenUnlocksBrick, BigBuysBrick, TWAPBrick, DivergenceDetector, VolumeProfileRenderer, OBVBrick, CMFBrick, WilliamsRBrick, CCIBrick, TRIXBrick, EldersRayBrick, AccumDistBrick, PVTBrick, CVDBrick });
-
+Object.assign(window, { MA_SPECS, createMABrick, OSCILLATOR_SPECS, createOscillatorBrick, AUX_DATA_SPECS, createAuxBrick, IndicatorBase, EMACloudIndicator, AOIndicator, EMABufferPool, INDICATOR_TYPES, IndicatorManager, BrickParam, BrickOutput, ColorScheme, _darkenHex, BrickInput, BrickLevel, BrickBand, IndicatorBrick, BrickRegistry, brickRegistry, _maSMA, _maEMA, _maWMA, _maLSMA, _maHMA, _maJMA, _maTEMA, _maDEMA, _maTMA, _maVAMA, _maMF, _maEDSMA, _maKijun, _resolveSrc, MACDBrick, StochasticBrick, BandsBrick, AOBrick, ZigZagBrick, SupportResistanceBrick, OrderBlockBrick, GapDetectorBrick, VolRevFractalsBrick, ZScoreBrick, ZScoreEnsembleBrick, OUBandsBrick, HistoricalPocBrick, HPResidualBrick, KNNAnomalyBrick, VolNormCandlesBrick, AuxDataManager, AuxSeriesBrick, FundingRateBrick, OpenInterestBrick, RelPerfBrick, GammaExposureBrick, EconEventsBrick, TokenUnlocksBrick, MaxPainBrick, BigBuysBrick, TWAPBrick, DivergenceDetector, VolumeProfileRenderer, OBVBrick, CMFBrick, WilliamsRBrick, CCIBrick, TRIXBrick, EldersRayBrick, AccumDistBrick, PVTBrick, CVDBrick });
 // ── V39: регистрация в реестре модулей ──
-CE.registerModule('ce-indicators', ['ce-data-layer', 'ce-math-utils', 'ce-renderers'], ['MA_SPECS', 'createMABrick', 'IndicatorBase', 'EMACloudIndicator', 'AOIndicator', 'EMABufferPool', 'INDICATOR_TYPES', 'IndicatorManager', 'BrickParam', 'BrickOutput', 'ColorScheme', '_darkenHex', 'BrickInput', 'BrickLevel', 'BrickBand', 'IndicatorBrick', 'BrickRegistry', 'brickRegistry', '_maSMA', '_maEMA', '_maWMA', '_maLSMA', '_maHMA', '_maJMA', '_maTEMA', '_maDEMA', '_maTMA', '_maVAMA', '_maMF', '_maEDSMA', '_maKijun', 'SMABrick', 'EMABrick', '_resolveSrc', 'WMABrick', 'DEMABrick', 'TEMABrick', 'TMABrick', 'LSMABrick', 'HMABrick', 'JMABrick', 'VAMABrick', 'MFBrick', 'EDSMABrick', 'KijunBrick', 'RSIBrick', 'BollingerBrick', 'MACDBrick', 'ATRBrick', 'StochasticBrick', 'BandsBrick', 'AOBrick', 'ALMABrick', 'KalmanBrick', 'ZigZagBrick', 'SupportResistanceBrick', 'OrderBlockBrick', 'GapDetectorBrick', 'MFIBrick', 'DPOBrick', 'VolRevFractalsBrick', 'ZScoreBrick', 'ZScoreEnsembleBrick', 'OUBandsBrick', 'HistoricalPocBrick', 'HPResidualBrick', 'KNNAnomalyBrick', 'VolNormCandlesBrick', 'AuxDataManager', 'AuxSeriesBrick', 'AUX_DATA_SPECS', 'createAuxBrick', 'FundingRateBrick', 'OpenInterestBrick', 'RelPerfBrick', 'GammaExposureBrick', 'EconEventsBrick', 'TokenUnlocksBrick', 'BigBuysBrick', 'TWAPBrick', 'DivergenceDetector', 'VolumeProfileRenderer', 'OBVBrick', 'CMFBrick', 'WilliamsRBrick', 'CCIBrick', 'TRIXBrick', 'EldersRayBrick', 'AccumDistBrick', 'PVTBrick', 'CVDBrick'], 'WORKER-SAFE');
+CE.registerModule('ce-indicators', ['ce-data-layer', 'ce-math-utils', 'ce-renderers'], ['MA_SPECS', 'createMABrick', 'IndicatorBase', 'EMACloudIndicator', 'AOIndicator', 'EMABufferPool', 'INDICATOR_TYPES', 'IndicatorManager', 'BrickParam', 'BrickOutput', 'ColorScheme', '_darkenHex', 'BrickInput', 'BrickLevel', 'BrickBand', 'IndicatorBrick', 'BrickRegistry', 'brickRegistry', '_maSMA', '_maEMA', '_maWMA', '_maLSMA', '_maHMA', '_maJMA', '_maTEMA', '_maDEMA', '_maTMA', '_maVAMA', '_maMF', '_maEDSMA', '_maKijun', 'SMABrick', 'EMABrick', '_resolveSrc', 'WMABrick', 'DEMABrick', 'TEMABrick', 'TMABrick', 'LSMABrick', 'HMABrick', 'JMABrick', 'VAMABrick', 'MFBrick', 'EDSMABrick', 'KijunBrick', 'RSIBrick', 'BollingerBrick', 'MACDBrick', 'ATRBrick', 'StochasticBrick', 'BandsBrick', 'AOBrick', 'ALMABrick', 'KalmanBrick', 'ZigZagBrick', 'SupportResistanceBrick', 'OrderBlockBrick', 'GapDetectorBrick', 'MFIBrick', 'DPOBrick', 'VolRevFractalsBrick', 'ZScoreBrick', 'ZScoreEnsembleBrick', 'OUBandsBrick', 'HistoricalPocBrick', 'HPResidualBrick', 'KNNAnomalyBrick', 'VolNormCandlesBrick', 'AuxDataManager', 'AuxSeriesBrick', 'AUX_DATA_SPECS', 'createAuxBrick', 'FundingRateBrick', 'OpenInterestBrick', 'RelPerfBrick', 'GammaExposureBrick', 'EconEventsBrick', 'TokenUnlocksBrick', 'MaxPainBrick', 'BigBuysBrick', 'TWAPBrick', 'DivergenceDetector', 'VolumeProfileRenderer', 'OBVBrick', 'CMFBrick', 'WilliamsRBrick', 'CCIBrick', 'TRIXBrick', 'EldersRayBrick', 'AccumDistBrick', 'PVTBrick', 'CVDBrick'], 'WORKER-SAFE');
 })(window.CE, window);
 
 (function CE$module$ce$main$overlay$renderer(CE, window) {
@@ -82886,7 +83566,7 @@ class ChartFactory {
                                 '<div class="s-section-label">Data</div>' +
                                 _cgHeatRow('Interval', _cgHeatSelect('data-cgh-interval', [['auto', 'Auto (chart)'], ['5', '5m'], ['15', '15m'], ['30', '30m'], ['1h', '1h'], ['2h', '2h'], ['6h', '6h'], ['12h', '12h'], ['24h', '24h']], st.interval)) +
                                 _cgHeatRow('Model', _cgHeatSelect('data-cgh-model', [['1', 'Leverage'], ['2', 'Size-aware'], ['3', 'Wide']], st.model)) +
-                                _cgHeatRow('Exchange', _cgHeatSelect('data-cgh-source', [['auto', 'Auto (chart)'], ['Binance', 'Binance'], ['Bybit', 'Bybit'], ['Deribit', 'Deribit']], st.source)) +
+                                _cgHeatRow('Exchange', _cgHeatSelect('data-cgh-source', [['auto', 'Auto (chart)'], ['ALL', 'Aggregated (sum)'], ['Binance', 'Binance'], ['Bybit', 'Bybit'], ['Deribit', 'Deribit']], st.source)) +
                             '</div>' +
                             '<div class="s-section-div">' +
                                 '<div class="s-section-label">Look</div>' +
@@ -95269,7 +95949,170 @@ window.__wpModuleV247 = (function () {
     // V250: no hardcoded "header-top default" insert here — place() below
     // honors the PERSISTED header position at boot.
 
+    // ── V293: CHIP DRAG-TO-REORDER (long-press + horizontal drag) ────────
+    // The user: «на панели быстрого доступа … можно было менять местами
+    // элементы. То есть перетаскивать, ровно как панели на графике, но по
+    // горизонтали». Chart panels reorder via a long-press on the label
+    // (PointerController 500 ms + vibrate + drag); chips get the SAME
+    // gesture language, mapped to the X axis:
+    //   • hold a chip still for DRAG_HOLD_MS → it "lifts" (accent bg +
+    //     shadow, haptic tick), the strip's native scroll is disabled;
+    //   • drag horizontally — the chip follows the finger 1:1, and the
+    //     moment its center crosses a neighbor's midpoint the DOM slot
+    //     (and the `items` order) flips, exactly like the panel-gap logic;
+    //   • near the strip edges it auto-scrolls (many chips overflow);
+    //   • release → order persists via save() (localStorage ce_workpanel_v1)
+    //     and the strip re-renders clean. A drag that never moved = a
+    //     no-op (the click that follows is swallowed, so a hold-and-
+    //     release doesn't switch symbols by accident).
+    // A wander > DRAG_SLOP_PX BEFORE the hold fires cancels it — that is a
+    // scroll/swipe, not a reorder (mirrors V253-lp-slide on the ticker
+    // button). Right-click remove and the ticker-button long-press menu
+    // are untouched.
+    const wpDrag = (() => {
+        // V294: 320 → 1000 мс (юзер: «поменяй лонг пресс по кнопке для
+        // перетаскивания там на 1с») — свайп/скролл полосы теперь почти
+        // никогда не конфликтует с жестом reorder, но и reorder стартует
+        // только после полной секунды удержания.
+        const DRAG_HOLD_MS = 1000;  // user: long-press to start dragging = 1 s
+        const DRAG_SLOP_PX = 10;    // wander that cancels the pending hold
+        const EDGE_PX = 28;         // auto-scroll zone at the strip edges
+        const EDGE_STEP = 7;        // px per move event while pinned at an edge
+        let st = null;              // pending hold OR active drag
+        let suppressUntil = 0;      // swallow the post-drag click
+
+        const stripX = (clientX) => clientX - strip.getBoundingClientRect().left + strip.scrollLeft;
+
+        const domOrderSymbols = () =>
+            [...strip.querySelectorAll('.wp-chip')].map(el => el.dataset.sym);
+
+        const beginHold = (chipEl, ev) => {
+            // Right button goes through the contextmenu-remove path.
+            if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+            cancel();
+            // cancel() may have re-rendered the strip (rare: a previous drag
+            // still held state) — a detached chip must not start a new hold.
+            if (!chipEl.isConnected) return;
+            const rect = chipEl.getBoundingClientRect();
+            st = {
+                phase: 'hold', chipEl, sym: chipEl.dataset.sym,
+                ptrId: ev.pointerId, x0: ev.clientX, y0: ev.clientY,
+                grabDx: ev.clientX - rect.left,   // px from chip's left edge to the finger
+                timer: setTimeout(() => {
+                    if (!st || st.phase !== 'hold') return;
+                    startDrag();
+                }, DRAG_HOLD_MS),
+            };
+            try { chipEl.setPointerCapture(ev.pointerId); } catch (e) {}
+        };
+
+        const startDrag = () => {
+            if (!st || st.phase !== 'hold') return;
+            const chipEl = st.chipEl;
+            // The hold fired with a still finger — the native scroll gesture
+            // has NOT started; pinning touch-action now keeps it that way
+            // (CSS .wp-dragging) so the coming moves stay pointer events.
+            strip.classList.add('wp-dragging');
+            chipEl.classList.add('wp-drag');
+            st.phase = 'drag';
+            st.orderChanged = false;
+            st.lastClientX = st.x0;
+            try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {}
+        };
+
+        // Live slot swap: move the dragged chip in the DOM when its center
+        // crosses a sibling's midpoint; `items` follows on drop.
+        const updateDrag = (clientX) => {
+            if (!st || st.phase !== 'drag') return;
+            st.lastClientX = clientX;
+            const el = st.chipEl;
+            const w = el.offsetWidth;
+            const targetLeft = Math.max(0,
+                Math.min(strip.scrollWidth - w, stripX(clientX) - st.grabDx));
+            el.style.transform = `translateX(${targetLeft - el.offsetLeft}px)`;
+            // Auto-scroll at the edges (strip-relative pointer position).
+            const px = stripX(clientX);
+            if (px < EDGE_PX) strip.scrollLeft = Math.max(0, strip.scrollLeft - EDGE_STEP);
+            else if (px > strip.clientWidth - EDGE_PX)
+                strip.scrollLeft = Math.min(strip.scrollWidth, strip.scrollLeft + EDGE_STEP);
+            // Insertion index by centers — the classic sortable swap. The
+            // chip moves only when the insertion index among the OTHER chips
+            // differs from its current index among ALL chips (i.e. its
+            // center crossed a neighbor's midpoint).
+            const chips = [...strip.querySelectorAll('.wp-chip')];
+            const curIdx = chips.indexOf(el);
+            const others = chips.filter(c => c !== el);
+            const center = stripX(clientX) - st.grabDx + w / 2;
+            let idx = 0;
+            for (const o of others) {
+                if (center > o.offsetLeft + o.offsetWidth / 2) idx++;
+            }
+            if (idx !== curIdx) {
+                if (idx < others.length) strip.insertBefore(el, others[idx]);
+                else strip.insertBefore(el, others[others.length - 1].nextSibling);
+                st.orderChanged = true;
+            }
+        };
+
+        const cancel = () => {
+            if (!st) return;
+            if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+            const wasDrag = st.phase === 'drag';
+            const chipEl = st.chipEl, orderChanged = !!st.orderChanged;
+            st = null;                       // clear BEFORE render() — render() bails while a drag is active
+            if (wasDrag) {
+                chipEl.classList.remove('wp-drag');
+                chipEl.style.transform = '';
+                strip.classList.remove('wp-dragging');
+                // A hold-and-release (no slot crossed) is a no-op too, but it
+                // must still swallow the following click.
+                suppressUntil = Date.now() + 450;
+                // Persist the new order (DOM order = items order).
+                if (orderChanged) {
+                    const order = domOrderSymbols();
+                    const map = new Map(items.map(i => [i.symbol, i]));
+                    const next = [];
+                    for (const s of order) { const it = map.get(s); if (it) { next.push(it); map.delete(s); } }
+                    for (const it of map.values()) next.push(it);
+                    items = next;
+                    save();
+                }
+                render();
+            }
+        };
+
+        return {
+            attach(chipEl) {
+                if (chipEl.dataset.wpDragBound) return;
+                chipEl.dataset.wpDragBound = '1';
+                chipEl.addEventListener('pointerdown', (ev) => {
+                    if (st && st.phase === 'drag') return;   // one drag at a time
+                    beginHold(chipEl, ev);
+                });
+                chipEl.addEventListener('pointermove', (ev) => {
+                    if (!st || ev.pointerId !== st.ptrId) return;
+                    if (st.phase === 'hold') {
+                        // Wandered before the hold fired → that's a native
+                        // strip scroll / a swipe — cancel the hold.
+                        if (Math.hypot(ev.clientX - st.x0, ev.clientY - st.y0) > DRAG_SLOP_PX) cancel();
+                    } else {
+                        updateDrag(ev.clientX);
+                    }
+                });
+                const done = () => { if (st) cancel(); };
+                chipEl.addEventListener('pointerup', done);
+                chipEl.addEventListener('pointercancel', done);
+            },
+            active: () => !!(st && st.phase === 'drag'),
+            suppressClick: () => Date.now() < suppressUntil,
+        };
+    })();
+
+    // V293: bind each chip to the drag engine (called from render()).
+    const attachChipDrag = (chipEl) => { wpDrag.attach(chipEl); };
+
     const render = () => {
+        if (wpDrag.active()) return;   // V293: a re-render mid-drag would orphan the dragged element
         strip.textContent = '';
         if (!items.length) { strip.classList.remove('wp-visible'); container.classList.remove('wp-open'); return; }
         strip.classList.add('wp-visible');
@@ -95297,9 +96140,16 @@ window.__wpModuleV247 = (function () {
                 chipEl.appendChild(dSpan);
             }
             chipEl.title = 'Switch to ' + it.symbol + (it.isPerp ? ' (perp)' : '') +
-                '\nLong-press does nothing (accidental deletes are gone)' +
+                '\nLong-press + drag sideways — reorder (V293)' +
                 '\nRemove: right-click with a MOUSE / ticker-button menu';
-            chipEl.addEventListener('click', (e) => { e.stopPropagation(); switchTo(it); });
+            chipEl.addEventListener('click', (e) => {
+                e.stopPropagation();
+                // V293: a chip that was just long-press-DRAGGED must not also
+                // fire its switch-click on release (the pointerup → click
+                // sequence is unchanged by pointer capture).
+                if (wpDrag.suppressClick()) return;
+                switchTo(it);
+            });
             chipEl.addEventListener('contextmenu', (e) => {
                 e.preventDefault(); e.stopPropagation();
                 // V257: a TOUCH long-press fired the native contextmenu and
@@ -95308,8 +96158,12 @@ window.__wpModuleV247 = (function () {
                 // Неудобно, убери это»). Touch/pen presses no longer delete;
                 // only a desktop mouse RIGHT-click still removes the chip.
                 if (chipPtr !== 'mouse') return;
+                // V293: during an active drag the Android native contextmenu
+                // may still fire — it must never delete the dragged chip.
+                if (wpDrag.active()) return;
                 removeItem(it.symbol);
             });
+            attachChipDrag(chipEl, it);
             strip.appendChild(chipEl);
         }
         // V247: keep the ACTIVE chip in view when the strip overflows —
@@ -96195,7 +97049,8 @@ window.__cgV267 = (function () {
 // prices:[[t,o,h,l,c,vol]×600]. Cells are painted on the overlay canvas at
 // (bar timestamp → x, price level → y) with a magma-like ramp: the hotter the
 // zone (more USD to be liquidated there), the brighter. Settings: interval
-// (5m…24h), model, exchange (auto = chart's exchange when supported) and
+// (5m…24h), model, exchange (auto = chart's exchange when supported,
+// or «Aggregated (sum)» = client-side Binance+Bybit+Deribit sum — V298) and
 // Brightness/Sensitivity sliders (⚙ Indicators modal → Liquidation
 // Heatmap system card), persisted in localStorage('ce_cg_liqheat_v1'). Poll 120s.
 window.__cgLhV267 = (function () {
@@ -96368,6 +97223,85 @@ window.__cgLhV267 = (function () {
         }, 250);
     };
 
+    // ── V298: aggregated exchange (client-side sum) ────────────────────
+    // The legend endpoint has no aggregated instrument (ALL_/Aggregated_
+    // symbols answer «instrument is null»), so «Aggregated (sum)» fetches
+    // Binance + Bybit + Deribit in parallel and sums their cells onto one
+    // merged grid: time = the reference grid (the payload with the most
+    // buckets), each foreign bucket mapped to the nearest reference bucket
+    // within ±dt/2; price = a common ascending grid over the union of the
+    // source ranges with the FINEST source step. Failing sources are
+    // skipped; a single survivor is returned as-is.
+    async function fetchLiqAgg(signal) {
+        const cg = window.__cgV267;
+        if (!cg || typeof cg.liqHeatmap !== 'function') throw new Error('no cg module');
+        const s = curSrc();
+        const base = /^[A-Z0-9]+$/.test(s.base) ? s.base : 'BTC';
+        const interval = resolveInterval(), model = state.model;
+        const insts = ['Binance_' + base + 'USDT', 'Bybit_' + base + 'USDT', 'Deribit_' + base + '-PERPETUAL'];
+        const parts = await Promise.allSettled(insts.map((i2) => cg.liqHeatmap(i2, model, interval, signal)));
+        const grids = parts
+            .filter((p) => p.status === 'fulfilled' && p.value && Array.isArray(p.value.prices) && p.value.prices.length
+                && Array.isArray(p.value.y) && p.value.y.length && Array.isArray(p.value.liq))
+            .map((p) => p.value);
+        if (!grids.length) {
+            const bad = parts.find((p) => p.status === 'rejected');
+            throw (bad && bad.reason) || new Error('agg: no data');
+        }
+        if (grids.length === 1) return grids[0];
+        return mergeLiqGrids(grids);
+    }
+    function mergeLiqGrids(grids) {
+        let ref = grids[0];
+        for (const g of grids) if (g.prices.length > ref.prices.length) ref = g;
+        const ts = (v) => { const n = Number(v); return n > 1e12 ? n : n * 1000; };
+        const nb = ref.prices.length;
+        const dtRef = nb > 1 ? Math.abs(ts(ref.prices[1][0]) - ts(ref.prices[0][0])) : 300000;
+        if (!(dtRef > 0)) return ref;
+        // merged price grid: union range, finest source step
+        let lo = Infinity, hi = -Infinity, step = Infinity;
+        for (const g of grids) {
+            const ys = g.y.map(Number).filter(isFinite).sort((a, b) => a - b);
+            if (!ys.length) continue;
+            lo = Math.min(lo, ys[0]); hi = Math.max(hi, ys[ys.length - 1]);
+            for (let i = 1; i < ys.length; i++) { const gp = ys[i] - ys[i - 1]; if (gp > 0) step = Math.min(step, gp); }
+        }
+        if (!isFinite(lo) || !isFinite(hi) || !isFinite(hi - lo) || !(step > 0)) return ref;
+        const ny = Math.min(512, Math.floor((hi - lo) / step + 1e-4) + 1);
+        // bucket → reference index (nearest within ±dt/2)
+        const mapCols = [];
+        for (const g of grids) {
+            const m = new Int32Array(g.prices.length).fill(-1);
+            for (let i = 0; i < g.prices.length; i++) {
+                const t = ts(g.prices[i][0]);
+                const k = Math.round((t - ts(ref.prices[0][0])) / dtRef);
+                if (k >= 0 && k < nb && Math.abs(ts(ref.prices[k][0]) - t) <= dtRef / 2) m[i] = k;
+            }
+            mapCols.push(m);
+        }
+        // sum cells onto the merged grid
+        const out = new Map();
+        for (let gi = 0; gi < grids.length; gi++) {
+            const g = grids[gi], m = mapCols[gi], yLen = g.y.length;
+            for (const c of g.liq) {
+                const ci = m[c[0] | 0];
+                if (ci < 0) continue;
+                const Pv = Number(g.y[c[1] | 0]);
+                if (!isFinite(Pv) || Pv < lo - step / 2 || Pv > hi + step / 2) continue;
+                const r = Math.max(0, Math.min(ny - 1, Math.round((Pv - lo) / step)));
+                const v = Math.abs(Number(c[2]) || 0);
+                if (!(v > 0)) continue;
+                const k2 = ci * ny + r;
+                out.set(k2, (out.get(k2) || 0) + v);
+            }
+        }
+        const y = new Array(ny);
+        for (let r = 0; r < ny; r++) y[r] = lo + r * step;
+        const liq = [];
+        for (const [k2, v] of out) liq.push([(k2 / ny) | 0, k2 % ny, v]);
+        return { prices: ref.prices, y, liq };
+    }
+
     async function fetchHeat() {
         const cg = window.__cgV267;
         if (!cg) { status = 'error'; errText = 'no cg module'; repaint(); return; }
@@ -96384,7 +97318,14 @@ window.__cgLhV267 = (function () {
         let hardKilled = false;
         const hardTimer = setTimeout(() => { hardKilled = true; try { myCtl.abort(); } catch (e) {} }, 120000);
         try {
-            const d = await cg.liqHeatmap(key.split('@')[0], state.model, resolveInterval(), myCtl.signal);
+            const inst = key.split('@')[0];
+            // V298: aggregated exchange — CoinGlass has NO aggregated symbol
+            // for this endpoint («instrument is null» on ALL_/Aggregated_
+            // probes), so the sum of the known-good sources is built
+            // client-side onto one merged grid.
+            const d = (resolveSource() === 'ALL')
+                ? await fetchLiqAgg(myCtl.signal)
+                : await cg.liqHeatmap(inst, state.model, resolveInterval(), myCtl.signal);
             if (myGen !== fetchGen) return;   // V268: superseded — the result is foreign now
             if (!d || !Array.isArray(d.prices) || !Array.isArray(d.y) || !Array.isArray(d.liq) || !d.prices.length) {
                 throw new Error('bad payload');
@@ -96687,12 +97628,19 @@ window.__cgLhV267 = (function () {
         const plotRight = plotLeft + plotW;
         const panelBottom = panelTop + plotH;
         const lutStr = pc.lutStr;
-        const nb = grid.prices.length, ny = grid.y.length;
-        const dy = ny > 1 ? Math.abs(grid.y[ny - 1] - grid.y[0]) / (ny - 1) : 0;
+        // V299-fix: pc.y is the PRICE-SORTED level array and the cell yi values
+        // are RANKS (rebuildPc remaps raw indices → sorted ranks). The old code
+        // built pyA over the RAW grid.y order, so whenever this fallback ran
+        // (non-affine x scale / phaseOk false) every cell painted at the band
+        // of the level whose RAW index equalled its RANK — an arbitrary shelf
+        // permutation on payloads whose y order is not ascending. The bake
+        // path was unaffected (it maps ranks through pc.y).
+        const nb = grid.prices.length, ny = pc.y.length;
+        const dy = ny > 1 ? Math.abs(pc.y[ny - 1] - pc.y[0]) / (ny - 1) : 0;
         if (!pyBuf || pyBuf.length < ny) { pyBuf = new Float64Array(ny); hBuf = new Float64Array(ny); }
         const pyA = pyBuf, hyA = hBuf;
         for (let j = 0; j < ny; j++) {             // per-LEVEL geometry, not per-cell
-            const price = grid.y[j];
+            const price = pc.y[j];
             const py = yS.valToPix(price + dy / 2);
             pyA[j] = py;
             hyA[j] = Math.max(1, yS.valToPix(price - dy / 2) - py - 0.5);
@@ -96897,7 +97845,17 @@ window.__cgLhV267 = (function () {
         // every 96-row band was drawn VERTICALLY FLIPPED since V269: shelves
         // rendered at mirrored prices (±7k on BTC), piercing candles that
         // never touched them and stopping in empty space.
-        const BAND = 96;
+        // V299-fix: BAND 96→16. drawImage stretches each band LINEARLY between
+        // its outer edges, but the main panel's Y scale is LOG by default
+        // (V50) — interior shelves of a 96-row band sat up to ~0.5–0.7 band
+        // LOWER than their true price (live probe: predicted blit warp
+        // +0.44…+0.74 band at band middles; top levels had NO run at their
+        // own position), while the crosshair label (nearest level) is exact —
+        // the label read the shelf BELOW the bright line the user parked on.
+        // The linear error inside a band scales with BAND², so 16 rows shrink
+        // it to ~0.02 band (≈0.1 px) — exact under log/percent/linear alike;
+        // adjacent bands still tile exactly (botP(k) == topP(k+1)).
+        const BAND = 16;
         for (let j0 = 0; j0 < ny; j0 += BAND) {
             const j1 = Math.min(ny, j0 + BAND);
             const topP = yS.valToPix(pc.y[ny - 1 - j0] + dy / 2);   // row j0 = the band's highest price → smallest y
@@ -97024,8 +97982,27 @@ window.__cgLhV267 = (function () {
             const nb = grid.prices.length, dtMs = (grid.dtSec || 300) * 1000;
             const t0raw = Number(grid.prices[0][0]);
             const t0 = t0raw > 1e12 ? t0raw : t0raw * 1000;
-            const xi = Math.round((tMs - t0) / dtMs);
-            if (!(xi >= 0) || xi >= nb) return null;
+            // V298-fix: the rendered cell of bucket c is [pix(barT[c]) −
+            // slotW/2 … +pitch) (slot-anchored, V276) — it covers the time
+            // window [barT[c] − slotDt/2, barT[c] − slotDt/2 + dtB). The old
+            // round((tMs − t0)/dtB) picked the bucket AT the cursor time, so
+            // on sub-bucket intervals (4h chart ← 2h buckets, 1d ← 6h, …)
+            // the right half of every candle read the LEFT half's bucket: the
+            // label lagged exactly one bucket and at shelf steps showed the
+            // neighbouring shelf («запаздывает ровно на 1 …»). Probe = the
+            // CENTER of the covering bucket's window (with dt == slotDt this
+            // reduces to the old nearest-bucket pick); the cursor is then
+            // validated against the bucket's actual cell window.
+            const slotDt = (pc && pc.slotDt > 0) ? pc.slotDt
+                : ((slotG && slotG.dtMs > 0) ? slotG.dtMs : dtMs);
+            const probe = tMs + slotDt / 2 - dtMs / 2;
+            let xi = Math.round((probe - t0) / dtMs);
+            if (!isFinite(xi)) return null;
+            if (xi < 0) xi = 0; else if (xi >= nb) xi = nb - 1;
+            const btRaw = Number(grid.prices[xi][0]);
+            const bt = btRaw > 1e12 ? btRaw : btRaw * 1000;
+            const cellA = bt - slotDt / 2, cellB = cellA + dtMs, eps = dtMs * 0.02;
+            if (tMs < cellA - eps || tMs >= cellB + eps) return null;   // outside the rendered cell
             const y = grid.y;
             let bj = -1, bd = Infinity;
             for (let j = 0; j < y.length; j++) {
@@ -97831,7 +98808,11 @@ window.__cgLbV267 = (function () {
         // price) — band row j0 (the band's HIGHEST price) lands at topP. The
         // pre-V276 loop fed ascending rows into the same dest band, so every
         // 96-row band was drawn VERTICALLY FLIPPED since V269.
-        const BAND = 96;
+        // V299-fix: BAND 96→16 — same log-scale interior warp as the
+        // liquidation module (see its note): the book's step q is finer, so
+        // the warp is smaller (q·B²/8p bands), but with wide merge buckets it
+        // still reached a visible fraction of a shelf.
+        const BAND = 16;
         for (let j0 = 0; j0 < nlv; j0 += BAND) {
             const j1 = Math.min(nlv, j0 + BAND);
             const topP = yS.valToPix(pc.lvlPrice[nlv - 1 - j0] + half);   // row j0 = the band's highest price → smallest y
@@ -101072,7 +102053,8 @@ const SKIP_TYPES = new Set(['gammaexposure', 'fundingrate', 'openinterest',
                             'hpresidual', 'knnanomaly', 'ou_zscore', 'ou_bands',
                             'zscore_ensemble', 'timemarker', 'eldersray',
                             'accumdist', 'pvt', 'cvd', 'atr', 'kalman', 'mf',
-                            'edsma', 'jma', 'tokenunlocks', 'bigbuys', 'twap']);
+                            'edsma', 'jma', 'tokenunlocks', 'bigbuys', 'twap',
+                            'maxpain']);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tiny utils
