@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>V326 PF SIM OFF BY DEFAULT (юзер: «отключи симуляцию портфолио по умолчанию. В настройках надо вкл отдельно»): ① [P1] симуляция портфолио выключена по умолчанию: движок (тик каждые 3с) не стартует, оверлей на графике (лимиты/TP/SL/avg-линии, маркеры сделок) не рисуется, живые цены в мок-книгу не поступают (setLive через overlayDraw заглушен), 💼-кнопка в тулбаре скрыта, long-press quick-trade меню недоступно, открытие листа отклоняется тостом «Portfolio simulation is OFF — enable it in ⚙ Settings → Portfolio», амбер-точка на SPOT/PERP-свитчере не показывается; ② [P1] включение — ⚙ Settings → новая секция «Portfolio» → Sim: ON/OFF (localStorage ce_pf_sim_enabled_v1, '1' = вкл; флаг читается СВЕЖИМ при каждой проверке — тулбар строится ДО модуля портфолио, поэтому без глобальных переменных и init-order танцев); ③ [P1] тоггл синхронизирует все инстансы: querySelectorAll('[data-role=btn-pf-sim]') текст+active+aria-pressed и '[data-role=btn-portfolio]' display; старт/стоп движка через PaperPortfolio.setSim (pfSimStart сразу делает tick() — первый ререндер оверлея без 3с ожидания; pfSimStop снимает interval), выключение закрывает открытый лист и перерисовывает график (requestChartRender); ④ [P2] состояние портфолио в localStorage не трогается — повторное включение продолжает тот же бумажный счёт; тоггл НЕ в CLOSE_ROLES — дропдаун настроек остаётся открытым; fail-closed: ошибка localStorage = OFF; ⑤ [P3] у кнопки Sim active-стиль и aria-pressed, aria-label «Toggle portfolio simulation (default OFF)». Регресс: probe_v326 (boot → кнопка скрыта, движок стоит, overlay заглушен, open() отклоняется → тоггл ON кликом в дропдауне → 💼 видна, тик идёт, лист открывается → OFF → всё гаснет → reload персистентен в обе стороны), test_v326 (копия V320-набора с pre-seed sim=1: жесты кнопки, лимит-линии, движок-экзекьюшн), boot-check pageerror: 0.</title>
+    <title>V327 SPOT/PERP SWITCHER SELF-HEAL (юзер: «после перезагрузки кнопка смены спот перп не работает. Только когда перейду на другой тикер работать начинает»): ① [P1] корень — деградированная вселенная монет: _fetchBinance фетчит спот + fapi(перп) тикеры, _fetchBybit — спот + linear, каждая половина в немом catch{skip}; 418/CORS/таймаут ОДНОЙ половины на буте даёт список, где НИ У ОДНОЙ монеты нет hasPerp/hasSpot → avail() свитчера читает «нет второго рынка» → кнопка disabled (opacity .35, pointer-events none). Обычный _cpPreloadCoins-kick эарли-рeturnится на свежем single-slot кэше БЕЗ рефетча → кнопка мертва до открытия пикера/смены тикера (которая дергает _cpForceRefresh). ② [P1] детектор деградации: CoinListService._mktHalfMissing(exchange,coins) + зеркальный app-модуль _cpMktHalfMissing() — список считается деградированным, если для binance/bybit (единственные вселенные с обоими половинами) при ≥10 монет перп-или-спот половина насчитывает ≤5 монет; fetch() вешает на результат __ceMktHalfMissing и пишет запись в lastFetchErrors. ③ [P1] самолечение: (a) свитчер update() различает две причины !ok — неизвестная монета → прежний _cpPreloadCoins-kick (30с троттл); деградированный список → _cpForceRefresh с экспоненциальным бэкоффом 45с×2 (cap 10мин), сброс при ok; (b) _cpMktHalfAutoRetry — один авторетрай через 3с на каждый преод/ревалидейт, дедуп 2мин/биржу. ④ [P1] деградированные списки больше НЕ персистятся: guard в _cpPreloadCoins (memo+IndexedDB), _cpScheduleCoinsRevalidate (memo+IDB+slot publish) — прежний яд (спот-онли снапшот на 1ч в IDB) больше не переживает перезагрузку; пикеру/свайпу список всё равно отдаётся. ⑤ [P2] window._cpForceRefresh экспортирован (консоль/дебаг + кросс-модульное самолечение). Регресс: probe_v327 (mock fapi-tickers: 1-й запрос abort → бут деградирован, кнопка disabled → самолечение ≤90с БЕЗ смены тикера → клик реально переключает isPerp, fapi-klines запрос идёт), probe_v327_happy (обе половины OK → кнопка активна сразу), boot-check pageerror: 0. </title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -72747,6 +72747,34 @@ class CoinListService {
         }
     }
 
+    /** V327-mkt-half: detect a DEGRADED coin list — one market half of the
+     *  exchange universe silently failed to fetch. _fetchBinance fetches
+     *  spot + fapi(perp) tickers and _fetchBybit fetches spot + linear
+     *  tickers; both wrap each half in a silent `catch { skip }`, so a
+     *  418/CORS/timeout on ONE half yields a list where NO coin carries
+     *  hasPerp (or hasSpot). The coin SET is fine for the picker, but the
+     *  SPOT/PERP switcher's availability check reads the missing half as
+     *  "no second market" and the button stayed dead after a reload until
+     *  a ticker switch refreshed the list (user: «после перезагрузки
+     *  кнопка смены спот перп не работает. Только когда перейду на другой
+     *  тикер работать начинает»). Only exchanges whose universe is
+     *  SUPPOSED to carry both halves count (binance, bybit). */
+    _mktHalfMissing(exchange, coins) {
+        try {
+            const ex = String(exchange || '').toLowerCase();
+            if (ex !== 'binance' && ex !== 'bybit') return false;
+            if (!Array.isArray(coins) || coins.length < 10) return false;
+            let perp = 0, spot = 0;
+            for (const c of coins) {
+                if (!c) continue;
+                if (c.hasPerp || (Array.isArray(c.markets) && c.markets.some(m => m && m.isPerp))) perp++;
+                if (c.hasSpot || (Array.isArray(c.markets) && c.markets.some(m => m && !m.isPerp))) spot++;
+                if (perp > 5 && spot > 5) return false;
+            }
+            return perp <= 5 || spot <= 5;
+        } catch (e) { return false; }
+    }
+
     /** Fetch all coins from a single exchange. Returns deduplicated list.
      *  Pass force=true to bypass the 60s TTL (used by the 5s live-price refresh).
      *  V255: indexFloorMs — override for the 30s index cache floor. The
@@ -72773,6 +72801,21 @@ class CoinListService {
             // V203: a real success invalidates the failure log — the details
             //   block must not resurrect stale failures after a recovery.
             if (result && result.length) this.lastFetchErrors = [];
+            // V327-mkt-half: flag degraded universes so the cache layers
+            //   refuse to persist them (a spot-only snapshot in IndexedDB
+            //   kept the SPOT/PERP switcher disabled for up to 1 h across
+            //   reloads).
+            if (Array.isArray(result) && result.length && this._mktHalfMissing(exchange, result)) {
+                try { result.__ceMktHalfMissing = true; } catch (e) { /* best-effort */ }
+                try {
+                    this.lastFetchErrors.push({
+                        url: String(exchange) + ' universe (market half)',
+                        msg: 'spot⇄perp half missing — universe degraded, switcher self-heal pending',
+                        ts: Date.now(),
+                    });
+                    if (this.lastFetchErrors.length > 6) this.lastFetchErrors.shift();
+                } catch (e) { /* best-effort */ }
+            }
             this._cache = result;
             this._cacheKey = cacheKey;
             this._cacheTime = Date.now();
@@ -87320,6 +87363,9 @@ class ChartFactory {
             return false;
         };
         let _lastPreloadKick = 0;
+        // V327-mkt-half: degraded-universe force-refresh throttle + backoff
+        let _lastForceKick = 0;
+        let _forceKickDelay = 45000;
         const update = () => {
             try {
                 const perp = curPerp();
@@ -87342,16 +87388,47 @@ class ChartFactory {
                 if (dot) dot.style.display = otherHasPositions() ? 'block' : 'none';
                 // Kick the coin cache when it's missing/stale for the current
                 // exchange (throttled — the poll re-checks after it lands).
+                // V327-mkt-half: TWO distinct "no second market" causes need
+                //   two distinct kicks.
+                //   (a) coin unknown / cache for another exchange → a plain
+                //       _cpPreloadCoins warms the cache (as before);
+                //   (b) the cached list is DEGRADED (one market half of the
+                //       exchange universe silently failed at boot — fapi/spot
+                //       tickers 418/CORS, swallowed by _fetchBinance) → every
+                //       coin reads hasPerp=false, the button disables, and a
+                //       plain preload early-returns on the fresh single-slot
+                //       cache WITHOUT a refetch — the button stayed dead until
+                //       the user opened the picker / switched ticker («после
+                //       перезагрузки кнопка смены спот перп не работает. Только
+                //       когда перейду на другой тикер работать начинает»).
+                //       Force a full re-fetch with exponential backoff; the
+                //       poll re-enables the button when the full list lands.
                 const t = Date.now();
-                if (!ok && (t - _lastPreloadKick) > 30000) {
-                    _lastPreloadKick = t;
-                    try {
-                        const exch = curExchange();
-                        if (typeof window._cpPreloadCoins === 'function') {
-                            const pr = window._cpPreloadCoins(exch);
-                            if (pr && typeof pr.then === 'function') pr.then(() => update()).catch(() => {});
-                        }
-                    } catch (e) { /* best-effort */ }
+                if (ok) {
+                    _forceKickDelay = 45000;
+                } else {
+                    const exch = curExchange();
+                    const coinsNow = (window._cpCachedCoins && String(window._cpCachedExchange || '').toLowerCase() === exch)
+                        ? window._cpCachedCoins : null;
+                    const deg = !!(coinsNow && _cpMktHalfMissing(exch, coinsNow));
+                    if (deg && (t - _lastForceKick) > _forceKickDelay) {
+                        _lastForceKick = t;
+                        _forceKickDelay = Math.min(_forceKickDelay * 2, 600000);
+                        try {
+                            if (typeof _cpForceRefresh === 'function') {
+                                const pr = _cpForceRefresh(exch);
+                                if (pr && typeof pr.then === 'function') pr.then(() => update()).catch(() => {});
+                            }
+                        } catch (e) { /* best-effort */ }
+                    } else if (!deg && (t - _lastPreloadKick) > 30000) {
+                        _lastPreloadKick = t;
+                        try {
+                            if (typeof window._cpPreloadCoins === 'function') {
+                                const pr = window._cpPreloadCoins(exch);
+                                if (pr && typeof pr.then === 'function') pr.then(() => update()).catch(() => {});
+                            }
+                        } catch (e) { /* best-effort */ }
+                    }
                 }
             } catch (e) { /* best-effort */ }
         };
@@ -89500,6 +89577,13 @@ function _cpScheduleCoinsRevalidate(exchange) {
         _coinListService.fetch(exchange, true)
             .then(coins => {
                 if (!coins || !coins.length) return;
+                // V327-mkt-half: never cache or publish a degraded universe —
+                //   a spot-only snapshot in the memo map / IndexedDB / slot
+                //   kept the SPOT/PERP switcher dead for up to an hour.
+                if (coins.__ceMktHalfMissing || _cpMktHalfMissing(exchange, coins)) {
+                    _cpMktHalfAutoRetry(exchange);
+                    return;
+                }
                 _cpCoinsByExchange.set(exchange, { coins, ts: Date.now() });
                 try {
                     const j = JSON.stringify({ coins, ts: Date.now() });
@@ -89516,6 +89600,46 @@ function _cpScheduleCoinsRevalidate(exchange) {
             .catch(() => {})
             .finally(() => { _cpRevalidating.delete(exchange); });
     }, 50);
+}
+
+// ── V327-mkt-half: shared shape check for degraded coin lists ────────────
+// Mirrors CoinListService._mktHalfMissing (the adapters module is a sibling
+//   IIFE, its class method is not reachable from here) — the SPOT/PERP
+//   switcher and the cache layers below use it to detect a universe where
+//   one market half silently failed to fetch (spot tickers OK + fapi/linear
+//   418/CORS, or the inverse).
+function _cpMktHalfMissing(exchange, coins) {
+    try {
+        const ex = String(exchange || '').toLowerCase();
+        if (ex !== 'binance' && ex !== 'bybit') return false;
+        if (!Array.isArray(coins) || coins.length < 10) return false;
+        let perp = 0, spot = 0;
+        for (const c of coins) {
+            if (!c) continue;
+            if (c.hasPerp || (Array.isArray(c.markets) && c.markets.some(m => m && m.isPerp))) perp++;
+            if (c.hasSpot || (Array.isArray(c.markets) && c.markets.some(m => m && !m.isPerp))) spot++;
+            if (perp > 5 && spot > 5) return false;
+        }
+        return perp <= 5 || spot <= 5;
+    } catch (e) { return false; }
+}
+// V327-mkt-half: at most one automatic degraded-universe retry per 2 min
+//   per exchange (the mkt-switch poll additionally force-refreshes with its
+//   own backoff — this dedup keeps both paths from hammering Binance when
+//   the rate limit persists).
+const _cpMktHalfRetried = new Map();
+function _cpMktHalfAutoRetry(exchange) {
+    try {
+        const t = Date.now();
+        if (t - (_cpMktHalfRetried.get(exchange) || 0) < 120000) return;
+        _cpMktHalfRetried.set(exchange, t);
+        setTimeout(() => {
+            try {
+                const pr = _cpForceRefresh(exchange);
+                if (pr && typeof pr.catch === 'function') pr.catch(() => {});
+            } catch (e) { /* best-effort */ }
+        }, 3000);
+    } catch (e) { /* best-effort */ }
 }
 
 function _cpPreloadCoins(exchange, opts) {
@@ -89538,8 +89662,14 @@ function _cpPreloadCoins(exchange, opts) {
         //   repaints the rows actually on screen.
         if (Date.now() - (_cpCachedCoinsTs || 0) < CP_PRELOAD_MEM_TTL) {
             _cpServedCoinsTs = _cpCachedCoinsTs || 0;   // V300
+            // V327-mkt-half: a poisoned/degraded copy in the slot (e.g. served
+            //   earlier from an IndexedDB row written before the persist guard
+            //   existed — JSON round-trip drops the flag) must still trigger
+            //   the self-heal retry.
+            if (_cpMktHalfMissing(exchange, _cpCachedCoins)) _cpMktHalfAutoRetry(exchange);
             return Promise.resolve(_cpCachedCoins);
         }
+        if (_cpMktHalfMissing(exchange, _cpCachedCoins)) _cpMktHalfAutoRetry(exchange);   // V327-mkt-half
         _cpScheduleCoinsRevalidate(exchange);
         _cpServedCoinsTs = _cpCachedCoinsTs || 0;       // V300
         return Promise.resolve(_cpCachedCoins);
@@ -89569,6 +89699,9 @@ function _cpPreloadCoins(exchange, opts) {
                     }
                 }
                 _cpServedCoinsTs = parsed.ts;       // V300
+                // V327-mkt-half: pre-fix IndexedDB rows can carry a degraded
+                //   (spot-only) universe — detect the shape and self-heal.
+                if (_cpMktHalfMissing(exchange, parsed.coins)) _cpMktHalfAutoRetry(exchange);
                 return Promise.resolve(parsed.coins);
             }
             // V186 SWR: expired IDB row (>1 h) — paint it now, refresh in background.
@@ -89582,6 +89715,8 @@ function _cpPreloadCoins(exchange, opts) {
                         window._cpCachedExchange = exchange;
                     }
                 }
+                    // V327-mkt-half: shape check also on the stale-serve path.
+                if (_cpMktHalfMissing(exchange, parsed.coins)) _cpMktHalfAutoRetry(exchange);
                 _cpScheduleCoinsRevalidate(exchange);
                 _cpServedCoinsTs = parsed.ts;       // V300
                 return Promise.resolve(parsed.coins);
@@ -89605,6 +89740,7 @@ function _cpPreloadCoins(exchange, opts) {
                     }
                 }
                 _cpServedCoinsTs = memo.ts;         // V300
+                if (_cpMktHalfMissing(exchange, memo.coins)) _cpMktHalfAutoRetry(exchange);   // V327-mkt-half
                 return Promise.resolve(memo.coins);
             }
             // V186 SWR: expired memo (boot preload older than 5 min) — same deal.
@@ -89617,6 +89753,7 @@ function _cpPreloadCoins(exchange, opts) {
                     window._cpCachedExchange = exchange;
                 }
             }
+            if (_cpMktHalfMissing(exchange, memo.coins)) _cpMktHalfAutoRetry(exchange);   // V327-mkt-half
             _cpScheduleCoinsRevalidate(exchange);
             _cpServedCoinsTs = memo.ts;             // V300
             return Promise.resolve(memo.coins);
@@ -89669,6 +89806,17 @@ function _cpPreloadCoins(exchange, opts) {
                     }
                 } catch (e) { /* corrupt cache */ }
                 return coins;   // genuinely empty — the caller shows the honest failure
+            }
+            // V327-mkt-half: a degraded universe (one market half failed)
+            //   still serves the picker/swipe, but must NOT poison the memo
+            //   map or IndexedDB — a reload would then reuse the spot-only
+            //   list for up to 1 h and keep the SPOT/PERP switcher disabled
+            //   («после перезагрузки кнопка смены спот перп не работает»). An
+            //   automatic single retry fires in 3 s; if the rate limit
+            //   persists the mkt-switch poll keeps its own backoff retry.
+            if (coins.__ceMktHalfMissing || _cpMktHalfMissing(exchange, coins)) {
+                _cpMktHalfAutoRetry(exchange);
+                return coins;
             }
             // V159: warm the per-exchange map for the boot-preload cache
             _cpCoinsByExchange.set(exchange, { coins, ts: Date.now() });
@@ -101489,6 +101637,7 @@ window.CP_ALL_EXCHANGES = CP_ALL_EXCHANGES;
 window._cpCoinsByExchange = _cpCoinsByExchange;
 window._cpPreloadAllCoins = _cpPreloadAllCoins;
 window._cpPreloadCoins = _cpPreloadCoins;
+window._cpForceRefresh = _cpForceRefresh;   // V327-mkt-half: console/debug + mkt-switch self-heal
 
 CE.registerModule('chart-engine-app', ['ce-engine', 'chart-engine-adapters', 'ce-data-cache'], ['bindCycleButton', 'ToolbarController', 'DataSourceOrchestrator', 'SourceUIController', 'PanelModeManager', 'PresetManager', 'PanelCarouselManager', 'FooterSwipeHandler', 'TOOLBAR_ARIA_LABELS', '_ariaLabelForButton', 'ChartFactory', 'CP_ROW_HEIGHT', 'CP_OVERSCAN', '_cpCachedCoins', '_cpCoinsPromise', '_cpCachedExchange', '_cpLoadedLogos', '_cpPreloadCoins', '_cpForceRefresh', '_cpCoinsByExchange', 'CP_ALL_EXCHANGES', '_cpPreloadAllCoins', '_cpLoadState', '_cpSaveState', 'CoinPicker', 'NumericKeypad'], 'MAIN-THREAD ONLY');
 })(window.CE, window);
