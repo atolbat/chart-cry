@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>V327 SPOT/PERP SWITCHER SELF-HEAL (юзер: «после перезагрузки кнопка смены спот перп не работает. Только когда перейду на другой тикер работать начинает»): ① [P1] корень — деградированная вселенная монет: _fetchBinance фетчит спот + fapi(перп) тикеры, _fetchBybit — спот + linear, каждая половина в немом catch{skip}; 418/CORS/таймаут ОДНОЙ половины на буте даёт список, где НИ У ОДНОЙ монеты нет hasPerp/hasSpot → avail() свитчера читает «нет второго рынка» → кнопка disabled (opacity .35, pointer-events none). Обычный _cpPreloadCoins-kick эарли-рeturnится на свежем single-slot кэше БЕЗ рефетча → кнопка мертва до открытия пикера/смены тикера (которая дергает _cpForceRefresh). ② [P1] детектор деградации: CoinListService._mktHalfMissing(exchange,coins) + зеркальный app-модуль _cpMktHalfMissing() — список считается деградированным, если для binance/bybit (единственные вселенные с обоими половинами) при ≥10 монет перп-или-спот половина насчитывает ≤5 монет; fetch() вешает на результат __ceMktHalfMissing и пишет запись в lastFetchErrors. ③ [P1] самолечение: (a) свитчер update() различает две причины !ok — неизвестная монета → прежний _cpPreloadCoins-kick (30с троттл); деградированный список → _cpForceRefresh с экспоненциальным бэкоффом 45с×2 (cap 10мин), сброс при ok; (b) _cpMktHalfAutoRetry — один авторетрай через 3с на каждый преод/ревалидейт, дедуп 2мин/биржу. ④ [P1] деградированные списки больше НЕ персистятся: guard в _cpPreloadCoins (memo+IndexedDB), _cpScheduleCoinsRevalidate (memo+IDB+slot publish) — прежний яд (спот-онли снапшот на 1ч в IDB) больше не переживает перезагрузку; пикеру/свайпу список всё равно отдаётся. ⑤ [P2] window._cpForceRefresh экспортирован (консоль/дебаг + кросс-модульное самолечение). Регресс: probe_v327 (mock fapi-tickers: 1-й запрос abort → бут деградирован, кнопка disabled → самолечение ≤90с БЕЗ смены тикера → клик реально переключает isPerp, fapi-klines запрос идёт), probe_v327_happy (обе половины OK → кнопка активна сразу), boot-check pageerror: 0. </title>
+    <!-- V328 DYNAMIC TITLE + BIGBUYS $-LABELS/SIZES (юзер: «Тайтл страницы нужен нормальнвй и динамический монетет. Потом индикаторбольших покупок не всегда на баблах показывает сумму покупки. Да и сами баблы в размераходинаковы. Хз, мб так и задумано, но надо настройки тошда»): ① [P1] тайтл вкладки больше не ченджлог — статичный <title>Chart Cry</title>, ченджлоги версий переехали в этот HTML-комментарий; новый ChartFactory._wirePageTitle(container,api,engine,bus) делает тайтл динамическим: «BTC/USDT · Chart Cry» / «BTC/USDT PERP · Chart Cry» (mono BTCUSDT → BTC/USDT, ratio-пары как есть), апдейты по source:param/source:switch/source:connected (60мс) + poll 3с, запись только при изменении; self-test «title contains v49» → «contains Chart Cry». ② [P1] BigBuys радиус масштабируется от САМОГО БОЛЬШОГО КАЧЕСТВЕННОГО бабла (pMax по финальным picks), а не от максимального бара загруженного окна: старый tMax часто был одинокий мега-бар вне видимости ⇒ √(tot/tMax) схлопывался и почти все баблы липли к R_MIN=3.5px («баблы в размерах одинаковые»). ③ [P1] сумма $ теперь на КАЖДОМ бабле: внутри при rr≥9, иначе прямо над баблой (под ним, если место уходит за plotTop) — старое условие showValues && rr≥9 молча прятало суммы на малых баблах. ④ [P2] новые настройки Style: Min radius px (def 4, 2…12), Max radius px (def 14, 4…30 — радиус крупнейшего бабла, остальные √-$ вниз), Scale size by $ (def ON; OFF = все баблы одного среднего размера); «$ inside bubble» → «$ on bubble». Регресс: probe_v328 (unit-рендер кирпича на фейковом ctx: крупнейший видимый бабл = maxR при мега-баре вне окна, radii различаются, $-лейбл у каждого бабла, uniform-режим, дефолты параметров; тайтл: boot → BTC/USDT · Chart Cry, source:param symbol → ETH/USDT, isPerp → PERP), boot-check pageerror: 0. -->
+    <title>Chart Cry</title>
     <style>
         :root {
             --bg: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
@@ -39481,7 +39482,7 @@ class BigBuysBrick extends AuxSeriesBrick {
         type: 'bigbuys',
         label: 'Big Buys',
         shortLabel: 'BigBuys',
-        description: 'Bubbles on bars where taker buy/sell USD volume spikes far above the bar\'s norm (CoinGlass buy vs sell volume). Green = buy-dominated, red = sell-dominated; radius grows with $ volume, the amount is written inside bigger bubbles.',
+        description: 'Bubbles on bars where taker buy/sell USD volume spikes far above the bar\'s norm (CoinGlass buy vs sell volume). Green = buy-dominated, red = sell-dominated; radius scales with $ volume relative to the BIGGEST bubble on the window (V328: Min/Max radius settings), and the $ amount is ALWAYS shown — inside the bubble when it fits, otherwise right above it.',
         category: 'composite',
         tags: ['big buys', 'bubbles', 'whale', 'taker', 'volume', 'coinglass'],
         panelMode: 'overlay',
@@ -39505,8 +39506,16 @@ class BigBuysBrick extends AuxSeriesBrick {
             new BrickParam({ name: 'maxBubbles', label: 'Max bubbles', default: 60, min: 5, max: 200, step: 5, group: 'Style',
                 tooltip: 'When more bars qualify, only the biggest ones are drawn.' }),
             new BrickParam({ name: 'alpha', label: 'Bubble Opacity', default: 0.4, min: 0.05, max: 1, step: 0.05, group: 'Style' }),
-            new BrickParam({ name: 'showValues', label: '$ inside bubble', type: 'bool', default: true, group: 'Style',
-                tooltip: 'Write the bar\'s buy+sell $ amount inside bubbles large enough to fit it.' }),
+            // V328: size is user-tunable («сами баблы в размерах одинаковые…
+            //   надо настройки тогда») — radii scale √-$ relative to the
+            //   biggest QUALIFYING bubble; scaleSize=false = uniform mode.
+            new BrickParam({ name: 'minR', label: 'Min radius px', default: 4, min: 2, max: 12, step: 1, group: 'Style' }),
+            new BrickParam({ name: 'maxR', label: 'Max radius px', default: 14, min: 4, max: 30, step: 1, group: 'Style',
+                tooltip: 'Radius of the biggest bubble on the window; smaller ones scale down by √$' }),
+            new BrickParam({ name: 'scaleSize', label: 'Scale size by $', type: 'bool', default: true, group: 'Style',
+                tooltip: 'Off — every bubble gets the same (middle) size' }),
+            new BrickParam({ name: 'showValues', label: '$ on bubble', type: 'bool', default: true, group: 'Style',
+                tooltip: 'Always write the bar\'s buy+sell $ amount — inside the bubble when it fits, otherwise right above it (V328: used to disappear on small bubbles).' }),
             // V285: the top-right on/off button is opt-OUT from the indicator's
             //   OWN settings (user: «в самих настройках индикатора надо
             //   чекпоинт, иметь ли кнопку включения выключения на графике
@@ -39690,15 +39699,26 @@ class BigBuysBrick extends AuxSeriesBrick {
             picks.sort((a, b) => b.tot - a.tot);
             picks.length = maxBubbles;
         }
-        let tMax = totals[totals.length - 1];
-        if (rolled) { for (const k of picks) if (k.tot > tMax) tMax = k.tot; }
-        const R_MIN = 3.5, R_MAX = Math.max(9, Math.min(18, (plotRight - plotLeft) / 40));
+        // V328: radii scale against the BIGGEST QUALIFYING bubble (pMax over
+        //   the final picks), NOT the biggest bar of the loaded window — the
+        //   old tMax was often a lone mega-bar (or a rolled-up sub-burst far
+        //   outside the view), √(tot/tMax) collapsed and nearly every bubble
+        //   stuck to R_MIN=3.5px → «сами баблы в размерах одинаковые».
+        //   minR/maxR/scaleSize are user settings (Style group).
+        const scaleSize = this.params.scaleSize !== false;
+        const R_MIN = Math.max(2, Math.min(12, Number(this.params.minR) || 4));
+        const R_MAX = Math.max(R_MIN + 2, Math.min(30, Number(this.params.maxR) || 14));
+        let pMax = 0;
+        for (const k of picks) if (k.tot > pMax) pMax = k.tot;
+        if (!(pMax > 0)) return;
 
         ctx.save();
         ctx.setLineDash([]);
         const fmtC = (typeof _formatCompact === 'function') ? _formatCompact : (v) => String(Math.round(v));
         for (const k of picks) {
-            const rr = R_MIN + (R_MAX - R_MIN) * Math.min(1, Math.sqrt(Math.max(0, k.tot) / tMax));
+            const rr = scaleSize
+                ? R_MIN + (R_MAX - R_MIN) * Math.min(1, Math.sqrt(Math.max(0, k.tot) / pMax))
+                : (R_MIN + R_MAX) / 2;
             const col = k.isBuy ? [63, 185, 80] : [248, 81, 73];
             ctx.beginPath();
             ctx.arc(k.px, k.py, rr, 0, 2 * Math.PI);
@@ -39709,21 +39729,26 @@ class BigBuysBrick extends AuxSeriesBrick {
             ctx.strokeStyle = `rgba(${col[0]},${col[1]},${col[2]},${Math.min(1, alpha + 0.3)})`;
             ctx.lineWidth = 1;
             ctx.stroke();
-            if (showValues && rr >= 9) {
+            if (showValues) {
+                // V328: the amount is ALWAYS drawn («не всегда на баблах
+                //   показывает сумму покупки») — inside when it fits (rr ≥ 9),
+                //   otherwise right above the bubble (below it when that spot
+                //   would leave the plot). Same 4-pass outline — the engine's
+                //   CtxStateCache wrapper has NO strokeText (same as the
+                //   missing strokeRect, see FIX V51-volnorm-strokerect).
+                const label = '$' + fmtC(k.tot);
+                const ly = (rr >= 9) ? k.py
+                    : (k.py - rr - 6 < plotTop + 4 ? k.py + rr + 8 : k.py - rr - 6);
                 ctx.font = 'bold 8px -apple-system, sans-serif';
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                const label = '$' + fmtC(k.tot);
-                // FIX V283: the engine's CtxStateCache wrapper has NO strokeText
-                // (same as the missing strokeRect, see FIX V51-volnorm-strokerect)
-                // — outline via 4 offset fillText passes instead.
                 ctx.fillStyle = 'rgba(0,0,0,0.55)';
-                ctx.fillText(label, k.px - 1, k.py);
-                ctx.fillText(label, k.px + 1, k.py);
-                ctx.fillText(label, k.px, k.py - 1);
-                ctx.fillText(label, k.px, k.py + 1);
+                ctx.fillText(label, k.px - 1, ly);
+                ctx.fillText(label, k.px + 1, ly);
+                ctx.fillText(label, k.px, ly - 1);
+                ctx.fillText(label, k.px, ly + 1);
                 ctx.fillStyle = 'rgba(255,255,255,0.92)';
-                ctx.fillText(label, k.px, k.py);
+                ctx.fillText(label, k.px, ly);
             }
         }
         ctx.restore();
@@ -82203,6 +82228,9 @@ class ChartFactory {
         //   the SPOT/PERP market switcher in its slot (stats live in the
         //   coin-info popup's second tab).
         ChartFactory._wireMarketSwitch(container, api, engine, d.bus);
+        // V328: normal DYNAMIC tab title («Тайтл страницы нужен нормальный
+        //   и динамический поменяй») — ticker + market + app name.
+        ChartFactory._wirePageTitle(container, api, engine, d.bus);
 
         // ── 10. Lock integration via EventBus (worker-compatible) ──
         const _lockUnsubs = ChartFactory._wireLockIntegration(container, guard);
@@ -87456,6 +87484,58 @@ class ChartFactory {
         } catch (e) { /* best-effort */ }
         // Light poll: picks up the async coin-cache preload, portfolio edits
         // (positions dot) and any adapter state missed by the events.
+        setInterval(update, 3000);
+        update();
+    }
+
+    // V328: normal DYNAMIC page title (user: «Тайтл страницы нужен
+    //   нормальный и динамический поменяй»). The build changelog moved to
+    //   the HTML comment above <title>; the TAB now always shows the live
+    //   state: «BTC/USDT · Chart Cry» / «BTC/USDT PERP · Chart Cry» (ratio
+    //   pairs like BTC/ETH pass through as-is). Same event set the market
+    //   switcher listens to + a light 3 s poll for async adapter swaps;
+    //   document.title is written only on change.
+    static _wirePageTitle(container, api, engine, bus) {
+        const APP = 'Chart Cry';
+        const curSym = () => {
+            try {
+                const si = api && api.getSourceInfo ? api.getSourceInfo() : null;
+                let sym = String((si && si.symbol) || '').toUpperCase();
+                if (!sym) return '';
+                if (sym.indexOf('/') >= 0) return sym;   // 'BTC/USDT', ratios
+                const m = sym.match(/^([A-Z0-9]+)(USDT|USDC|BUSD|USD)$/);
+                return m ? (m[1] + '/' + m[2]) : sym;    // 'BTCUSDT' → 'BTC/USDT'
+            } catch (e) { return ''; }
+        };
+        const curPerp = () => {
+            try {
+                const orch = (api && api._ctx) ? api._ctx.dataAdapterManager : null;
+                const o = (typeof orch === 'function') ? orch() : orch;
+                const ad = o && o.dataAdapter;
+                if (ad && typeof ad.isPerp === 'boolean') return !!ad.isPerp;
+                if (ad) {
+                    const cls = (ad.constructor && ad.constructor.name) || '';
+                    if (ad.category === 'linear' || cls.indexOf('Hyperliquid') >= 0 || cls.indexOf('Aster') >= 0) return true;
+                }
+            } catch (e) { /* best-effort */ }
+            return false;
+        };
+        let last = null;
+        const update = () => {
+            let t;
+            try {
+                const sym = curSym();
+                t = sym ? (sym + (curPerp() ? ' PERP' : '') + ' · ' + APP) : APP;
+            } catch (e) { t = APP; }
+            if (t !== last) { last = t; try { document.title = t; } catch (e) {} }
+        };
+        try {
+            if (bus && typeof bus.on === 'function') {
+                bus.on('source:param', () => setTimeout(update, 60));
+                bus.on('source:switch', () => setTimeout(update, 60));
+                bus.on('source:connected', () => setTimeout(update, 60));
+            }
+        } catch (e) { /* best-effort */ }
         setInterval(update, 3000);
         update();
     }
@@ -101684,7 +101764,7 @@ window.CE.runTests = function () {
     // ── 2. Version Consistency ──
     assert('CHART_ENGINE_VERSION is v49n-seriesjs-foundation', CHART_ENGINE_VERSION === 'v49n-seriesjs-foundation',
         'got ' + CHART_ENGINE_VERSION);
-    assert('document.title contains v49', document.title.indexOf('v49') >= 0,
+    assert('document.title contains Chart Cry', document.title.indexOf('Chart Cry') >= 0,
         'got ' + document.title);
 
     // ── 3. Duplicate Detection ──
