@@ -6,6 +6,7 @@
     <!-- V334 VOLNORM AGG CVD + FLOW WINDOW (юзер: «Некорректно. На cvd spot vol norm какие то дикие прыжки, и судя по свд они ничем не обоснованы. И еще, там должно быть аггрегэйтед свд»): два фикса деноминатора VolNorm Candles в cvd-модах. ① AGGREGATED источник («там должно быть аггрегэйтед свд»): _vnKickCvd больше не берёт биржу с графика (auto → Binance) — фетчится CoinGlass АГРЕГИРОВАННЫЙ символ (список площадок как у CVD-кирпича: Binance+Bybit+OKX+Bitget+Gate дефолт, пресеты top3/top5/top8/binby), символы вида Ex1,…,ExN#BASE#aggregated_spot_buy_sell_coin / aggregated_buy_sell_coin; ключ сессионного кэша теперь РАСКЛАДКА АГРЕГИРОВАННОГО cvd-кирпича (cvd|market|agg|exchange|aggList|mode|reset вместо прежних undefined-полей), причём если на графике есть Aggregated CVD spot/perp панель, VolNorm переиспользует ЕЁ пресет и ключ (тёплый кэш отдаёт данные мгновенно, и знаменатель совпадает с тем CVD, с которым юзер сравнивает — «судя по свд»); при отсутствии — дефолтный top5-ключ. ② ROLLING FLOW WINDOW («дикие прыжки»): замер на живых данных BTC spot 5m — пер-баровый |ΔCVD| даёт max/median тела ≈780× (бар с buy≈sell имеет около-нулевой знаменатель → свеча-монстр; агрегированный поток сглаживает до 46×, но всё равно скачет), поэтому у кирпича новый параметр flowWin «Flow Window (bars)» (1..500, def 20): знаменатель бара = СКОЛЬЗЯЩЕЕ СРЕДНЕЕ |ΔCVD| последних N баров (сначала abs, потом среднее — масштаб ВЕЛИЧИНЫ потока, а не знаковой нетто-дельты, иначе окно с взаимным гашением обнулит знаменатель); агрегированный поток с N=20 даёт max/median ≈6× — ГЛАЖЕ классического volume (10×); flowWin=1 = прежний пер-баровый волк V333 (нулевой бар скипается, разрыв цепочки); при N>1 нулевые/гэп-бары внутри покрытия плавно разбавляют среднее — волк продолжается вместо разрывов; фетч-окно добирает flowWin баров предыстории (padMs = max(8ч, (flowWin+8)×интервал; flowWin=1 → прежние 8ч), _vnFlowPerBar бакетит предысторию тоже и отдаёт последний count после роллинга — каждый видимый бар получает ПОЛНОЕ окно; частичное окно у левого края покрытия (короткая история) рендерится тем, что есть. ③ Спред грубых строк: каденс ряда (мин положительный гэп отсортированных точек) детектит символы/ТФ, где CG отвечает грубее запрошенного интервала — дельта целого каденса, сваленная в ОДИН бар, оставляла соседей нулевыми (скип) и делала свой бар монстром; теперь каждая строка РАВНО распределяется по барам своего каденса (суммы по строкам сохранены). Кэш: flowWin входит в cacheKey _computeRaw (смена окна пересчитывает). Volume-путь бит-в-бит идентичен pre-V334; лейблы панели «VolNorm CVD spot/perp(…)» без изменений; опции normSrc перееименованы (CVD spot/perp (agg, coins)), тултипы/description/META-теги (aggregated, flow window) обновлены. Регресс: probe_v334 33/33 (дискавери реальных agg-ключей fut/spot + раскладка cvd|fut|agg|Binance|top5|cumulative|none; юнит: volume == классика бит-в-бит, rolling-референс flowWin 20/3, flowWin=1 == V333 пер-баровый со скипом нулевого бара, λ=0.5 на роллинг-шкале, λ=0 сырая цена, dollar игнор, fingerprint + re-key по flowWin, спот-ключ, reuse top3-пресета agg-кирпича, _vnFlowPerBar пер-баровый/спред 3×-каденса/пад-полные окна, _vnRollMean NaN/частичное окно, фетч-пад flowWin + aggregated-символ, pending → NaN + «…» → arrive; интеграция: cvd_perp и cvd_spot synClose == независимый rolling-референс по закрытым барам, лейблы, возврат в volume == классика, модалка: Normalize by + Flow Window + volUnit + λ), boot-check code-level 0, probe_v329/v330/v331/v332 ALL PASS, test_v327 exit 0, self-test 981/989: 8 фейлов == прематч (diff с pristine: у pristine ещё +1 исторический тайтл-фейл) -->
     <!-- V335 BTC REALIZED REFRESH (юзер: «Btc realized price перестал корректно работать»): причина — смерть единственного CORS-прокси allorigins (HTTP 522 на /get, таймаут на /raw; corsproxy.io переведён на платные ключи, codetabs/cors.lol — таймаут/429): фетч свежих данных стал падать ВСЕГДА, и индикатор молча откатывался на вшитый эмбед, замороженный на 2026-07-28 — за 3.5 месяца до «сегодня», линия просто обрывалась в июле. ① ЭМБЕД ПЕРЕСОБРАН из живого API (замер 2026-11-09): пофилдовое слияние старого эмбеда (2022-07-29..2026-07-28, 1461 день) с актуальными realized-price/sth-realized-price/lth-realized-price (2022-11-09..2026-11-02) — свежие значения побеждают, поля STH/LTH отсутствующих в свежей выдаче дней сохраняются из старого эмбеда; итого 1558 дней 2022-07-29..2026-11-02, realized покрыт 100%. ② ЦЕПОЧКА ПРОКСИ: fetchJson теперь 5 попыток — прямой запрос (вдруг CORS появится) → allorigins /get → allorigins /raw → codetabs /v1/proxy → cors.lol, каждая с жёстким AbortSignal.timeout(12s) (раньше зависший прокси подвешивал весь фетч), побеждает первый валидный непустой array; распаковка {contents} у allorigins /get сохранена. ③ Правило «заменять _btcData только если ВСЕ 3 эндпоинта ок» и кэш IndexedDB (1ч TTL) не тронуты; throttle 30 мин на инстанс прежний. Известное ограничение источника (не баг): бесплатный тир bitcoin-data.com теперь лагает ~7 дней (заголовок X-Data-Available-Until, на замер — 2026-11-02) и лимитирован 10 req/hour — линия заканчивается на 7 дней позади «сегодня». Регресс: probe_v335 (embed-путь на свежих барах ноя-2026 бит-в-бит с эмбедом, форвард-филл за последний день, не-BTC → NaN, getAutoFitRange, live-фетч через мок allorigins /get со строковыми полями STH/LTH + добор нового дня, fallback на 2-й прокси, все прокси умерли → эмбед цел, throttle), self-test == прематч, boot-check 0 -->
     <!-- V336 REALIZED COHORTS + BID/ASK IMBALANCE + SHELVES (юзер: «Новая версия с realized price. Но там более расширенные когорты. Сам распихай по sTH lth и тд. Плюс тут есть полки bid ask, имбаланс. Сделай индикатор имбаланса, а также в статистике монеты пиши текущий имбаланс. Полки бид аск только когда хитимапа ликвидности есть. И если они совсем рядом на экране (несколько пикселей) то показывай ближайшую к цене. Для полок тоже настройки надо, небольшая линия направо от текущего времени типа 5px и очень мелко размер…» — источник: coinglass_lib (5).js + живой OpenAPI bitcoin-data.com): ① РАСШИРЕННЫЕ КОГОРТЫ REALIZED PRICE: в OpenAPI спеке (/api/v3/api-docs, 789 путей) найдены новые именованные эндпоинты realized-price-sth / realized-price-lth / realized-price-sth-30d / realized-price-sth-90d / median-realized-price — они НЕ под рестрикцией X-Data-Available-Until (свежие до вчерашнего дня, замер 2026-11-09: данные по 2026-11-08), в отличие от классических имён (realized-price ограничен 2026-11-02). Кирпич BTC Realized Price: 3 новых линии-когорты Median RP (#bc8cff) / STH <90d (#f06292) / STH <30d (#4dd0e1) с чекбоксами (группа Cohorts, def ON); фетч переписан на конфиг из 6 эндпоинтов (правило «заменять _btcData только если ВСЕ 6 ок» сохранено), idb-кэш инвалидируется по отсутствию median (пре-V336 кэши дотухают); эмбед пересобран пофилдово: 1564 дня 2022-07-29..2026-11-08 — sth/lth продлены свежими алиасами (хвост 11-02 → 11-08!), realized остался на классическом (до 11-02, рестрикция), median/sth30/sth90 добавлены. ② ИНДИКАТОР BID/ASK IMBALANCE (кирпич bidask_imbalance, панель separate, шкала −100..+100, нулевой level): источник — данные Liquidity Heatmap (__cgLbV267._test.data(): tArr/pArr/vArr/bidArr, 300 баров истории стакана); на каждый снапшот — best bid/best ask → mid, суммы bid/ask USD в пределах ±Band% от mid → (bid−ask)/(bid+ask)×100; бар = СРЕДНЕЕ снапшотов внутри [barOpen, barOpen+TF); кэш per-snapshot по (key,rev,band) — живой тик не пересканирует 10^5 ячеек; параметры Band ±% (0.1..10, def 1) и Smoothing EMA (0..100, def 0); panelLabel «Bid/Ask Imb ±1% · venue» когда хитмапа включена; требует включённый Liquidity Heatmap (он — источник данных), иначе панель пустая. ③ ТЕКУЩИЙ ИМБАЛАНС В СТАТИСТИКЕ: _computeStats зовёт новый публичный __cgLbV267.latestBook(band) (±1% от mid последнего снапшота) → строка «Bid/Ask imbalance (book ±1%)» в Price Overview (цветная, +зелёный/−красный, hint с bid/ask USD и mid) + строка в _statsToText; без данных — «—» и подсказка включить хитмапу. ④ ПОЛКИ BID/ASK: __cgLbV267 получил buildShelfList (последний снапшот колонки, бакетизация tick×Shelf merge как в valueAt, суммы USD по сторонам, mid, кэш по key+rev+merge) и drawShelves (экранная работа: сортировка по |price−mid|, кластеризация — если полки ближе DedupPx на экране, остаётся БЛИЖАЙШАЯ К ЦЕНЕ; кап MAX PER SIDE по USD-ценности; клип в плоскость графика; линия от x=текущее время+Offset вправо длиной Len px, толщина Width, мелкий лэйбл $1.2M шрифтом Font px цветом Label color) — рисуется в ОБЕИХ ветках renderOverlay (bake и fallback) поверх хитмапы, ТОЛЬКО когда хитмапа включена (state.enabled — она же источник). Настройки в модалке Liquidity Heatmap → секция «Bid/Ask shelves»: вкл/выкл полок, вкл/выкл лэйблов, длина 1..60px (def 5), ширина 1..6 (def 1), отступ 0..60 (def 2), шрифт 5..14 (def 7), dedup 1..40px (def 5), макс/сторону 1..50 (def 12), Min wall USD, цвета bid/ask/текста — всё в LS ce_cg_liquheat_v1 + __cgHeatUiSync лайв-синк лэйблов. Регресс: probe_v336 (эмбед-когорты на ноябрьских барах, 6 эндпоинт-фетч через мок прокси /get, имбаланс-кирпич на синтетическом стакане с fake-модулем: band-суммы, среднее по барам, EMA, фикс-шкала ±100, panelLabel, latestBook, полки: бакетизация, дедуп-кластеры «ближайшая к цене», кап по USD, отрисовка без исключений), self-test == прематч, probe_v334/v335 ALL PASS, boot-check pageerror 0 -->
+    <!-- V338 BANDS EXPORT/IMPORT + KEYPAD LIVE MIRROR + LINE COLOR + PANEL MOVE + SWIPE/EYE DISTINCTION + ALPHA SORT (юзер: «Косяк с экспортом или импортом индикатором из файла. Не учитываются бэнды у линий. / когда у бэндов пытаешься поменять текстбоксы и пишешь во всплывающей клавиатуре новое значение, то значение в текстбоксе не меняется / когда только создаешь новую линию и меняешь цвет с дефолтного на другой, то в настройках показывается новый цвет, а когда выставляешь линию то цвет сбрасывается на дефолтный / проверяй переезд панели нормально / сделай различие, где реально индикатор скрыт через сокрытие/глазик, а где свайп группа и просто сейчас не тот слайд активен… названия панели пиши в скобках, что это свайп мелким шрифтом / видимые индикаторы по алфавиту, невидимые ниже и тоже по алфавиту»): ① БЭНДЫ В ПРЕСЕТАХ: IndicatorBrick-конструктор теперь АДАПТИРУЕТ из cfg bandOverlay + bandOverlayStyle + divergenceConfig + colorSchemes (раньше их писал только рантайм-модал, поэтому _applySnapshot → addIndicator({...cfg}) молча ронял оба поля — экспорт в файл и импорт обратно терял бэнды у линий; воспроизведено и починено, StatePersistence-путь дублировал это пост-хуком, теперь все пути восстановления держат бэнды). ② КЛАВИАТУРА: NumericKeypad ЗЕРКАЛИТ буфер в целевой текстбокс на каждом нажатии (цифры/⌫/±/степперы) — значение меняется прямо во время набора, коммит (OK/Enter/тап вне) шлёт финальные input+change и при совпадении текста тоже (флаг mirrored), ✕/Esc = cancel — возвращает исходное значение; если модал ПЕРЕРИСОВАЛСЯ пока пад открыт — MutationObserver и update()/commit() пере-находят поле по его data-* атрибутам (reattachInput) вместо молчаливой потери черновика. ③ ЦВЕТ НОВОЙ ЛИНИИ: applyLive модалки объекта больше не пишет в захваченный при открытии экземпляр — КАЖДАЯ правка переразрешает ЖИВОЙ объект из overlay.objects по _key, иначе по идентичности (constructor+createdAt+name) — замена объекта под модалкой (boot bucket-load/reconcile/undo) больше не красит мёртвый инстанс («настройки показывают новый цвет, линия — дефолт»); плюс СРАЗУ синхронизируется per-ticker bucket (saveToStorage) — дебаунс-глобал не мог воскресить устаревший бакет. ④ ПЕРЕЕЗД ПАНЕЛИ: главное — ветка isExisting сэйва модалки настроек ВООБЩЕ НЕ ЧИТАЛА [data-panelmode] (значение шло только в create-new ветке — перенос существующего индикатора не работал никуда и никогда); добавлен ChartAPI.moveIndicator(id, pmValue): 'existing:<panelId>' → гость (panelMode='inherit'), 'overlay' → main, 'separate' → своя панель через извлечённый из addIndicator _createSeparatePanel (идемпотентно); при уходе — unregister из свайп-группы старой панели, ОСВОБОЖДЁННАЯ панель удаляется целиком через извлечённый из removeIndicator _removePanelBookkeeping (config.panels/layout ratios+order+configs+computed rect/viewport.panels) когда индикаторов не осталось; чекбокс свайп-группы после переноса синхронизируется с НОВОЙ панелью; сериализация (StatePersistence.serialize + PresetManager._captureSnapshot) теперь хранит panelMode, и api.moveIndicator пропатчен на немедленный save() — перенос ВЫЖИВАЕТ перезагрузку (проверено: перенос zscore → MFI panel через UI, reload — панель та же, старая панель исчезла из config/layout/viewport, свайп-группа MFI не тронута). ⑤ СВАЙП vs ГЛАЗИК в менеджере индикаторов: у панели со свайп-группой секция получает чип «(swipe N)» мелким шрифтом, участники группы — класс slide-ind (фиолетовая полоска + бейдж «slide N/M», активный — зелёный «slide N/M · active», БЕЗ зачёркивания и faded-стиля hidden-ind, которое путало со «скрыт глазиком»); тап по карточке НЕАКТИВНОГО слайда (и его глазик) ОТКРЫВАЕТ этот слайд на графике (handleEyeToggle-активация), тултипы глазика честные («Open this slide (activate)»); реально скрытые глазиком остаются hidden-ind как раньше; Panel-дропдаун в настройках тоже тегает свайп-панели «(swipe N)». ⑥ АЛФАВИТ: не-свайп панели (включая overlays главного чарта) сортируются — видимые по алфавиту (META.label, localeCompare base+numeric), скрытые ниже и тоже по алфавиту; свайп-панели НЕ сортируются (порядок = порядок слайдов карусели). Регресс: browser-e2e (bands survive snapshot→remove→reimport бит-в-бит; keypad live-mirror «33» во время набора/commit/cancel-restore/reattach при подмене DOM → 500 в новом поле; перенос через UI + reload + export/import; клик по слайду RSI активирует (activeIdx 1); сортировка ATR→Bands→CCI→EMA + AO внизу; чипы «(swipe 2)»/«slide 2/2»), CE.runTests 981/989 == прематч (все 8 фейлов совпадают с задокументированными), pageerror 0 -->
     <title>Chart Cry</title>
     <style>
         :root {
@@ -1144,6 +1145,19 @@
         .ind-card.hidden-ind .ind-card-name { text-decoration: line-through; color: #8b949e; }
         .ind-vis-btn.hidden { color: #8b949e; }
         .ind-vis-btn:hover { background: rgba(88,166,255,0.18); color: #58a6ff; }
+
+        /* V338-swipe-visibility: swipe-carousel slides are NOT eye-hidden.
+         *   A non-active slide keeps near-full opacity, gets a violet left
+         *   stripe + a small «slide N/M» chip instead of the strike-through;
+         *   the active slide shows a green chip. Tapping the card (or its
+         *   eye) activates that slide on the chart. */
+        .ind-gl-swipe { flex-shrink: 0; font-size: 8px; font-weight: 600; color: #bc8cff; background: rgba(188,140,255,0.12); border: 1px solid rgba(188,140,255,0.25); border-radius: 3px; padding: 0 4px; line-height: 12px; letter-spacing: 0.3px; }
+        .ind-slide-badge { font-size: 8px; font-weight: 600; color: #bc8cff; background: rgba(188,140,255,0.12); border-radius: 3px; padding: 1px 4px; margin-left: 5px; vertical-align: 1px; letter-spacing: 0.3px; white-space: nowrap; }
+        .ind-card.slide-ind { opacity: 0.8; box-shadow: inset 2px 0 0 rgba(188,140,255,0.45); cursor: pointer; }
+        .ind-card.slide-ind .ind-card-name { color: #d2a8ff; }
+        .ind-card.slide-ind.slide-active { opacity: 1; box-shadow: inset 2px 0 0 rgba(63,185,80,0.55); }
+        .ind-card.slide-ind.slide-active .ind-slide-badge { color: #3fb950; background: rgba(63,185,80,0.12); }
+        .ind-card.slide-ind.slide-active { cursor: default; }
 
         /* V128: eternal Main Candles system entry — own section, locked,
          *   non-removable. Distinct dashed accent border + "system" badge +
@@ -22422,6 +22436,31 @@ class IndicatorBrick extends IndicatorBase {
         // fields, so an arbitrary style object must be adopted explicitly.
         if (cfg.cvdStyle && typeof cfg.cvdStyle === 'object') {
             this.cvdStyle = { ...cfg.cvdStyle };
+        }
+        // V338-preset-bands: adopt the Band overlay config + styles straight
+        // from cfg. Previously they were ONLY written by the settings modal
+        // at runtime (and re-applied by StatePersistence), so a preset
+        // exported to a file and imported back lost the bands entirely —
+        // _applySnapshot → addIndicator({...cfg}) dropped both fields, the
+        // user's «Косяк с экспортом или импортом индикатором из файла.
+        // Не учитываются бэнды у линий». Same story for divergenceConfig
+        // and colorSchemes — adopted here so EVERY restore path (preset
+        // file, state restore, carousel re-create) keeps them.
+        if (cfg.bandOverlay && typeof cfg.bandOverlay === 'object') {
+            this.bandOverlay = { ...cfg.bandOverlay };
+        }
+        if (cfg.bandOverlayStyle && typeof cfg.bandOverlayStyle === 'object') {
+            this.bandOverlayStyle = { ...cfg.bandOverlayStyle };
+        }
+        if (cfg.divergenceConfig && typeof cfg.divergenceConfig === 'object') {
+            this.divergenceConfig = { ...cfg.divergenceConfig };
+        }
+        if (cfg.colorSchemes) {
+            // Two historical shapes: object keyed by output name (preset
+            // _captureSnapshot / settings modal) and array (legacy saves).
+            this.colorSchemes = Array.isArray(cfg.colorSchemes)
+                ? cfg.colorSchemes.map(s => ({ ...s }))
+                : { ...cfg.colorSchemes };
         }
         // V37: reference levels + bands visibility state.
         // For each optional level/band, the cfg key is `<name>_show`
@@ -52636,73 +52675,7 @@ class IndicatorAPI {
             const newPanelId = panelExists ? existingPanelId : (indicator.id + '_panel');
             indicator.panelId = newPanelId;
             if (!panelExists) {
-            // Check if panel already exists
-            if (!config.panels.find(p => p.id === newPanelId)) {
-                config.panels.push({
-                    id: newPanelId,
-                    initialRatio: 0.25,
-                    marginTop: 0,
-                    marginBottom: 0,
-                });
-                // Register in layout
-                const layout = this._ctx.layout;
-                if (layout && !layout.panelRatios[newPanelId]) {
-                    // Panel doesn't have a saved ratio — create with default
-                    layout.panelRatios[newPanelId] = 0.25;
-                    layout._panelOrder.push(newPanelId);
-                    layout.panelConfigs[newPanelId] = {
-                        marginTop: 0, marginBottom: 0,
-                        alignZeroToBottom: false, lockZoomPan: false,
-                        yAxes: null,
-                    };
-                    // Adjust main panel ratio to make room
-                    if (layout.panelRatios['main']) {
-                        layout.panelRatios['main'] = Math.max(0.4, layout.panelRatios['main'] - 0.25);
-                    }
-                    layout.recalculate(layout.width, layout.height);
-                } else if (layout) {
-                    // V49n-fix: panel ratio was restored from saved layout (via
-                    //   loadFromStorage). We still need to ensure the panel
-                    //   config entry exists and recalculate so positions are
-                    //   correct with the new config.panels entry.
-                    if (!layout.panelConfigs[newPanelId]) {
-                        layout.panelConfigs[newPanelId] = {
-                            marginTop: 0, marginBottom: 0,
-                            alignZeroToBottom: false, lockZoomPan: false,
-                            yAxes: null,
-                        };
-                    }
-                    // Ensure panel is in _panelOrder (it should be from
-                    // loadFromStorage, but double-check)
-                    if (!layout._panelOrder.includes(newPanelId)) {
-                        layout._panelOrder.push(newPanelId);
-                    }
-                    layout.recalculate(layout.width, layout.height);
-                }
-                // Initialize viewport for new panel
-                const vp = this._ctx.viewport;
-                if (vp && !vp.panels[newPanelId]) {
-                    // V37: start with trivial [0, 1] range, NOT [0, 100].
-                    // Using [0, 100] made setYTarget's "first-set" fast path
-                    // skip (because 0===0 && 100!==1), so the target was queued
-                    // but applyYSmoothing sometimes lost the race with the
-                    // next _autoFitY pass — leaving the panel stuck at the
-                    // initial 0-100 instead of the actual RSI range.
-                    // [0, 1] is the sentinel range that setYTarget recognises
-                    // as "needs immediate setYRange" — guaranteeing the first
-                    // computed autofit range is applied.
-                    vp.panels[newPanelId] = { yMin: 0, yMax: 1 };
-                    vp.setPanelAutoFitY(newPanelId, true);
-                    // V37: invalidate the indicator computation cache so the
-                    // next autofit pass re-runs against the latest data
-                    // (otherwise the cached result might be empty if the
-                    // indicator was added before any data was loaded).
-                    const im2 = this._ctx.indicatorManager;
-                    if (im2 && typeof im2.invalidateCache === 'function') {
-                        im2.invalidateCache();
-                    }
-                }
-            }
+                this._createSeparatePanel(newPanelId);   // V338: extracted body
             } // end if (!panelExists)
         }
         this._ctx.markAllDirtyAndRender();
@@ -52714,6 +52687,181 @@ class IndicatorAPI {
             this._syncPanelVisibilityForIndicator(indicator.panelId);
         }
         return indicator;
+    }
+
+    /**
+     * V338-panel-move: create the full bookkeeping for a NEW separate panel
+     * (config.panels + layout ratios/order/configs + viewport init + main
+     * ratio adjustment). Extracted from addIndicator so the settings-modal
+     * "move existing indicator to its own panel" path can reuse the exact
+     * same semantics. Idempotent — a panel that already exists is skipped.
+     */
+    _createSeparatePanel(newPanelId) {
+        const config = this._ctx.config;
+        if (!config.panels.find(p => p.id === newPanelId)) {
+            config.panels.push({
+                id: newPanelId,
+                initialRatio: 0.25,
+                marginTop: 0,
+                marginBottom: 0,
+            });
+            // Register in layout
+            const layout = this._ctx.layout;
+            if (layout && !layout.panelRatios[newPanelId]) {
+                // Panel doesn't have a saved ratio — create with default
+                layout.panelRatios[newPanelId] = 0.25;
+                layout._panelOrder.push(newPanelId);
+                layout.panelConfigs[newPanelId] = {
+                    marginTop: 0, marginBottom: 0,
+                    alignZeroToBottom: false, lockZoomPan: false,
+                    yAxes: null,
+                };
+                // Adjust main panel ratio to make room
+                if (layout.panelRatios['main']) {
+                    layout.panelRatios['main'] = Math.max(0.4, layout.panelRatios['main'] - 0.25);
+                }
+                layout.recalculate(layout.width, layout.height);
+            } else if (layout) {
+                // V49n-fix: panel ratio was restored from saved layout (via
+                //   loadFromStorage). We still need to ensure the panel
+                //   config entry exists and recalculate so positions are
+                //   correct with the new config.panels entry.
+                if (!layout.panelConfigs[newPanelId]) {
+                    layout.panelConfigs[newPanelId] = {
+                        marginTop: 0, marginBottom: 0,
+                        alignZeroToBottom: false, lockZoomPan: false,
+                        yAxes: null,
+                    };
+                }
+                // Ensure panel is in _panelOrder (it should be from
+                // loadFromStorage, but double-check)
+                if (!layout._panelOrder.includes(newPanelId)) {
+                    layout._panelOrder.push(newPanelId);
+                }
+                layout.recalculate(layout.width, layout.height);
+            }
+            // Initialize viewport for new panel
+            const vp = this._ctx.viewport;
+            if (vp && !vp.panels) vp.panels = {};
+            if (vp && !vp.panels[newPanelId]) {
+                // V37: start with trivial [0, 1] range, NOT [0, 100].
+                // [0, 1] is the sentinel range that setYTarget recognises
+                // as "needs immediate setYRange" — guaranteeing the first
+                // computed autofit range is applied.
+                vp.panels[newPanelId] = { yMin: 0, yMax: 1 };
+                vp.setPanelAutoFitY(newPanelId, true);
+                const im2 = this._ctx.indicatorManager;
+                if (im2 && typeof im2.invalidateCache === 'function') {
+                    im2.invalidateCache();
+                }
+            }
+        }
+    }
+
+    /**
+     * V338-panel-move: drop a panel's ENTIRE bookkeeping (config.panels,
+     * layout order/ratios/configs/computed rect, viewport range). Extracted
+     * from removeIndicator so the settings-modal move path can retire the
+     * vacated source panel with identical semantics. No-op for main/vol.
+     */
+    _removePanelBookkeeping(panelId) {
+        if (!panelId || panelId === 'main' || panelId === 'vol') return;
+        const config = this._ctx.config;
+        const layout = this._ctx.layout;
+        const vp     = this._ctx.viewport;
+        // 1. config.panels
+        if (config?.panels) {
+            const idx = config.panels.findIndex(p => p.id === panelId);
+            if (idx >= 0) config.panels.splice(idx, 1);
+        }
+        // 2. layout._panelOrder + panelRatios + panelConfigs
+        if (layout) {
+            if (Array.isArray(layout._panelOrder)) {
+                const idx = layout._panelOrder.indexOf(panelId);
+                if (idx >= 0) layout._panelOrder.splice(idx, 1);
+            }
+            if (layout.panelRatios) delete layout.panelRatios[panelId];
+            if (layout.panelConfigs) delete layout.panelConfigs[panelId];
+            // V218-fix: also drop the computed RECT — layout.panels kept
+            // the stale geometry forever (recalculate only refreshes ids
+            // still in _panelOrder), so ghost rects overlapped live
+            // panels and hijacked getActivePanel hit-testing.
+            if (layout.panels) delete layout.panels[panelId];
+            if (typeof layout.recalculate === 'function' && layout.width && layout.height) {
+                layout.recalculate(layout.width, layout.height);
+            }
+        }
+        // 3. viewport.panels
+        if (vp?.panels) delete vp.panels[panelId];
+    }
+
+    /**
+     * V338-panel-move: relocate an EXISTING indicator to another panel —
+     * the piece the settings modal's Panel dropdown was missing (it only
+     * ever ran in the create-new branch, so moving a live indicator did
+     * NOTHING). Handles:
+     *   • unregistering from the old panel's swipe group;
+     *   • retiring the vacated separate panel when no indicators remain;
+     *   • panelMode semantics ('overlay' on main, 'inherit' as a guest);
+     *   • 'separate' targets — creates the indicator's own panel first.
+     * Returns the target panel id (or null when nothing changed).
+     */
+    moveIndicator(id, pmValue) {
+        const im = this._ctx.indicatorManager;
+        if (!im) return null;
+        const ind = im.get(id);
+        if (!ind) return null;
+
+        // Resolve the target panel id from the dropdown value.
+        let targetPanelId = null;
+        if (typeof pmValue === 'string' && pmValue.startsWith('existing:')) {
+            targetPanelId = pmValue.substring('existing:'.length);
+        } else if (pmValue === 'overlay' || pmValue === 'main') {
+            targetPanelId = 'main';
+        } else if (pmValue === 'separate') {
+            // Own panel — the addIndicator naming scheme (<indId>_panel).
+            targetPanelId = ind.id + '_panel';
+            this._createSeparatePanel(targetPanelId);
+        } else {
+            return null;
+        }
+
+        const oldPanelId = ind.panelId || 'main';
+        if (targetPanelId === oldPanelId) return null;
+
+        // Leave the old panel's swipe group (if a member).
+        const carousel = this._ctx.panelCarouselManager;
+        if (carousel && typeof carousel.unregister === 'function') {
+            try { carousel.unregister(oldPanelId, id); } catch (_) {}
+        }
+
+        ind.panelId = targetPanelId;
+        ind.panelMode = (targetPanelId === 'main') ? 'overlay' : 'inherit';
+
+        // Retire the vacated panel when it has no indicators left.
+        const imAll = im.getAll ? im.getAll() : [];
+        const stillThere = imAll.some(x => x.panelId === oldPanelId);
+        if (!stillThere
+            && oldPanelId !== 'main' && oldPanelId !== 'vol'
+            && !(carousel && typeof carousel.hasSwipeGroup === 'function' && carousel.hasSwipeGroup(oldPanelId))) {
+            this._removePanelBookkeeping(oldPanelId);
+        } else {
+            this._syncPanelVisibilityForIndicator(oldPanelId);
+        }
+
+        // The guest may be hidden (its old panel was swiped away) — the
+        // destination panel must show it, and the panel itself must not
+        // stay collapsed (V50 sync handles ratio restore).
+        if (ind.visible === false
+            && !(carousel && typeof carousel._groups === 'object'
+                 && carousel._groups instanceof Map
+                 && carousel._groups.get(targetPanelId)?.indicators?.includes(id)
+                 && carousel._groups.get(targetPanelId).indicators[carousel._groups.get(targetPanelId).activeIdx] !== id)) {
+            ind.visible = true;
+        }
+        this._syncPanelVisibilityForIndicator(targetPanelId);
+        this._ctx.markAllDirtyAndRender();
+        return targetPanelId;
     }
 
     removeIndicator(id) {
@@ -52738,33 +52886,7 @@ class IndicatorAPI {
             && panelId !== 'vol';
         im.remove(id);
         if (shouldRemovePanel) {
-            const config = this._ctx.config;
-            const layout = this._ctx.layout;
-            const vp     = this._ctx.viewport;
-            // 1. config.panels
-            if (config?.panels) {
-                const idx = config.panels.findIndex(p => p.id === panelId);
-                if (idx >= 0) config.panels.splice(idx, 1);
-            }
-            // 2. layout._panelOrder + panelRatios + panelConfigs
-            if (layout) {
-                if (Array.isArray(layout._panelOrder)) {
-                    const idx = layout._panelOrder.indexOf(panelId);
-                    if (idx >= 0) layout._panelOrder.splice(idx, 1);
-                }
-                if (layout.panelRatios) delete layout.panelRatios[panelId];
-                if (layout.panelConfigs) delete layout.panelConfigs[panelId];
-                // V218-fix: also drop the computed RECT — layout.panels kept
-                // the stale geometry forever (recalculate only refreshes ids
-                // still in _panelOrder), so ghost rects overlapped live
-                // panels and hijacked getActivePanel hit-testing.
-                if (layout.panels) delete layout.panels[panelId];
-                if (typeof layout.recalculate === 'function' && layout.width && layout.height) {
-                    layout.recalculate(layout.width, layout.height);
-                }
-            }
-            // 3. viewport.panels
-            if (vp?.panels) delete vp.panels[panelId];
+            this._removePanelBookkeeping(panelId);   // V338: extracted body
         } else if (panelId && panelId !== 'main' && panelId !== 'vol') {
             // V50: removed an overlay indicator from a non-main panel —
             //   re-evaluate panel visibility (hide if no visible indicators
@@ -65041,27 +65163,55 @@ class Engine {
         // Live updates — guard against NaN, store previous valid values
         let _lastValidW = s.lineWidth ?? 1.5;
         let _lastValidA = s.lineAlpha ?? 0.9;
+        // V338-newline-color: resolve the LIVE object on every edit. The
+        // object captured at modal-open can be swapped out underneath while
+        // the modal sits open (boot bucket-load / reconcile / undo-redo),
+        // and writing into the stale instance painted a line nobody draws
+        // — the user saw the new color in the settings while the placed
+        // line kept the default («в настройках показывается новый цвет, а
+        // когда выставляешь линию то цвет сбрасывается на дефолтный»).
+        const _liveObj = () => {
+            try {
+                const ov = this.overlay;
+                if (ov && obj._key) {
+                    const cur = ov.objects.get(obj._key);
+                    if (cur) return cur;              // same key → the live instance
+                }
+                if (ov) {
+                    // key gone (object replaced under a new key) — match by
+                    // identity: type + createdAt (+ name when present)
+                    for (const cand of ov.objects.values()) {
+                        if (cand === obj) return cand;
+                        if (cand.constructor === obj.constructor
+                            && cand.createdAt === obj.createdAt
+                            && (obj.name == null || cand.name === obj.name)) return cand;
+                    }
+                }
+            } catch (_) {}
+            return obj;   // best-effort — write into what we have
+        };
         const applyLive = () => {
             const wStr = widthInput.value.trim();
             const aStr = alphaInput.value.trim();
             const w = parseFloat(wStr);
             const a = parseFloat(aStr);
+            const target = _liveObj();   // V338: always paint the LIVE object
             try { devLog('[V103-modal] applyLive', {
                 wStr, aStr, w, a,
-                objLineWidth: obj.style?.lineWidth,
-                objLineAlpha: obj.style?.lineAlpha,
-                objLineColor: obj.style?.lineColor,
+                objLineWidth: target.style?.lineWidth,
+                objLineAlpha: target.style?.lineAlpha,
+                objLineColor: target.style?.lineColor,
             }); } catch(_) {}
-            obj.style.lineColor = colorInput.value;
+            target.style.lineColor = colorInput.value;
             if (wStr !== '' && isFinite(w) && w > 0) {
-                obj.style.lineWidth = w;
+                target.style.lineWidth = w;
                 _lastValidW = w;
             }
             if (aStr !== '' && isFinite(a) && a >= 0 && a <= 1) {
-                obj.style.lineAlpha = a;
+                target.style.lineAlpha = a;
                 _lastValidA = a;
             }
-            obj.style.lineStyle = styleSelect.value;
+            target.style.lineStyle = styleSelect.value;
             // V103: also apply to future drawings if the checkbox is on.
             // V181: this module (ce-engine) cannot see the ce-tools closure —
             // everything goes through the window bridges.
@@ -65087,6 +65237,12 @@ class Engine {
             // in place, no api.updateObject call) — the new look existed only
             // in memory until some unrelated save. Persist it now.
             try { if (window.ChartStatePersistence) window.ChartStatePersistence.save(); } catch (_) {}
+            // V338-newline-color: sync the per-ticker bucket RIGHT HERE. The
+            // global save above is debounced; a boot-race bucket load (or a
+            // quick ticker switch) between the edit and the debounce used to
+            // resurrect the stale bucket — the fresh color was gone the
+            // moment the line was "placed" on screen again.
+            try { if (this.overlay && typeof this.overlay.saveToStorage === 'function') this.overlay.saveToStorage(this._currentTicker || 'default'); } catch (_) {}
         };
         [colorInput].forEach(el => el.addEventListener('change', applyLive));
         [widthInput, alphaInput].forEach(el => {
@@ -82314,6 +82470,10 @@ class PresetManager {
                 id: ind.id,
                 type: meta.type,
                 panelId: ind.panelId,
+                // V338-panel-move: keep the placement mode in the preset too —
+                // a guest (inherit) on a foreign panel must import back as a
+                // guest, and a separate-panel indicator as 'separate'.
+                panelMode: ind.panelMode || meta.panelMode || undefined,
                 visible: ind.visible,
                 sourceId: ind.sourceId,
                 sourceRef: ind.sourceRef || undefined,
@@ -85002,11 +85162,24 @@ class ChartFactory {
         function _renderIndicatorManager(backdrop, api, engine, closeModal, rerender, openPicker, openSettings, presetMgr, openMainCandles) {
             const inds = api.getIndicator() || [];
 
+            // V338-swipe-visibility: swipe-carousel snapshot — which panels
+            // have a swipe group and which ids are its slides. Used to
+            // distinguish a REALLY hidden indicator (eye) from a non-active
+            // slide of a swipe group («сделай различие, где реально индикатор
+            // скрыт через сокрытие/глазик, а где свайп группа и просто сейчас
+            // не тот слайд активен»).
+            const _carousel = (typeof api.getPanelCarouselManager === 'function') ? api.getPanelCarouselManager() : null;
+            const _swipeGroups = (() => {
+                try { return (_carousel && _carousel.getSwipeGroupsSnapshot && _carousel.getSwipeGroupsSnapshot()) || {}; }
+                catch (_) { return {}; }
+            })();
+            const _hasSwipe = (panelId) => !!(_swipeGroups[panelId] && _swipeGroups[panelId].length >= 2);
+
             // V38: Build indicator card HTML for a single indicator.
             // V50: added eye-toggle button (👁 / 🚫) to show/hide the indicator
             //   without removing it. Visibility is persisted via PresetManager
             //   (visible field is already part of _captureSnapshot).
-            function renderCard(ind) {
+            function renderCard(ind, panelId) {
                 const meta = ind.constructor?.META || {};
                 const params = meta.params || [];
                 // V122-fix(XSS): param values can carry user input — Time Markers'
@@ -85032,15 +85205,32 @@ class ChartFactory {
                     srcInfo = ` · src:${esc(String(ind.inputs.source))}`;
                 }
                 const isHidden = ind.visible === false;
+                // V338-swipe-visibility: a member of a 2+ swipe group is not
+                // «hidden» — it is a non-active SLIDE of the panel's carousel.
+                // Rendering it struck-through confused the user into thinking
+                // the indicator was eye-hidden and made the group's slides
+                // impossible to discover/open.
+                const _grp = (panelId && _swipeGroups[panelId]) || null;
+                const _gIdx = (_grp && Array.isArray(_grp)) ? _grp.indexOf(String(ind.id)) : -1;
+                const isSlideGuest = !!(_grp && _grp.length >= 2 && _gIdx >= 0);
+                const slideBadge = isSlideGuest
+                    ? '<span class="ind-slide-badge">slide ' + (_gIdx + 1) + '/' + _grp.length + (isHidden ? '' : ' · active') + '</span>'
+                    : '';
+                const cardCls = isSlideGuest
+                    ? (isHidden ? ' slide-ind' : ' slide-ind slide-active')
+                    : (isHidden ? ' hidden-ind' : '');
+                const eyeTitle = isSlideGuest
+                    ? (isHidden ? 'Open this slide (activate)' : 'Active slide — tap the eye to swipe away')
+                    : (isHidden ? 'Show' : 'Hide');
                 const eyeIcon = isHidden ? '👁' : '👁';  // same glyph; CSS .hidden class strikes it out
-                return '<div class="ind-card' + (isHidden ? ' hidden-ind' : '') + '" data-ind-id="' + esc(String(ind.id)) + '">' +
+                return '<div class="ind-card' + cardCls + '" data-ind-id="' + esc(String(ind.id)) + '">' +
                     '<div class="ind-card-color" style="background:' + esc(String(outColor)) + '"></div>' +
                     '<div class="ind-card-info">' +
-                    '<div class="ind-card-name">' + esc(String(meta.label || ind.id)) + '</div>' +
+                    '<div class="ind-card-name">' + esc(String(meta.label || ind.id)) + slideBadge + '</div>' +
                     '<div class="ind-card-meta">' + paramStr + bandInfo + tfInfo + srcInfo + '</div>' +
                     '</div>' +
                     '<div class="ind-card-actions">' +
-                    '<button class="ind-card-btn ind-vis-btn' + (isHidden ? ' hidden' : '') + '" data-ind-id="' + esc(String(ind.id)) + '" title="' + (isHidden ? 'Show' : 'Hide') + '">' + eyeIcon + '</button>' +
+                    '<button class="ind-card-btn ind-vis-btn' + (isHidden && !isSlideGuest ? ' hidden' : '') + '" data-ind-id="' + esc(String(ind.id)) + '" title="' + esc(eyeTitle) + '">' + eyeIcon + '</button>' +
                     '<button class="ind-card-btn ind-cfg-btn" data-ind-id="' + esc(String(ind.id)) + '" title="Configure">⚙</button>' +
                     '<button class="ind-card-btn ind-del-btn" data-ind-id="' + esc(String(ind.id)) + '" title="Remove">×</button>' +
                     '</div>' +
@@ -85172,6 +85362,25 @@ class ChartFactory {
                 groups.get(pid).push(ind);
             }
 
+            // V338-alpha-sort: non-swipe panels list their indicators
+            // ALPHABETICALLY — visible first, hidden below, each run sorted
+            // on its own («видимые индикаторы были расположены по алфавиту.
+            // Невидимые ниже и тоже по алфавиту»). Swipe-group panels keep
+            // the carousel slide ORDER — reordering them would silently
+            // change which swipe gesture shows which slide.
+            const _indSortName = (ind) => String(
+                ind.constructor?.META?.label
+                || ind.constructor?.META?.shortLabel
+                || ind.id || '');
+            const _cmpAlpha = (a, b) =>
+                _indSortName(a).localeCompare(_indSortName(b), undefined, { sensitivity: 'base', numeric: true });
+            for (const [pid, list] of groups) {
+                if (_hasSwipe(pid)) continue;   // carousel order is meaningful
+                const vis = list.filter(i => i.visible !== false).sort(_cmpAlpha);
+                const hid = list.filter(i => i.visible === false).sort(_cmpAlpha);
+                groups.set(pid, vis.concat(hid));
+            }
+
             // V130: ONE section for the main chart. Main-panel overlays
             //   (MAs, bands, lines the user adds to the main chart) merge
             //   into the SAME section as the base Main Candles system card —
@@ -85194,7 +85403,7 @@ class ChartFactory {
                     lbhCardHtml +
                     (mainInds.length
                         ? '<div class="ind-sys-overlays-label">overlays</div>' +
-                          mainInds.map(renderCard).join('')
+                          mainInds.map(i => renderCard(i, 'main')).join('')
                         : '') +
                 '</div>';
 
@@ -85210,14 +85419,23 @@ class ChartFactory {
                 const gen = groupInds.find(i => String(i.id) === genId) || groupInds[0];
                 const gMeta = (gen && gen.constructor && gen.constructor.META) || {};
                 const gName = String(gMeta.shortLabel || gMeta.label || gMeta.type || genId);
+                // V338-swipe-visibility: mark carousel panels — the name gets
+                // a small-font «swipe N» chip so the user knows this panel's
+                // non-active slides are SWIPE pages, not eye-hidden entries
+                // («названия панели там пиши в скобках, что это свайп мелким
+                // шрифтом»). Main chart has no carousel — no chip there.
+                const _swipeChip = _hasSwipe(panelId)
+                    ? '<span class="ind-gl-swipe">(swipe ' + _swipeGroups[panelId].length + ')</span>'
+                    : '';
                 let sec = '<div class="ind-group">';
                 sec += '<div class="ind-group-label">' +
                     '<span class="ind-gl-name">' + esc(gName) + '</span>' +
                     '<span class="ind-gl-id" title="' + esc(String(panelId)) + '">' + esc(genId) + '</span>' +
+                    _swipeChip +
                     '<span class="ind-gl-cnt">' + groupInds.length + '</span>' +
                     '</div>';
                 for (const ind of groupInds) {
-                    sec += renderCard(ind);
+                    sec += renderCard(ind, panelId);
                 }
                 sec += '</div>';
                 return sec;
@@ -85413,6 +85631,21 @@ class ChartFactory {
                     // doesn't fall through to its default-toggle branch.
                     const newVis = !(ind.visible === false ? false : true);
                     api.setIndicatorVisible(b.dataset.indId, newVis);
+                    rerender();
+                };
+            });
+
+            // V338-swipe-visibility: tapping a non-active slide CARD opens
+            // that slide on the chart («…не дает реально открывать слайд у
+            // свайп группы»). The eye on such a card does the same; the
+            // ⚙ / × buttons stopPropagation above and keep their meanings.
+            backdrop.querySelectorAll('.ind-card.slide-ind').forEach(card => {
+                card.onclick = (ev) => {
+                    if (ev.target.closest && ev.target.closest('.ind-card-btn')) return;
+                    const id = card.dataset.indId;
+                    const ind = inds.find(i => i.id === id);
+                    if (!ind || ind.visible !== false) return;   // active slide → nothing to open
+                    api.setIndicatorVisible(id, true);           // handleEyeToggle activates the slide
                     rerender();
                 };
             });
@@ -86785,6 +87018,13 @@ class ChartFactory {
             ]}];
             const existingPanels = new Set();
             const panelExistingItems = [];
+            // V338-swipe-visibility: the Panel dropdown tags carousel panels
+            // with a small «swipe» chip too — the user sees BEFORE moving an
+            // indicator there that the target is a swipe-carousel panel.
+            const _pmSwipeSnapshot = (() => {
+                try { return api.getPanelCarouselManager?.()?.getSwipeGroupsSnapshot?.() || {}; }
+                catch (_) { return {}; }
+            })();
             for (const ind of (api.getIndicator() || [])) {
                 if (isExisting && ind.id === existingInd.id) continue;
                 if (ind.panelId && ind.panelId !== 'main') {
@@ -86792,7 +87032,12 @@ class ChartFactory {
                     const label = m3?.label || ind.id;
                     if (!existingPanels.has(ind.panelId)) {
                         existingPanels.add(ind.panelId);
-                        panelExistingItems.push({ value: 'existing:' + ind.panelId, label: label + ' panel' });
+                        const _swN = (_pmSwipeSnapshot[ind.panelId] || []).length;
+                        panelExistingItems.push({
+                            value: 'existing:' + ind.panelId,
+                            label: label + ' panel',
+                            tag: (_swN >= 2) ? '(swipe ' + _swN + ')' : undefined,
+                        });
                     }
                 }
             }
@@ -87919,6 +88164,57 @@ class ChartFactory {
                             existingInd._srProbCacheResults = null;
                         }
                         engine._apiCtx?.indicatorManager?.invalidateCache?.();
+                        // V338-panel-move: handle the Panel dropdown for an
+                        // EXISTING indicator. This branch previously ignored
+                        // [data-panelmode] entirely — the value was only read
+                        // in the create-new branch below, so choosing
+                        // «MFI panel» for a live z-score and saving did
+                        // NOTHING (the user's «Нет, не перенес. Перенеси
+                        // z score в mfi panel»). Move FIRST, then evaluate
+                        // the swipe-group checkbox against the NEW panel.
+                        const pmSelEx = configArea.querySelector('[data-panelmode]');
+                        if (pmSelEx) {
+                            const pmValEx = pmSelEx.value;
+                            const targetPanelId = (function () {
+                                if (typeof pmValEx === 'string' && pmValEx.startsWith('existing:')) {
+                                    return pmValEx.substring('existing:'.length);
+                                }
+                                if (pmValEx === 'overlay') return 'main';
+                                if (pmValEx === 'separate') return '__separate__';
+                                return null;
+                            })();
+                            const curPanelId = existingInd.panelId || 'main';
+                            const differs = targetPanelId === '__separate__'
+                                ? (existingInd.panelMode !== 'separate'
+                                   || curPanelId !== (existingInd.id + '_panel'))
+                                : (targetPanelId && targetPanelId !== curPanelId);
+                            if (targetPanelId && differs) {
+                                try {
+                                    const movedTo = api.moveIndicator(existingInd.id,
+                                        targetPanelId === '__separate__' ? 'separate' : pmValEx);
+                                    if (movedTo) {
+                                        // Keep own-panel bookkeeping coherent:
+                                        // a moved indicator is a guest ('inherit')
+                                        // unless it landed on main ('overlay').
+                                        existingInd.panelMode =
+                                            (movedTo === 'main') ? 'overlay' : 'inherit';
+                                    }
+                                } catch (eMove) {
+                                    console.warn('[V338-panel-move] failed:', eMove);
+                                }
+                                // The checkbox was rendered against the OLD
+                                // panel — re-sync it to the destination so the
+                                // swipe-toggle block below doesn't drag the
+                                // guest into the new panel's carousel by
+                                // accident (unchecked = stay a plain overlay).
+                                const _swCbSync = backdrop.querySelector('[data-swipe-toggle]');
+                                if (_swCbSync) {
+                                    const _cmSync = engine._apiCtx?.panelCarouselManager || api.getPanelCarouselManager?.();
+                                    const _inNew = !!(_cmSync && _cmSync._groups?.get(existingInd.panelId)?.indicators?.includes(existingInd.id));
+                                    _swCbSync.checked = _inNew;
+                                }
+                            }
+                        }
                         // V121-swipe-toggle: handle swipe group checkbox for
                         //   existing indicators on non-main panels.
                         const swipeToggleCb = backdrop.querySelector('[data-swipe-toggle]');
@@ -97249,6 +97545,10 @@ const ChartStatePersistence = (() => {
                 // Actually KEEP the id so panel associations stay stable.
                 if (ind.id) cfg.id = ind.id;
                 if (ind.panelId) cfg.panelId = ind.panelId;
+                // V338-panel-move: persist panelMode — a moved (inherit) guest
+                // must restore as a guest, not re-trigger its META's
+                // 'separate' panel creation on the next boot.
+                if (ind.panelMode) cfg.panelMode = ind.panelMode;
                 if (typeof ind.visible === 'boolean') cfg.visible = ind.visible;
                 if (ind.sourceId) cfg.sourceId = ind.sourceId;
                 // V55-source-persist: save sourceRef + inputs.source so they
@@ -98404,6 +98704,17 @@ const ChartStatePersistence = (() => {
                 save();
                 return r;
             };
+            // V338-panel-move: a panel MOVE must persist too — otherwise the
+            // relocated indicator came back on its OLD panel after a reload
+            // (nothing else fires a save: the 1s poll only watches the COUNT).
+            const origMoveInd = api.moveIndicator ? api.moveIndicator.bind(api) : null;
+            if (origMoveInd) {
+                api.moveIndicator = function(...args) {
+                    const r = origMoveInd(...args);
+                    if (r) save();
+                    return r;
+                };
+            }
         } catch (e) {}
 
         // V52-layout-persist: patch resizePanel / resizePanelPair / reorderPanel
@@ -102695,6 +103006,7 @@ const NumericKeypad = (() => {
     let buf = '';             // string being edited
     let orig = '';            // value snapshot at open time
     let dirty = false;        // false → the first digit press starts fresh
+    let mirrored = false;     // V338: buf has been live-mirrored into input.value
     let meta = { min: NaN, max: NaN, step: 1, label: 'Value' };
     let ui = {};              // cached sub-elements
     let domObserver = null;   // watches input removal (modal close / rerender)
@@ -102894,7 +103206,7 @@ const NumericKeypad = (() => {
         ui.hint = pad.querySelector('.vk-hint');
         document.body.appendChild(pad);
 
-        ui.closeBtn.addEventListener('click', () => VK.close());
+        ui.closeBtn.addEventListener('click', () => VK.cancel());   // V338: ✕ undoes the live-mirrored draft
 
         // One click delegation for every key button — grid keys AND the ⌫
         // beside the readout (the ✕ has no data-k and is skipped).
@@ -102923,8 +103235,19 @@ const NumericKeypad = (() => {
     };
 
     const update = () => {
+        if (input && !input.isConnected) reattachInput();   // V338: follow swapped fields
         if (!input || !input.isConnected) { VK.close(); return; }
         if (ui.disp) ui.disp.textContent = (buf === '' || buf === '-') ? '0' : buf;
+        // V338: LIVE-MIRROR the buffer into the target textbox while typing.
+        //   The pad's big readout is great, but the user watches the FIELD —
+        //   «пишешь во всплывающей клавиатуре новое значение, то значение в
+        //   текстбоксе не меняется». Every keystroke (digit / ⌫ / ± / steppers)
+        //   lands in the textbox immediately, exactly like native typing;
+        //   commit() still fires the final input+change pair. Cancel (Esc/✕)
+        //   restores orig.
+        if (dirty) {
+            try { input.value = buf; mirrored = true; } catch (_) {}
+        }
         if (ui.hint) {
             const parts = [];
             if (isFinite(meta.min) && isFinite(meta.max)) parts.push(fmt(meta.min) + ' … ' + fmt(meta.max));
@@ -102955,10 +103278,15 @@ const NumericKeypad = (() => {
         // itself sits at the very bottom of the screen.
         try { input.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
         // Auto-close if the field is removed from the DOM (modal closed,
-        // marker list rerendered, section toggled …).
+        // marker list rerendered, section toggled …). V338: a modal RERENDER
+        // replaces the field element while keeping its data-attributes —
+        // follow it instead of dropping the draft; close only when the
+        // field is really gone (modal dismissed).
         if (!domObserver) {
             domObserver = new MutationObserver(() => {
-                if (input && !input.isConnected) VK.close();
+                if (input && !input.isConnected) {
+                    if (!reattachInput()) VK.close();
+                }
             });
             try { domObserver.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
         }
@@ -102975,14 +103303,53 @@ const NumericKeypad = (() => {
         buf = '';
         orig = '';
         dirty = false;
+        mirrored = false;
         ui = {};
+    };
+
+    // V338: cancel — dismiss the pad and put the ORIGINAL value back.
+    //   Used by ✕ / Esc. With the live mirror the field carries the draft,
+    //   so a cancel must undo it (native keyboard semantics).
+    VK.cancel = () => {
+        const inp = input;
+        if (inp && mirrored) {
+            try {
+                inp.value = orig;
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                inp.dispatchEvent(new Event('change', { bubbles: true }));
+            } catch (_) {}
+        }
+        VK.close();
+    };
+
+    // V338: re-locate the target field if it was REPLACED while the pad was
+    //   open (settings modal rerender / section rebuild). Identity = the
+    //   field's data-* attributes + type — unique enough inside a modal.
+    const reattachInput = () => {
+        if (!input || input.isConnected) return input;
+        try {
+            const attrs = [...input.attributes]
+                .filter(a => a.name.indexOf('data-') === 0)
+                .map(a => '[' + a.name + '="' + a.value.replace(/"/g, '\\"') + '"]');
+            if (!attrs.length) return null;
+            const sel = 'input' + attrs.join('');
+            const found = document.querySelector(sel);
+            if (found && !found.disabled && !found.readOnly && !found.hasAttribute('data-vk-off')) {
+                input = found;
+                input.classList.add('vk-focus');
+                return input;
+            }
+        } catch (_) {}
+        return null;
     };
 
     // ── commit / press (public — also used by the e2e suite) ──
     const commit = () => {
+        // V338: the field may have been swapped out mid-edit (modal rerender)
+        //   — re-resolve it by its data-attributes before giving up.
+        reattachInput();
         const inp = input;
         if (!inp) { VK.close(); return; }
-        if (!inp.isConnected) { VK.close(); return; }
         let v = String(buf).trim();
         const n = parseFloat(v);
         if (v === '' || !isFinite(n)) v = orig;
@@ -102990,7 +103357,9 @@ const NumericKeypad = (() => {
             const c = clamp(n);
             if (c !== n) v = fmt(c);   // clamp; otherwise keep the typed text as-is
         }
-        if (String(inp.value) !== v) {
+        // mirrored=true means the draft already sat in the field — the final
+        // input+change pair must fire even when the text ends up identical.
+        if (String(inp.value) !== v || mirrored) {
             inp.value = v;
             // Native-parity notifications — the same two events real typing
             // produces, bubbling so every existing listener sees them.
@@ -103064,7 +103433,7 @@ const NumericKeypad = (() => {
     // Esc = cancel, Enter = commit (capture: the modal must not also react).
     document.addEventListener('keydown', (e) => {
         if (!input) return;
-        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); VK.close(); }
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); VK.cancel(); }
         else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); commit(); }
     }, true);
 
