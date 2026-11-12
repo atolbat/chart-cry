@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <!-- V348 BITUNIX RELAY FALLBACK + HUMAN NETWORK DIAGNOSTICS (юзер: «Bitunix network error: failed to fetch»): причина найдена живым probe с песочницы — fapi.bitunix.com стоит за Cloudflare managed challenge, который отвечает даже ПУБЛИЧНЫМ GET (market/tickers) «403 + HTML challenge» (cf-mitigated: challenge) и НЕ шлёт ни одного Access-Control-Allow-* заголовка; OPTIONS-preflight получает ту же 403-страницу, поэтому fetch из браузера под челленджем ВСЕГДА умирает с TypeError «Failed to fetch» (api.bitunix.com и www.bitunix.com — то же самое). Docs подтверждают: auth только через заголовки api-key/nonce/timestamp/sign (query-параметров нет), timestamp-окно 60s. ① ТРАНСПОРТ: bybitGet/bitunixGet переписаны на цепочку попыток direct → (если задан) user relay; API-ошибки (retCode/code != 0) означают что транспорт работает — relay-retry не делается; CF-челлендж (403+HTML) детектится на каждой попытке. Ключевой факт безопасности: подпись Bitunix SHA256(SHA256(nonce+ts+apiKey+queryParams+body)+secret) НЕ покрывает host/path/headers — те же самые подписанные заголовки едут через релей без изменений, СЕКРЕТ никогда не покидает устройство (релей видит только api-key и одноразовый sign, которыми нельзя подписать новый запрос). Релеи OPT-IN и per-exchange: поле Relay URL на карточке (localStorage ce_ak_relay_v1, plaintext — не секрет), форматы: {url}-плейсхолдер / суффикс «=» (encoded) / суффикс «/» (raw, cors-anywhere) / иначе ?url= (allorigins). Прямые запросы остаются первыми — у пользователей с чистым IP всё работает как раньше. ② ДИАГНОСТИКА: netFailHuman() — TypeError «Failed to fetch» больше не показывается сырым; теперь «browser could not reach the endpoint — direct browser calls are blocked (a Cloudflare challenge page has no CORS headers) or the network path is down», таймауты отдельно, каждая попытка помечается [direct]/[relay]; при отсутствии релея в ошибке Bitunix подсказка про Relay URL. ③ UI: на обеих карточках строка Relay URL (Save сохраняет релей даже без ключей, статус «relay on»), кнопка «relay help» открывает общий блок-объяснение с ГОТОВЫМ 20-строчным Cloudflare Worker сниппетом (OPTIONS-preflight 204 + ACAO/ACAH *, forward headers, delete origin/referer/cookie) и кнопкой Copy worker code (clipboard API + execCommand fallback); fetchBybit/fetchBitunix добавляют note «via relay (direct was blocked)» в портфель. ④ Регресс probe_v348_relay: buildRelayUrl все 4 формата бит-в-бит, netFailHuman, saveRelays/loadRelays roundtrip; UI: relay-only save, ключи в vault, Test обеих бирж с ЗААБОРТЕННЫМИ прямыми эндпоинтами → успех только через релей (status «tested OK · relay on»), refreshPortfolio → notes «via relay (direct was blocked)», Bitunix total 109 (=100.5+2+5+1+0.5), Bybit ok; мёртвый релей → «Bitunix network error: …blocked… [relay]» без сырого «Failed to fetch»; help-бокс открывается, сниппет 836 байт, copy есть; pageerror 0; boot-check BOOT-OK code-0 -->
+    <!-- V349 BITUNIX RELAY FORMAT MISMATCH (юзер: «Использую https://soft-river-07ed.anttolbatov.workers.dev/ с твоим кодом, но ошибка. Bitunix network error: browser could not reach bc direct browser calls are blocked etc»): корень найден живым curl-пробом САМОГО воркера юзера — воркер ЖИВ И РАБОЧИЙ: его ?url= формат вернул HTTP 200 c code:0 и полным тикерным JSON от fapi.bitunix.com (Worker→CF-зона Bitunix проходит БЕЗ челленджа), но приложение при вставленном URL с ХВОСТОВЫМ СЛЭШЕМ строит RAW-path формат worker/https://target (cors-anywhere стиль), а сниппет воркера из «relay help» понимал ТОЛЬКО ?url= → воркер отвечал 400 «missing ?url=» БЕЗ Access-Control-Allow-* → браузер CORS-глушил ответ → fetch умирал опакетным TypeError → юзер видел «browser could not reach…» хотя релей на самом деле ОТВЕТИЛ. ① СНИППЕТ v2 (универсальный): ?url= И path-style (pathname.slice(1)+u.search), ACAO/ACAH/ACAM на КАЖДЫЙ ответ включая 400, delete origin/referer/cookie/host/content-length, на ответе ещё delete set-cookie/content-encoding/content-length, redirect follow — старые воркеры совместимы. ② relayAltUrls(relay,target): раскрывает вставленный URL в упорядоченный список конкретных URL попыток — {url}→tpl, хвост '='→enc (без альтов — формат явный), хвост '/'→path + АЛЬТ ?url= (слэши срезаны), plain→?url= + АЛЬТ path; дедуп. Цепочка bitunixGet/bybitGet: direct → relay(осн. формат) → relay(альт) — подпись Bitunix не покрывает host/path, те же заголовки валидны на каждой ноге; nonce/timestamp/sign ПЕРЕгенерируются на попытку (окно 60s); не-JSON ответ релея при наличии следующей попытки = записанная ошибка, НЕ throw (иначе читаемый 400 старого воркера навсегда блокировал бы альт-формат); API-level ошибки (code/retCode≠0) как раньше останавливают цепочку — транспорт работает. ③ ДИАГНОСТИКА: ошибки всех ног агрегированы «[direct] … · [relay·path] … · [relay·url] …»; friendlyHttpError знает про relay-ногу (400/404/405 «missing ?url=» → «worker did not understand the request — update the worker code from relay help»); relayHintText при исчерпании попыток: проверить URL / workers.dev блокируется некоторыми ISP / обновить сниппет. ④ РЕГРЕСС probe_v349_relay: relayAltUrls все форматы бит-в-бит, мок-воркер старого типа (path→400 missing ?url= c ACAO, ?url=→JSON): вставленный слэш → успех через [relay·url] в Test и refreshPortfolio; 400 на ОБОИХ форматах → человеческое сообщение без «Failed to fetch»; ЖИВОЙ воркер юзера из песочницы: bitunixGet market/tickers с DUMMY-подписью → code:0 данные через relay·url (реальный транспорт доказан), приватный account с DUMMY → API-level ошибка (не network); help-бокс показывает сниппет v2 (>700 байт, содержит pathname); boot-check BOOT-OK, pageerror 0 -->
+<!-- V348 BITUNIX RELAY FALLBACK + HUMAN NETWORK DIAGNOSTICS (юзер: «Bitunix network error: failed to fetch»): причина найдена живым probe с песочницы — fapi.bitunix.com стоит за Cloudflare managed challenge, который отвечает даже ПУБЛИЧНЫМ GET (market/tickers) «403 + HTML challenge» (cf-mitigated: challenge) и НЕ шлёт ни одного Access-Control-Allow-* заголовка; OPTIONS-preflight получает ту же 403-страницу, поэтому fetch из браузера под челленджем ВСЕГДА умирает с TypeError «Failed to fetch» (api.bitunix.com и www.bitunix.com — то же самое). Docs подтверждают: auth только через заголовки api-key/nonce/timestamp/sign (query-параметров нет), timestamp-окно 60s. ① ТРАНСПОРТ: bybitGet/bitunixGet переписаны на цепочку попыток direct → (если задан) user relay; API-ошибки (retCode/code != 0) означают что транспорт работает — relay-retry не делается; CF-челлендж (403+HTML) детектится на каждой попытке. Ключевой факт безопасности: подпись Bitunix SHA256(SHA256(nonce+ts+apiKey+queryParams+body)+secret) НЕ покрывает host/path/headers — те же самые подписанные заголовки едут через релей без изменений, СЕКРЕТ никогда не покидает устройство (релей видит только api-key и одноразовый sign, которыми нельзя подписать новый запрос). Релеи OPT-IN и per-exchange: поле Relay URL на карточке (localStorage ce_ak_relay_v1, plaintext — не секрет), форматы: {url}-плейсхолдер / суффикс «=» (encoded) / суффикс «/» (raw, cors-anywhere) / иначе ?url= (allorigins). Прямые запросы остаются первыми — у пользователей с чистым IP всё работает как раньше. ② ДИАГНОСТИКА: netFailHuman() — TypeError «Failed to fetch» больше не показывается сырым; теперь «browser could not reach the endpoint — direct browser calls are blocked (a Cloudflare challenge page has no CORS headers) or the network path is down», таймауты отдельно, каждая попытка помечается [direct]/[relay]; при отсутствии релея в ошибке Bitunix подсказка про Relay URL. ③ UI: на обеих карточках строка Relay URL (Save сохраняет релей даже без ключей, статус «relay on»), кнопка «relay help» открывает общий блок-объяснение с ГОТОВЫМ 20-строчным Cloudflare Worker сниппетом (OPTIONS-preflight 204 + ACAO/ACAH *, forward headers, delete origin/referer/cookie) и кнопкой Copy worker code (clipboard API + execCommand fallback); fetchBybit/fetchBitunix добавляют note «via relay (direct was blocked)» в портфель. ④ Регресс probe_v348_relay: buildRelayUrl все 4 формата бит-в-бит, netFailHuman, saveRelays/loadRelays roundtrip; UI: relay-only save, ключи в vault, Test обеих бирж с ЗААБОРТЕННЫМИ прямыми эндпоинтами → успех только через релей (status «tested OK · relay on»), refreshPortfolio → notes «via relay (direct was blocked)», Bitunix total 109 (=100.5+2+5+1+0.5), Bybit ok; мёртвый релей → «Bitunix network error: …blocked… [relay]» без сырого «Failed to fetch»; help-бокс открывается, сниппет 836 байт, copy есть; pageerror 0; boot-check BOOT-OK code-0 -->
     <!-- V347 INVERTED-SCALE CANDLE BODIES (юзер: «Инвертированные свечи вглядыват будто темнее»): причина — на инвертированной шкале Y yToPix(max) даёт БОЛЬШИЙ пиксель, чем yToPix(min) (большие значения внизу), поэтому в CandlestickRenderer пара bodyTop/bodyBot возвращалась перевёрнутой, дельта bodyBot - bodyTop была ОТРИЦАТЕЛЬНОЙ, и Math.max(MIN_DRAW_PX, h) схлопывала КАЖДОЕ тело свечи в 0.3px-волосинку — оставались только фитильки, из-за чего график выглядел темнее/жидким. Фикс: нормализация в ПИКСЕЛЬНОМ пространстве (bodyTop = меньший y, высота ≥ 0) — на обычной оси ветка свопа не срабатывает и рендер бит-в-бит прежний; заодно заработал hollow-клип фитилей (bBot-bTop > 0.5) на инверсии. Тот же паттерн «clamp пиксельной дельты» вычищен по всем гистограммам: IndicatorBrick._drawHistogram (MACD и все наследуемые), инлайн-гистограммы MACD/AO-кирпичей, FundingRate (обе ветки useLines-сегментов и баров), CVD per-bar гистограмма, RelPerf hidden-axis гистограмма (там ещё и отрицательный panelH = valToPix(max)-valToPix(min) на инвертированной панели целиком скипал оверлей — нормализовано). Volume-бары/BarRenderer, OHLC-бары, VolNorm-свечи, CVD-кирпичи (cumulative) уже были direction-агностичны — не тронуты. Верификация: probe_v347_invert (юнит на мок-ctx: 12/12 тел по 105px на обеих шкалах, зеркальность y_inv = pixelMin+pixelMax - y_norm - h, бит-в-бит высоты; живой канвас: 27.5k/28.4k зелёных/красных пикселей normal vs 28.6k/29.1k inverted — тела полностью видимы в обоих режимах; скриншоты normal/inverted — тела яркие, зеркальные; boot-check 0 code-ошибок). Инструменты/фигуры/портфельные линии ордеров не затронуты — их Y-маппинг уже инверсию уважает (V346).
 -->
     <!-- V340 SWIPE FILTER PARITY + EXCHANGE API KEYS VAULT + LIVE PORTFOLIO (юзер: «Походу когда я скрываю все монеты кроме крипто, то при свайпе он все равно использует весь список в т.ч. акции и етф. / Еще сделай норм безопасный менеджер апи ключей для бирж. В первую очередь битуникс и байбит, чтобы работать с портфолио. Смотри, чтобы они сохранялись сквозь сессии на устройстве, но не в явном виде»): ① СВАЙП = ПИКЕР: _cycleSymbol применял cp.filters (kind/quotes/stables/dead/listingAge/favs/tags), но НЕ фильтр Assets-строки tokenized («Any / Stocks·ETF only / Crypto only», V306) и не dexes (HIP-3 builder-dex, V228) — при «Crypto only» свайп продолжал гонять ПОЛНЫЙ список с токенизированными акциями/ETF. Оба фильтра скопированы из CoinPicker._applyFilters ВЕРБАТИМ (с теми же исключениями: CryptoCap index-строки и k:'coin' типа KOR не считаются токенизированными), дефолт tokenized:'any'/dexes:[] добавлен в оба _cpLoadState (сохранённый объект возвращается как есть — у юзера без Assets-фильтра ключа просто нет); тот же фильтр в _updateCoinPosition — серый индикатор позиции N/M теперь считает ТУ ЖЕ карусель, что и свайп. БОНУС-ФИКС от probe_v340: компаратор _updateCoinPosition был `mul*(b−a)` — двойное отрицание при desc, индикатор ходил список СНИЗУ ВВЕРХ (BTC показывался «5/5» вместо «1/5») и игнорировал все cp.sort.key кроме vol — теперь компаратор и набор полей зеркалят _cycleSymbol вербатим (name/change/listing/funding/oi/price + тай-брейкер по объему). ② ХРАНИЛИЩЕ КЛЮЧЕЙ (window.ExchKeys, свой <script>-блок после PaperPortfolio): plaintext НИКОГДА не попадает в storage/DOM-атрибуты/логи — секреты живут только локальными константами внутри использующих их функций (decrypt-on-demand, без кэша); на диске — AES-GCM 256 шифротекст в IndexedDB (ce_vault_v1/vault, свежий 12-байтный IV на каждую запись), мастер-ключ — NON-EXTRACTABLE CryptoKey (generateKey extractable:false), хранится структурированным объектом в IndexedDB (ce_vault_v1/meta) — рантайм не может вытащить байты, браузер лишь возвращает ключ для encrypt/decrypt в том же origin; wipe = удаление обеих записей; в localStorage только несекретный статус (last-4 API KEY + результат теста). Работает и на https (GitHub Pages), и на file:// (probe): оба secure context. ③ БИРЖИ: Bybit v5 — sign = HMAC_SHA256(secret, ts+apiKey+recvWindow+queryString) lowercase hex, заголовки X-BAPI-API-KEY/X-BAPI-TIMESTAMP/X-BAPI-RECV-WINDOW/X-BAPI-SIGN, recvWindow 10000; кошельки UNIFIED+FUND (failure каждого wallet tolerated отдельно) + /v5/position/list?category=linear&settleCoin=USDT; retCode-подсказки (10002 skew → «sync system time», 10003/10004 key/sign, 10005 permission, 10010 IP whitelist); CORS проверен живым preflight: api.bybit.com эхоит Origin и разрешает X-BAPI-* (прямой fetch из браузера работает). Bitunix futures — sign = SHA256(SHA256(nonce+timestamp+apiKey+queryParams+body)+secret) hex, queryParams = пары отсортированные по key ASCII и склеенные key+value («marginCoinUSDT»), заголовки api-key/nonce/timestamp/sign/language (nonce = 32-hex crypto.getRandomValues, timestamp = ms epoch); эндпоинты GET /api/v1/futures/account?marginCoin=USDT и /api/v1/futures/position/get_pending_positions; тотал = available+frozen+margin+bonus+cross/isolationUnrealizedPNL. ЧАСТНЫЕ запросы ходят ТОЛЬКО напрямую (никаких сторонних CORS-прокси — политика приложения); Cloudflare-челлендж Bitunix детектится (403 + HTML «Just a moment») и показывается человеческим текстом вместо крипто-ошибки. ④ UI: ⚙ Settings → Portfolio → «🔑 API Keys» (CLOSE_ROLES + свой модал) и «💼 Exchange balances»; менеджер — две карточки Bybit/Bitunix (inputs type=password с autocomplete=new-password, поля НИКОГДА не получают сохранённое значение обратно — только placeholder-подсказка «····last4»), Save/Test/Remove (armed-подтверждение на Remove/Wipe), строка статуса; портфель — grand total + по бирже: активы (coin/available/locked/≈USD) и позиции (symbol/side/size/entry/uPnL/lev), Refresh, last-updated, пустое состояние ведёт в менеджер. Только READ-ONLY эндпоинты аккаунта. ⑤ Регресс probe_v340: подписи против Node-crypto векторов (Bybit HMAC + Bitunix double-SHA256), vault-раундтрип save→load (шифротекст в IDB не содержит plaintext-подстрок), wipe, localStorage-инспекция не содержит секретов, свайп: tokenized='hide' выкидывает AAPL/TQQQ-строки из карусели, tokenized='only' наоборот, dexes-фильтр, позиция N/M согласована; pageerror 0 -->
@@ -112786,6 +112787,42 @@ function buildRelayUrl(relay, target) {
     if (relay.charAt(relay.length - 1) === '/') return relay + target;
     return relay + (relay.indexOf('?') >= 0 ? '&' : '?') + 'url=' + encodeURIComponent(target);
 }
+// V349: expand a pasted relay URL into the concrete request URLs to try, in
+// order. The format is chosen by the pasted tail ({url} / '=' / '/' / plain);
+// for the AMBIGUOUS tails ('/' raw-path and plain '?url=') the OTHER encoding
+// is added as a fallback so a relay worker that understands only one of the
+// two still works no matter how the URL was pasted. Live V349 bug: a
+// trailing-slash paste + an old ?url=-only worker produced a 400 «missing
+// ?url=» WITHOUT CORS headers, which the browser turns into an opaque
+// TypeError — the relay HAD answered, the app just could not see it. Returns
+// [] for an empty relay; duplicate URLs are de-duplicated.
+function relayAltUrls(relay, target) {
+    if (!relay) return [];
+    var out = [];
+    var bare = relay.replace(/\/+$/, '');
+    if (relay.indexOf('{url}') >= 0) {                    // explicit template
+        out.push({ tag: 'tpl', url: relay.replace('{url}', encodeURIComponent(target)) });
+    } else if (relay.charAt(relay.length - 1) === '=') {  // encoded-target suffix
+        out.push({ tag: 'enc', url: relay + encodeURIComponent(target) });
+    } else if (relay.charAt(relay.length - 1) === '/') {  // raw path (cors-anywhere style)
+        out.push({ tag: 'path', url: relay + target });
+        out.push({ tag: 'url', url: bare + (bare.indexOf('?') >= 0 ? '&' : '?') + 'url=' + encodeURIComponent(target) });
+    } else {                                              // plain → ?url= (allorigins style)
+        out.push({ tag: 'url', url: relay + (relay.indexOf('?') >= 0 ? '&' : '?') + 'url=' + encodeURIComponent(target) });
+        out.push({ tag: 'path', url: bare + '/' + target });
+    }
+    var seen = {};
+    return out.filter(function (o) { if (seen[o.url]) return false; seen[o.url] = 1; return true; });
+}
+// V349: closing hint once every attempt (direct + all relay formats) failed
+// at the transport level.
+function relayHintText(relay, isBybit) {
+    if (!relay) return isBybit ?
+        ' — if your network blocks api.bybit.com, set a Relay URL on the Bybit card' :
+        ' — fapi.bitunix.com is behind a Cloudflare challenge and blocks DIRECT browser calls (CORS); deploy your own relay and paste its URL into the Relay URL field on the Bitunix card («relay help» link)';
+    var short = relay.slice(0, 40) + (relay.length > 40 ? '…' : '');
+    return ' — relay «' + short + '» failed on every format: check the URL (workers.dev is blocked on some ISPs) or update the worker code from «relay help» (the new snippet accepts ?url=… AND /https://…)';
+}
 // V348: human-readable network diagnostics — the raw TypeError text
 // («Failed to fetch») gave the user zero information about WHY.
 function netFailHuman(e) {
@@ -112800,15 +112837,23 @@ function netFailHuman(e) {
 var BYBIT_LAST_VIA = 'direct';
 var BITUNIX_LAST_VIA = 'direct';
 
-function friendlyHttpError(exchange, res, body) {
+function friendlyHttpError(exchange, res, body, at) {
+    var via = (at && at.via === 'relay') ? ' (via relay' + (at.tag ? ' ·' + at.tag : '') + ')' : '';
     if (res.status === 403 && /<\/html>|cf-mitigated|Just a moment/i.test(body || '')) {
-        return exchange + ' blocked the request with a Cloudflare check (HTTP 403 HTML). ' +
+        return exchange + ' blocked the request with a Cloudflare check (HTTP 403 HTML' + via + '). ' +
             'Retry later or from another network — keys/signature were not the problem.';
     }
-    if (res.status === 403 || res.status === 451) return exchange + ' refused the request (HTTP ' + res.status + '). Check API-key permissions and IP whitelist.';
-    if (res.status === 401) return exchange + ' rejected the credentials (HTTP 401). Re-check key/secret.';
-    if (res.status === 429) return exchange + ' rate limit (HTTP 429). Wait a bit and retry.';
-    return exchange + ' HTTP ' + res.status;
+    // V349: a READABLE relay 400/404/405 almost always means the worker did
+    // not understand the URL format (old snippet + path style → «missing ?url=»).
+    if (at && at.via === 'relay' && (res.status === 400 || res.status === 404 || res.status === 405)) {
+        return exchange + ' relay answered HTTP ' + res.status + ' «' + String(body || '').replace(/\s+/g, ' ').trim().slice(0, 60) +
+            '» — the worker did not understand the request. Update the worker code from «relay help» ' +
+            '(the current snippet accepts ?url=… AND /https://…).';
+    }
+    if (res.status === 403 || res.status === 451) return exchange + ' refused the request (HTTP ' + res.status + ')' + via + '. Check API-key permissions and IP whitelist.';
+    if (res.status === 401) return exchange + ' rejected the credentials (HTTP 401)' + via + '. Re-check key/secret.';
+    if (res.status === 429) return exchange + ' rate limit (HTTP 429)' + via + '. Wait a bit and retry.';
+    return exchange + ' HTTP ' + res.status + via;
 }
 function bybitHint(retCode, retMsg) {
     var m = String(retMsg || '');
@@ -112819,86 +112864,98 @@ function bybitHint(retCode, retMsg) {
     return m;
 }
 async function bybitGet(path, qs, cred) {
-    var ts = String(Date.now());
-    var recv = '10000';
-    var sig = await hmacSha256Hex(cred.secret, ts + cred.key + recv + (qs || ''));
     var targetUrl = BYBIT_BASE + path + (qs ? '?' + qs : '');
-    var headers = {
-        'X-BAPI-API-KEY': cred.key, 'X-BAPI-TIMESTAMP': ts,
-        'X-BAPI-RECV-WINDOW': recv, 'X-BAPI-SIGN': sig,
-    };
-    // V348: direct first, then the user relay (if configured). API-level
-    // errors (retCode != 0) mean the TRANSPORT worked — no relay retry.
-    var attempts = [{ url: targetUrl, via: 'direct' }];
+    // V349 attempt chain: direct → relay in the format implied by the pasted
+    // URL → relay in the OTHER encoding (a trailing-slash paste used to hit an
+    // old ?url=-only worker and die as an opaque TypeError). API-level errors
+    // (retCode != 0) mean the TRANSPORT worked — no further attempts.
     var relay = (loadRelays().bybit || '').trim();
-    if (relay) attempts.push({ url: buildRelayUrl(relay, targetUrl), via: 'relay' });
-    var lastErr = null;
+    var attempts = [{ url: targetUrl, via: 'direct' }];
+    relayAltUrls(relay, targetUrl).forEach(function (ra) { attempts.push({ url: ra.url, via: 'relay', tag: ra.tag }); });
+    var errs = [];
     for (var i = 0; i < attempts.length; i++) {
         var at = attempts[i];
+        var mark = '[' + at.via + (at.tag ? '·' + at.tag : '') + ']';
+        var ts = String(Date.now());                     // fresh per attempt
+        var sig = await hmacSha256Hex(cred.secret, ts + cred.key + '10000' + (qs || ''));
+        var headers = {
+            'X-BAPI-API-KEY': cred.key, 'X-BAPI-TIMESTAMP': ts,
+            'X-BAPI-RECV-WINDOW': '10000', 'X-BAPI-SIGN': sig,
+        };
         var res, text;
         try {
             res = await fetch(at.url, { method: 'GET', headers: headers, signal: AbortSignal.timeout(ABORT_MS) });
             text = await res.text();
         } catch (e) {
-            lastErr = new Error(netFailHuman(e) + ' [' + at.via + ']');
+            errs.push(mark + ' ' + netFailHuman(e));
             continue;
         }
         if (res.status === 403 && /<\/html>|cf-mitigated|Just a moment/i.test(text)) {
-            lastErr = new Error('Cloudflare challenge page (HTTP 403 HTML) [' + at.via + ']');
+            errs.push(mark + ' Cloudflare challenge page (HTTP 403 HTML)');
             continue;
         }
         BYBIT_LAST_VIA = at.via;
         var j;
-        try { j = JSON.parse(text); } catch (_) { throw new Error(friendlyHttpError('Bybit', res, text)); }
+        try { j = JSON.parse(text); } catch (_) {
+            var hmsg = friendlyHttpError('Bybit', res, text, at);
+            if (at.via === 'relay' && i < attempts.length - 1) { errs.push(mark + ' ' + hmsg); continue; }
+            throw new Error(hmsg);
+        }
         if (j.retCode !== 0) throw new Error('Bybit ' + j.retCode + ': ' + bybitHint(j.retCode, j.retMsg));
         return j.result;
     }
-    throw new Error('Bybit network error: ' + (lastErr ? lastErr.message : 'unreachable') +
-        (relay ? '' : ' — if your network blocks api.bybit.com, set a Relay URL on the Bybit card'));
+    throw new Error('Bybit network error: ' + (errs.join(' · ') || 'unreachable') + relayHintText(relay, true));
 }
 async function bitunixGet(path, pairs, cred) {
-    var nonce = randomHex(16);                       // 32-hex random string
-    var ts = String(Date.now());
     // queryParams = pairs sorted by key (ASCII), concatenated key+value, no separators
     var sorted = (pairs || []).slice().sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0; });
     var qp = sorted.map(function (p) { return p[0] + p[1]; }).join('');
-    var digest = await sha256Hex(nonce + ts + cred.key + qp + '');
-    var sign = await sha256Hex(digest + cred.secret);
     var qsPart = sorted.map(function (p) { return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]); }).join('&');
     var targetUrl = BITUNIX_BASE + path + (qsPart ? '?' + qsPart : '');
-    var headers = {
-        'api-key': cred.key, 'nonce': nonce, 'timestamp': ts, 'sign': sign,
-        'language': 'en-US', 'Content-Type': 'application/json',
-    };
-    // V348: direct first, then the user relay (if configured). API-level
-    // errors (code != 0) mean the TRANSPORT worked — no relay retry.
-    var attempts = [{ url: targetUrl, via: 'direct' }];
+    // V349 attempt chain: direct → relay (format per pasted URL) → relay in
+    // the OTHER encoding. The signature covers ONLY nonce+ts+apiKey+query+body
+    // (never host/path/headers) — the same signed headers are valid on every
+    // leg; nonce/timestamp/sign are REGENERATED per attempt to stay inside
+    // the 60 s timestamp window.
     var relay = (loadRelays().bitunix || '').trim();
-    if (relay) attempts.push({ url: buildRelayUrl(relay, targetUrl), via: 'relay' });
-    var lastErr = null;
+    var attempts = [{ url: targetUrl, via: 'direct' }];
+    relayAltUrls(relay, targetUrl).forEach(function (ra) { attempts.push({ url: ra.url, via: 'relay', tag: ra.tag }); });
+    var errs = [];
     for (var i = 0; i < attempts.length; i++) {
         var at = attempts[i];
+        var mark = '[' + at.via + (at.tag ? '·' + at.tag : '') + ']';
+        var nonce = randomHex(16);                       // 32-hex random string
+        var ts = String(Date.now());
+        var sign = await sha256Hex(await sha256Hex(nonce + ts + cred.key + qp + '') + cred.secret);
+        var headers = {
+            'api-key': cred.key, 'nonce': nonce, 'timestamp': ts, 'sign': sign,
+            'language': 'en-US', 'Content-Type': 'application/json',
+        };
         var res, text;
         try {
             res = await fetch(at.url, { method: 'GET', headers: headers, signal: AbortSignal.timeout(ABORT_MS) });
             text = await res.text();
         } catch (e) {
-            lastErr = new Error(netFailHuman(e) + ' [' + at.via + ']');
+            errs.push(mark + ' ' + netFailHuman(e));
             continue;
         }
         if (res.status === 403 && /<\/html>|cf-mitigated|Just a moment/i.test(text)) {
-            lastErr = new Error('Cloudflare challenge page (HTTP 403 HTML) [' + at.via + ']');
+            errs.push(mark + ' Cloudflare challenge page (HTTP 403 HTML)');
             continue;
         }
         BITUNIX_LAST_VIA = at.via;
         var j;
-        try { j = JSON.parse(text); } catch (_) { throw new Error(friendlyHttpError('Bitunix', res, text)); }
+        try { j = JSON.parse(text); } catch (_) {
+            var hmsg = friendlyHttpError('Bitunix', res, text, at);
+            // V349: a readable relay 4xx is recorded so the NEXT format still
+            // runs — throwing here would make the alt-format retry useless.
+            if (at.via === 'relay' && i < attempts.length - 1) { errs.push(mark + ' ' + hmsg); continue; }
+            throw new Error(hmsg);
+        }
         if (j.code !== 0) throw new Error('Bitunix ' + j.code + ': ' + (j.msg || 'error'));
         return j.data;
     }
-    throw new Error('Bitunix network error: ' + (lastErr ? lastErr.message : 'unreachable') +
-        (relay ? '' : ' — fapi.bitunix.com is behind a Cloudflare challenge and blocks DIRECT browser calls (CORS); ' +
-         'deploy your own relay and paste its URL into the Relay URL field on the Bitunix card («relay help» link)'));
+    throw new Error('Bitunix network error: ' + (errs.join(' · ') || 'unreachable') + relayHintText(relay, false));
 }
 
 // Normalize to { total, assets:[{coin,avail,locked,usd}], positions:[{symbol,side,size,entry,mark,uPnl,lev}], notes:[] }
@@ -113076,22 +113133,29 @@ function renderMgr() {
 }
 // ── V348: relay help — copy-paste Cloudflare Worker snippet + explainer ──
 var AK_WORKER_SNIPPET = [
+    "// Relay worker v2 (V349): understands BOTH ?url=… and /https://target.",
     "export default {",
     "  async fetch(request) {",
-    "    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: {",
-    "      'Access-Control-Allow-Origin': '*',",
-    "      'Access-Control-Allow-Headers': '*',",
-    "      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' } });",
-    "    const target = new URL(request.url).searchParams.get('url');",
-    "    if (!target) return new Response('missing ?url=', { status: 400 });",
+    "    const cors = { 'Access-Control-Allow-Origin': '*',",
+    "      'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' };",
+    "    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });",
+    "    const u = new URL(request.url);",
+    "    let target = u.searchParams.get('url');",
+    "    if (!target && u.pathname.length > 1) {",
+    "      const p = u.pathname.slice(1);",
+    "      if (/^https?:\\/\\//i.test(p)) target = p + u.search;",
+    "    }",
+    "    if (!target || !/^https?:\\/\\//i.test(target))",
+    "      return new Response('relay: pass target as ?url=… or /https://…', { status: 400, headers: cors });",
     "    const fwd = new Headers(request.headers);",
-    "    fwd.delete('origin'); fwd.delete('referer'); fwd.delete('cookie');",
+    "    ['origin', 'referer', 'cookie', 'host', 'content-length'].forEach((h) => fwd.delete(h));",
     "    const r = await fetch(target, { method: request.method, headers: fwd,",
-    "      body: request.method === 'GET' ? undefined : request.body });",
+    "      body: request.method === 'GET' ? undefined : request.body, redirect: 'follow' });",
     "    const h = new Headers(r.headers);",
     "    h.set('Access-Control-Allow-Origin', '*');",
+    "    h.delete('set-cookie'); h.delete('content-encoding'); h.delete('content-length');",
     "    return new Response(r.body, { status: r.status, headers: h });",
-    "  }",
+    "  },",
     "};",
 ].join('\n');
 var AK_RELAY_HELP_HTML =
@@ -113102,12 +113166,16 @@ var AK_RELAY_HELP_HTML =
     'your <b>secret never leaves it</b> — the relay only sees the api-key and a per-request sign that cannot sign ' +
     'anything new. Use YOUR OWN relay, never a third-party one.<br>' +
     'Deploy (free): Cloudflare → Workers &amp; Pages → Create worker → paste the code → Deploy, then put its ' +
-    'https://…workers.dev URL into the Relay URL field of the exchange card.' +
+    'https://…workers.dev URL into the Relay URL field of the exchange card (with or without the trailing ' +
+    'slash — the app tries both encodings). Already deployed the older snippet? It still works: the app ' +
+    'auto-retries the other format. Update the worker anyway — the snippet below answers a proper error ' +
+    'instead of a CORS-opaque 400.' +
     '<pre data-ak-snippet>' + AK_WORKER_SNIPPET + '</pre>' +
     '<button class="ak-btn" data-ak-act="copysnippet" style="flex:0 0 auto;padding:5px 10px;">Copy worker code</button>' +
-    '<div style="margin-top:6px">Relay URL formats: contains <b>{url}</b> → replaced with the encoded target · ends with ' +
-    '<b>=</b> → encoded target appended · ends with <b>/</b> → raw target appended (cors-anywhere style) · otherwise ' +
-    '<b>?url=</b> is appended. The relay is saved per exchange, in plaintext localStorage (it is not a secret).</div>' +
+    '<div style="margin-top:6px">Relay URL: paste the https://…workers.dev link with or without the trailing slash — ' +
+    'the app automatically tries the path form AND <b>?url=…</b>, so even an older ?url=-only worker keeps working. ' +
+    'Custom relays: <b>{url}</b> placeholder or a trailing <b>=</b>. The relay is saved per exchange, in plaintext ' +
+    'localStorage (it is not a secret).</div>' +
     '</div>';
 function akFallbackCopy(text) {
     var ta = document.createElement('textarea');
@@ -113335,6 +113403,8 @@ window.ExchKeys = {
         loadRelays: loadRelays,
         saveRelays: saveRelays,
         buildRelayUrl: buildRelayUrl,
+        relayAltUrls: relayAltUrls,
+        relayHintText: relayHintText,
         netFailHuman: netFailHuman,
         subtleAvailable: subtleAvailable,
         idbNuke: function () {
