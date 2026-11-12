@@ -3,6 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <!-- V352 LIVE ORDER BUTTON IN THE HEADER + WRITE CLIENTS (юзер: «Я не про exchange balances, я про кнопку что была в хэдере основной странице. Она должна была пропадать, если нет ключей, но щас они есть. Там еще можно было ордера открывать» + «Это было в фиксед 17»): расследование — в (17) из биржевого была ТОЛЬКО бумажная кнопка-кошелёк с long-press меню бумажных ордеров (V313); подписи/ключи/nonce в (17) НЕТ ВООБЩЕ (grep apiKey/secret/nonce = 0), а живой read-only появился только в V340, и только GET. Кнопка «пропала» потому что с V326 кошелёк скрыт при Sim OFF. Сделано то, что юзер реально хочет: ① КНОПКА В ХЭДЕРЕ (btn-live-trade, иконка trade — стрелки sell-down/buy-up, сразу после кошелька): видна ТОЛЬКО когда настроен хотя бы один ключ — hasKeys() (расшифровка vault) + подписка onKeysChanged (fireKeysChanged после Save/Remove/Wipe в менеджере) + отложенный re-check (setTimeout 800 мс — страховка порядка script-блоков); клик → модалка. ② WRITE-КЛИЕНТЫ bitunixPost/bybitPost — та же V349-цепочка попыток direct → relay(формат по хвосту) → relay(альт), nonce/ts/sign ПЕРЕгенерируются на попытку; Bitunix POST-подпись покрывает ТЕЛО: sign = sha256(sha256(nonce+ts+apiKey+''+bodyStr)+secret), bodyStr сериализуется ОДИН раз и этим же стрингом подписывается и отправляется; Bybit POST: HMAC(secret, ts+key+recvWindow+bodyStr) (для POST queryString = сырой JSON-body), Content-Type application/json; релей безопасен — v2-сниппет форвардит body и headers, content-length пересчитывается. ③ МОДАЛКА «⚡ Live Order» (USDT-M futures, РЕАЛЬНЫЙ счёт): биржа из настроенных, символ префиллерится с графика (btn-symbol 'BTC / USDT' → BTCUSDT, редактируемый), qty, цена только для LIMIT, тогглы BUY·Long/SELL·Short и Market/Limit, чекбоксы hedge-режим (localStorage ce_ak_hedge_v1; Bitunix tradeSide OPEN/CLOSE — в доке place_order «Only required in hedge-mode», Bybit positionIdx 1/2; one-way не шлёт ничего) и reduce-only; ОТПРАВКА ДВУХТАПНАЯ (armed «Confirm: BUY 0.01 BTCUSDT MARKET» — как Remove/Wipe), валидация qty/цены ДО сети, статус orderId / человеческая ошибка (Bitunix code/msg, Bybit retCode). ④ PAYLOAD по докам: Bitunix POST /api/v1/futures/trade/place_order {symbol, side BUY|SELL, orderType MARKET|LIMIT, qty, price+effect GTC для LIMIT, reduceOnly?} — БЕЗ marginCoin (в доке поля нет); Bybit POST /v5/order/create {category linear, side Buy|Sell, orderType Market|Limit, qty, price+timeInForce GTC, reduceOnly?, positionIdx}. ⑤ РЕГРЕСС probe_v352_trade: кнопка скрыта без ключей → реальный UI-Save в менеджере → кнопка появилась (fireKeysChanged), клик → модалка с префиллом BTCUSDT; market BUY через мок-релей → Node-проверка ПОДПИСИ бит-в-бит (sha256(sha256(nonce+ts+key+''+body)+secret)) + тела (symbol/side/orderType/qty), orderId показан; LIMIT без цены → валидация без сети; hedge → tradeSide OPEN; Bybit → HMAC-подпись бит-в-бит, positionIdx 0, hedge-sell → positionIdx 2; API-ошибка (Bitunix 4001) показана как есть; wipe → кнопка скрылась; boot-check BOOT-OK, pageerror 0 -->
+    <!-- V351 LIVE-PORTFOLIO DISCOVERABILITY + STALE AUTO-REFRESH (юзер после V350: «Заработало. А учитывая что теперь есть ключ, где та кнопка в меню с отдельной модалкой портфолио?»): модалка живого портфолио СУЩЕСТВУЕТ с V340 (openPortfolio → PFV-backdrop: grand total, активы coin/available/locked/≈USD, позиции, notes, ↻ Refresh), но пункт меню назывался «💼 Exchange balances» — юзер искал слово «портфолио» и не нашёл. ① ПЕРЕИМЕНОВАНИЕ пункта меню ⚙ Settings → Portfolio: «💼 Exchange balances» → «💼 Live portfolio» (data-role btn-exch-pf и вся обвязка не тронуты, тултип теперь «Live portfolio — exchange balances & positions»); в footer'е менеджера ключей кнопка «💼 Open portfolio» как была, так и осталась — второй путь открытия. ② STALE AUTO-REFRESH: openPortfolio рефетчит баланс не только когда данных нет вообще (первое открытие), но и когда снапшот СТАРЕЕ 60 с (PORT.ts) — повторное открытие модалки через час больше не показывает протухший тотал; свежие данные (или идущий уже рефетч PORT.busy) — лишнего запроса нет, ↻ Refresh остаётся ручным. Транспорт/парсинг/безопасность не тронуты. ③ РЕГРЕСС probe_v351_pfbtn: в живом UI открыт ⚙-меню → кнопка называется «💼 Live portfolio», клик → дропдаун закрылся, модалка «💼 Exchange Portfolio» открылась, auto-refresh сам дотянул данные через мок-релей (строка ETH в таблице активов, total в шапке), путь «🔑 API Keys → 💼 Open portfolio» открывает ту же модалку, повторное открытие со СВЕЖИМ ts — БЕЗ повторного фетча, с протухшим ts (2 мин) — фетч есть (счётчик хитов мок-релея); boot-check BOOT-OK, pageerror 0 -->
     <!-- V350 BITUNIX SPOT WALLET + ALL-MARGIN-COIN FUTURES (юзер: «Показывает ноль баланс на аккаунте, хотя там 0.06 долларов в эфире»): после V349 транспорт через релей заработал, но fetchBitunix читал ТОЛЬКО фьючерсный USDT-аккаунт (marginCoin=USDT), а эфир юзера лежит на СПОТ-кошельке — итого показывался ноль. Документация и живые пробы через релей юзера: официальный SDK/клиент и докa показывают спот-базу openapi.bitunix.com и GET /api/spot/v1/user/account; живая проба через релей юзера подтвердила эндпоинт (DUMMY-подпись → {"code":"100004","msg":"APP_KEY_NOT_EXIST"} — auth-ошибка, НЕ 404), публичный GET /api/spot/v1/market/last_price?symbol=ETHUSDT → {"code":"0","msg":"result.success","data":"2015.85"} (цена строкой в data), а СПИСОК спот-доков SPA-закрыт (все слаги 404, www.bitunix.com из песочницы CF-403) → парсер написан толерантно ко всем фамилиям форм (массив / list/assets/accounts/balances / dict {COIN:{…}}), поля coin/currency/asset + available/free + frozen/locked/frozenBalance + balance/total/equity + внедрённый usdtValue/convertUsdtRate предпочитается внешним ценам; неузнанная форма → note с топ-ключами вместо тихого нуля. ① futures/account БЕЗ marginCoin → в доках ответ это МАССИВ по всем margin-монетам (USDT-M/USDC-M/coin-M одним запросом), дерб-вызов подтверждён (10003 Token invalid — параметр не обязателен); фолбэк на старый marginCoin=USDT при ошибке bare-вызова. ② bitunixGet: спот-API отвечает code СТРОКОЙ («0»/«100004») — проверка Number(j.code)!==0 (иначе «0» !== 0 в strict — легитимный ответ бросал бы ошибку); cred===null → БЕЗ auth-заголовков (публичные цены, как в офиц. SDK). ③ bitunixPriceMap: USD-курсы по монетам через публичный last_price COINUSDT (стабльные из списка = 1; нет пары → NaN → сумма строка «no USDT pair — value not counted», amount всё равно виден); внедрённый rate из ответа предпочитается. ④ fetchBitunix: total = фьючерсы (доступно+заморожено+маржа+бонус+cross/isolation uPnL по всем margin-монетам) + спот (avail+locked) — всё в USD; notes: relay-пометка + диагностика спота + позиции-ошибки больше не глотаются молча. Транспорт не тронут (цепочка V349 direct→relay·path→relay·url, подпись та же). ⑤ РЕГРЕСС probe_v350_spot: мок-релей — bare-futures массив + спот-массив с ETH 0.00003 и last_price 2015.85 → Test/портфель total 10.06 (10 USDT + 0.06 ETH), строки USDT+ETH, usd ETH ≈0.06; спот-ответ со СТРОКОВЫМ code:"0" парсится (регресс Number-нормализации); dict-форма и convertUsdtRate-поле; неузнанная форма → note с ключами; фолбэк marginCoin=USDT при отказе bare-вызова; ЖИВОЕ через релей юзера: last_price ETHUSDT без подписи → конечный курс >0, user/account с DUMMY → Bitunix 100004 (endpoint подтверждён, не network-ошибка), fetchBitunix с DUMMY → API-level отказ (не network); boot-check BOOT-OK, pageerror 0 -->
 <!-- V349 BITUNIX RELAY FORMAT MISMATCH (юзер: «Использую https://soft-river-07ed.anttolbatov.workers.dev/ с твоим кодом, но ошибка. Bitunix network error: browser could not reach bc direct browser calls are blocked etc»): корень найден живым curl-пробом САМОГО воркера юзера — воркер ЖИВ И РАБОЧИЙ: его ?url= формат вернул HTTP 200 c code:0 и полным тикерным JSON от fapi.bitunix.com (Worker→CF-зона Bitunix проходит БЕЗ челленджа), но приложение при вставленном URL с ХВОСТОВЫМ СЛЭШЕМ строит RAW-path формат worker/https://target (cors-anywhere стиль), а сниппет воркера из «relay help» понимал ТОЛЬКО ?url= → воркер отвечал 400 «missing ?url=» БЕЗ Access-Control-Allow-* → браузер CORS-глушил ответ → fetch умирал опакетным TypeError → юзер видел «browser could not reach…» хотя релей на самом деле ОТВЕТИЛ. ① СНИППЕТ v2 (универсальный): ?url= И path-style (pathname.slice(1)+u.search), ACAO/ACAH/ACAM на КАЖДЫЙ ответ включая 400, delete origin/referer/cookie/host/content-length, на ответе ещё delete set-cookie/content-encoding/content-length, redirect follow — старые воркеры совместимы. ② relayAltUrls(relay,target): раскрывает вставленный URL в упорядоченный список конкретных URL попыток — {url}→tpl, хвост '='→enc (без альтов — формат явный), хвост '/'→path + АЛЬТ ?url= (слэши срезаны), plain→?url= + АЛЬТ path; дедуп. Цепочка bitunixGet/bybitGet: direct → relay(осн. формат) → relay(альт) — подпись Bitunix не покрывает host/path, те же заголовки валидны на каждой ноге; nonce/timestamp/sign ПЕРЕгенерируются на попытку (окно 60s); не-JSON ответ релея при наличии следующей попытки = записанная ошибка, НЕ throw (иначе читаемый 400 старого воркера навсегда блокировал бы альт-формат); API-level ошибки (code/retCode≠0) как раньше останавливают цепочку — транспорт работает. ③ ДИАГНОСТИКА: ошибки всех ног агрегированы «[direct] … · [relay·path] … · [relay·url] …»; friendlyHttpError знает про relay-ногу (400/404/405 «missing ?url=» → «worker did not understand the request — update the worker code from relay help»); relayHintText при исчерпании попыток: проверить URL / workers.dev блокируется некоторыми ISP / обновить сниппет. ④ РЕГРЕСС probe_v349_relay: relayAltUrls все форматы бит-в-бит, мок-воркер старого типа (path→400 missing ?url= c ACAO, ?url=→JSON): вставленный слэш → успех через [relay·url] в Test и refreshPortfolio; 400 на ОБОИХ форматах → человеческое сообщение без «Failed to fetch»; ЖИВОЙ воркер юзера из песочницы: bitunixGet market/tickers с DUMMY-подписью → code:0 данные через relay·url (реальный транспорт доказан), приватный account с DUMMY → API-level ошибка (не network); help-бокс показывает сниппет v2 (>700 байт, содержит pathname); boot-check BOOT-OK, pageerror 0 -->
 <!-- V348 BITUNIX RELAY FALLBACK + HUMAN NETWORK DIAGNOSTICS (юзер: «Bitunix network error: failed to fetch»): причина найдена живым probe с песочницы — fapi.bitunix.com стоит за Cloudflare managed challenge, который отвечает даже ПУБЛИЧНЫМ GET (market/tickers) «403 + HTML challenge» (cf-mitigated: challenge) и НЕ шлёт ни одного Access-Control-Allow-* заголовка; OPTIONS-preflight получает ту же 403-страницу, поэтому fetch из браузера под челленджем ВСЕГДА умирает с TypeError «Failed to fetch» (api.bitunix.com и www.bitunix.com — то же самое). Docs подтверждают: auth только через заголовки api-key/nonce/timestamp/sign (query-параметров нет), timestamp-окно 60s. ① ТРАНСПОРТ: bybitGet/bitunixGet переписаны на цепочку попыток direct → (если задан) user relay; API-ошибки (retCode/code != 0) означают что транспорт работает — relay-retry не делается; CF-челлендж (403+HTML) детектится на каждой попытке. Ключевой факт безопасности: подпись Bitunix SHA256(SHA256(nonce+ts+apiKey+queryParams+body)+secret) НЕ покрывает host/path/headers — те же самые подписанные заголовки едут через релей без изменений, СЕКРЕТ никогда не покидает устройство (релей видит только api-key и одноразовый sign, которыми нельзя подписать новый запрос). Релеи OPT-IN и per-exchange: поле Relay URL на карточке (localStorage ce_ak_relay_v1, plaintext — не секрет), форматы: {url}-плейсхолдер / суффикс «=» (encoded) / суффикс «/» (raw, cors-anywhere) / иначе ?url= (allorigins). Прямые запросы остаются первыми — у пользователей с чистым IP всё работает как раньше. ② ДИАГНОСТИКА: netFailHuman() — TypeError «Failed to fetch» больше не показывается сырым; теперь «browser could not reach the endpoint — direct browser calls are blocked (a Cloudflare challenge page has no CORS headers) or the network path is down», таймауты отдельно, каждая попытка помечается [direct]/[relay]; при отсутствии релея в ошибке Bitunix подсказка про Relay URL. ③ UI: на обеих карточках строка Relay URL (Save сохраняет релей даже без ключей, статус «relay on»), кнопка «relay help» открывает общий блок-объяснение с ГОТОВЫМ 20-строчным Cloudflare Worker сниппетом (OPTIONS-preflight 204 + ACAO/ACAH *, forward headers, delete origin/referer/cookie) и кнопкой Copy worker code (clipboard API + execCommand fallback); fetchBybit/fetchBitunix добавляют note «via relay (direct was blocked)» в портфель. ④ Регресс probe_v348_relay: buildRelayUrl все 4 формата бит-в-бит, netFailHuman, saveRelays/loadRelays roundtrip; UI: relay-only save, ключи в vault, Test обеих бирж с ЗААБОРТЕННЫМИ прямыми эндпоинтами → успех только через релей (status «tested OK · relay on»), refreshPortfolio → notes «via relay (direct was blocked)», Bitunix total 109 (=100.5+2+5+1+0.5), Bybit ok; мёртвый релей → «Bitunix network error: …blocked… [relay]» без сырого «Failed to fetch»; help-бокс открывается, сниппет 836 байт, copy есть; pageerror 0; boot-check BOOT-OK code-0 -->
@@ -83693,7 +83695,8 @@ const TOOLBAR_ARIA_LABELS = {
     'btn-portfolio':    'Open paper portfolio',
     'btn-pf-sim':       'Toggle portfolio simulation (default OFF)',
     'btn-api-keys':     'Exchange API keys manager (Bybit / Bitunix)',
-    'btn-exch-pf':      'Live exchange balances (portfolio)',
+    'btn-exch-pf':      'Live portfolio — exchange balances & positions',
+    'btn-live-trade':   'Live order entry — place a real exchange futures order (needs API keys)',
     'btn-cache-clear':  'Clear all cached candles',
     'btn-vol-mode':     'Cycle volume display mode (coins / dollars)',
     'btn-trend-line':   'Draw trend line',
@@ -83861,6 +83864,8 @@ class ChartFactory {
             img:    _IC('<rect x="3.5" y="5" width="17" height="14" rx="1.5"/><circle cx="9" cy="10" r="1.6"/><path d="M4.5 17l5-5 3.5 3.5L16.5 12l3 3"/>'),
             /* V301: paper portfolio (the old «scan» icon died with ScanStats) */
             wallet: _IC('<rect x="3" y="6.5" width="18" height="12.5" rx="2.5"/><path d="M3 10h18" opacity=".45"/><circle cx="16.6" cy="14" r="1.15" fill="currentColor" stroke="none"/>'),
+            /* V352: live-order button (sell-down / buy-up arrows) */
+            trade:  _IC('<path d="M7 20V7M7 7L3.8 10.2M7 7l3.2 3.2"/><path d="M17 4v13M17 17l3.2-3.2M17 17l-3.2-3.2"/>'),
         };
         function _mkBtn([id, text, opts = {}]) {
             const btn = document.createElement('button');
@@ -84194,6 +84199,54 @@ class ChartFactory {
         toolbarInner.appendChild(pfBtn);
         toolbarInner.appendChild(_mkSep());
 
+        // V352: LIVE order button — the header shortcut the user asked for.
+        //   Hidden until at least one exchange API key exists (encrypted vault):
+        //   hasKeys() re-checks on every manager save/remove/wipe via
+        //   onKeysChanged, plus a delayed re-check as a script-order safety.
+        const _ltBtn = _mkBtn(['btn-live-trade', '', { icon: ICONS.trade }]);
+        _ltBtn.type = 'button';
+        _ltBtn.title = 'Live order — real exchange futures order (needs API keys)';
+        _ltBtn.style.display = 'none';
+        _ltBtn.addEventListener('click', () => {
+            try { window.ExchKeys && window.ExchKeys.openTrade(); }
+            catch (err) { try { showToast('Live trade failed: ' + err.message); } catch (_) {} }
+        });
+        const _ltSync = () => {
+            try {
+                if (window.ExchKeys && typeof window.ExchKeys.hasKeys === 'function') {
+                    window.ExchKeys.hasKeys().then(function (has) {
+                        _ltBtn.style.display = has ? '' : 'none';
+                    }).catch(function () {});
+                }
+            } catch (_) {}
+        };
+        // The ExchKeys script block sits near the end of the document and may
+        // execute AFTER this toolbar builds (boot runs early) — a one-shot
+        // window.ExchKeys check at build time is a silent no-op then, and the
+        // button never appears when the user saves keys later (live V352 probe
+        // bug B). Poll briefly until the module shows up, subscribe once, then
+        // rely on fireKeysChanged (manager Save/Remove/Wipe) alone.
+        let _ltWired = false;
+        const _ltWire = () => {
+            if (_ltWired) return;
+            try {
+                if (window.ExchKeys && typeof window.ExchKeys.onKeysChanged === 'function') {
+                    window.ExchKeys.onKeysChanged(_ltSync);
+                    _ltWired = true;
+                }
+            } catch (_) {}
+        };
+        _ltWire();
+        _ltSync();
+        let _ltTries = 0;
+        const _ltPoll = setInterval(() => {
+            _ltWire();
+            if (_ltWired || ++_ltTries > 30) clearInterval(_ltPoll);
+            else _ltSync();
+        }, 500);
+        toolbarInner.appendChild(_ltBtn);
+        toolbarInner.appendChild(_mkSep());
+
         // ── Settings dropdown ── (includes ALL toggles)
         const settingsDropdown = document.createElement('div');
         settingsDropdown.className = 'dropdown';
@@ -84357,7 +84410,7 @@ class ChartFactory {
         // V340: live-exchange block — API keys manager + balances. CLOSE_ROLES
         //   covers both: they open their own modal, so the dropdown must close.
         _addMenuBtn(['btn-api-keys', '🔑 API Keys']);
-        _addMenuBtn(['btn-exch-pf', '💼 Exchange balances']);
+        _addMenuBtn(['btn-exch-pf', '💼 Live portfolio']);
 
         // ─── Theme ─── (V50: multi-theme support)
         _addMenuLabel('Theme');
@@ -112548,7 +112601,7 @@ window.PaperPortfolio = {
 //    /api/v1/futures/account?marginCoin=USDT, GET
 //    /api/v1/futures/position/get_pending_positions.
 //
-//  UI entry: ⚙ Settings → Portfolio → «🔑 API Keys» / «💼 Exchange balances»
+//  UI entry: ⚙ Settings → Portfolio → «🔑 API Keys» / «💼 Live portfolio» (V351, was «Exchange balances»)
 //  (wired in ChartFactory._buildToolbar; window.ExchKeys.open/openPortfolio).
 // ═════════════════════════════════════════════════════════════════════════════════
 (function () {
@@ -112969,6 +113022,99 @@ async function bitunixGet(path, pairs, cred, base) {
     throw new Error('Bitunix network error: ' + (errs.join(' · ') || 'unreachable') + relayHintText(relay, false));
 }
 
+// ── V352: WRITE clients — live order placement (USDT-M futures) ──
+// Same V349 attempt chain (direct → relay per pasted format → relay alt) and
+// per-attempt re-signing as the GET clients. The Bitunix POST signature
+// covers the RAW JSON BODY string (queryParams empty):
+//   sign = SHA256(SHA256(nonce + ts + apiKey + '' + bodyStr) + secret)
+// — the body is serialized ONCE and the exact same string is signed and sent.
+// Bybit v5 signs ts+key+recvWindow+queryString where for POST the queryString
+// is the raw JSON body string. Both are relay-safe: the signature does not
+// cover host/path/headers, and the v2 worker snippet forwards the body with
+// the auth headers while recomputing content-length.
+async function bitunixPost(path, bodyObj, cred, base) {
+    var bodyStr = JSON.stringify(bodyObj || {});
+    var targetUrl = (base || BITUNIX_BASE) + path;
+    var relay = (loadRelays().bitunix || '').trim();
+    var attempts = [{ url: targetUrl, via: 'direct' }];
+    relayAltUrls(relay, targetUrl).forEach(function (ra) { attempts.push({ url: ra.url, via: 'relay', tag: ra.tag }); });
+    var errs = [];
+    for (var i = 0; i < attempts.length; i++) {
+        var at = attempts[i];
+        var mark = '[' + at.via + (at.tag ? '·' + at.tag : '') + ']';
+        var nonce = randomHex(16);
+        var ts = String(Date.now());
+        var sign = await sha256Hex(await sha256Hex(nonce + ts + cred.key + '' + bodyStr) + cred.secret);
+        var headers = {
+            'api-key': cred.key, 'nonce': nonce, 'timestamp': ts, 'sign': sign,
+            'language': 'en-US', 'Content-Type': 'application/json',
+        };
+        var res, text;
+        try {
+            res = await fetch(at.url, { method: 'POST', headers: headers, body: bodyStr, signal: AbortSignal.timeout(ABORT_MS) });
+            text = await res.text();
+        } catch (e) {
+            errs.push(mark + ' ' + netFailHuman(e));
+            continue;
+        }
+        if (res.status === 403 && /<\/html>|cf-mitigated|Just a moment/i.test(text)) {
+            errs.push(mark + ' Cloudflare challenge page (HTTP 403 HTML)');
+            continue;
+        }
+        BITUNIX_LAST_VIA = at.via;
+        var j;
+        try { j = JSON.parse(text); } catch (_) {
+            var hmsg = friendlyHttpError('Bitunix', res, text, at);
+            if (at.via === 'relay' && i < attempts.length - 1) { errs.push(mark + ' ' + hmsg); continue; }
+            throw new Error(hmsg);
+        }
+        if (Number(j.code) !== 0) throw new Error('Bitunix ' + j.code + ': ' + (j.msg || 'error'));
+        return j.data;
+    }
+    throw new Error('Bitunix network error: ' + (errs.join(' · ') || 'unreachable') + relayHintText(relay, false));
+}
+async function bybitPost(path, bodyObj, cred) {
+    var bodyStr = JSON.stringify(bodyObj || {});
+    var targetUrl = BYBIT_BASE + path;
+    var relay = (loadRelays().bybit || '').trim();
+    var attempts = [{ url: targetUrl, via: 'direct' }];
+    relayAltUrls(relay, targetUrl).forEach(function (ra) { attempts.push({ url: ra.url, via: 'relay', tag: ra.tag }); });
+    var errs = [];
+    for (var i = 0; i < attempts.length; i++) {
+        var at = attempts[i];
+        var mark = '[' + at.via + (at.tag ? '·' + at.tag : '') + ']';
+        var ts = String(Date.now());                     // fresh per attempt
+        var sig = await hmacSha256Hex(cred.secret, ts + cred.key + '10000' + bodyStr);
+        var headers = {
+            'X-BAPI-API-KEY': cred.key, 'X-BAPI-TIMESTAMP': ts,
+            'X-BAPI-RECV-WINDOW': '10000', 'X-BAPI-SIGN': sig,
+            'Content-Type': 'application/json',
+        };
+        var res, text;
+        try {
+            res = await fetch(at.url, { method: 'POST', headers: headers, body: bodyStr, signal: AbortSignal.timeout(ABORT_MS) });
+            text = await res.text();
+        } catch (e) {
+            errs.push(mark + ' ' + netFailHuman(e));
+            continue;
+        }
+        if (res.status === 403 && /<\/html>|cf-mitigated|Just a moment/i.test(text)) {
+            errs.push(mark + ' Cloudflare challenge page (HTTP 403 HTML)');
+            continue;
+        }
+        BYBIT_LAST_VIA = at.via;
+        var j;
+        try { j = JSON.parse(text); } catch (_) {
+            var hmsg = friendlyHttpError('Bybit', res, text, at);
+            if (at.via === 'relay' && i < attempts.length - 1) { errs.push(mark + ' ' + hmsg); continue; }
+            throw new Error(hmsg);
+        }
+        if (j.retCode !== 0) throw new Error('Bybit ' + j.retCode + ': ' + bybitHint(j.retCode, j.retMsg));
+        return j.result;
+    }
+    throw new Error('Bybit network error: ' + (errs.join(' · ') || 'unreachable') + relayHintText(relay, true));
+}
+
 // Normalize to { total, assets:[{coin,avail,locked,usd}], positions:[{symbol,side,size,entry,mark,uPnl,lev}], notes:[] }
 async function fetchBybit(cred) {
     var notes = [];
@@ -113214,6 +113360,7 @@ function renderMgr() {
             try { localStorage.removeItem(AK_STATUS_LS); } catch (_) {}
             showToastSafe('API keys wiped from this device');
             renderMgr();
+            fireKeysChanged();   // V352: hide the header ⚡ button again
         }).catch(function (e) { showToastSafe('Wipe failed: ' + e.message); });
     });
     ['bybit', 'bitunix'].forEach(function (ex) { wireCard(ex, sheet); });
@@ -113344,6 +113491,7 @@ function wireCard(ex, sheet) {
                 inKey.value = ''; inSec.value = '';
                 showToastSafe(ex === 'bybit' ? 'Bybit keys saved (encrypted)' : 'Bitunix keys saved (encrypted)');
                 renderMgr();
+                fireKeysChanged();   // V352: the header ⚡ button may now appear
             });
         }).catch(function (e) { setSt('Save failed: ' + e.message, 'err'); });
     });
@@ -113372,7 +113520,7 @@ function wireCard(ex, sheet) {
             map = map || {};
             delete map[ex];
             var st = loadStatus(); delete st[ex]; saveStatus(st);
-            return saveKeys(map).then(function () { showToastSafe('Keys removed'); renderMgr(); });
+            return saveKeys(map).then(function () { showToastSafe('Keys removed'); renderMgr(); fireKeysChanged(); });
         }).catch(function (e) { setSt('Remove failed: ' + e.message, 'err'); });
     });
     var helpBtn = card.querySelector('[data-ak-act="relayhelp"]');
@@ -113398,7 +113546,14 @@ function openPortfolio() {
     backdrop.appendChild(sheet);
     renderPf();
     backdrop.classList.add('open');
-    if (!PORT.rows) refreshPortfolio().then(renderPf, function (e) { renderPf(); showToastSafe('Portfolio refresh failed: ' + e.message); });
+    // V351: refetch on open not only when there is NO data at all (first open)
+    //   but also when the snapshot is STALE (>60 s) — reopening the modal an
+    //   hour later no longer shows a dead total. A fresh snapshot (or an
+    //   in-flight refresh, PORT.busy) costs zero extra requests; ↻ Refresh
+    //   stays manual on top of this.
+    if (!PORT.rows || (Date.now() - (PORT.ts || 0) > 60000)) {
+        refreshPortfolio().then(renderPf, function (e) { renderPf(); showToastSafe('Portfolio refresh failed: ' + e.message); });
+    }
 }
 function closePf() { if (PFV) { PFV.backdrop.remove(); PFV = null; } }
 function renderPf() {
@@ -113475,11 +113630,219 @@ function renderPf() {
     });
 }
 
+// ── V352: LIVE ORDER MODAL (USDT-M futures, REAL account) ──
+// Opened by the header trade button (visible only while a key exists).
+// Market/Limit BUY/SELL on the current chart symbol; the send button is
+// ARMED on the first tap (two-tap confirm, same pattern as Remove/Wipe) and
+// shows the full order summary before the second tap fires the real request.
+var TRD = { ex: null, exs: [], side: 'BUY', type: 'MARKET', sym: '', qty: '', price: '', hedge: false, reduceOnly: false, armed: false, busy: false, status: '', err: null };
+var TRDV = null;
+var KEYS_CB = [];
+function fireKeysChanged() { KEYS_CB.forEach(function (cb) { try { cb(); } catch (_) {} }); }
+function onKeysChanged(cb) { if (typeof cb === 'function') KEYS_CB.push(cb); }
+function hasKeys() {
+    return loadKeys().then(function (map) {
+        map = map || {};
+        return !!((map.bybit && map.bybit.key && map.bybit.secret) ||
+                  (map.bitunix && map.bitunix.key && map.bitunix.secret));
+    });
+}
+// Hedge-mode flag: hedge accounts need tradeSide on Bitunix («Only required
+// in hedge-mode» — open long BUY+OPEN, open short SELL+OPEN, close = opposite
+// side + CLOSE) and positionIdx 1/2 on Bybit; one-way accounts must NOT send
+// it. Remembered per device — the user knows their account mode.
+var AK_HEDGE_LS = 'ce_ak_hedge_v1';
+function loadHedge() { try { return localStorage.getItem(AK_HEDGE_LS) === '1'; } catch (_) { return false; } }
+function saveHedge(v) { try { localStorage.setItem(AK_HEDGE_LS, v ? '1' : '0'); } catch (_) {} }
+
+// spec → exchange payload, per the official docs.
+// Bitunix POST /api/v1/futures/trade/place_order: symbol, side BUY|SELL,
+//   orderType MARKET|LIMIT, qty (base coin), price + effect GTC for LIMIT,
+//   optional reduceOnly, optional tradeSide OPEN|CLOSE in hedge mode.
+//   NO marginCoin field (docs do not list one for place_order).
+// Bybit POST /v5/order/create: category linear, side Buy|Sell, orderType
+//   Market|Limit, qty, price + timeInForce GTC, reduceOnly, positionIdx
+//   0 (one-way) / 1 buy-leg & 2 sell-leg (hedge).
+function orderPayload(ex, spec) {
+    var sym = String(spec.symbol || '').toUpperCase();
+    var o;
+    if (ex === 'bybit') {
+        o = { category: 'linear', symbol: sym,
+              side: spec.side === 'SELL' ? 'Sell' : 'Buy',
+              orderType: spec.type === 'LIMIT' ? 'Limit' : 'Market',
+              qty: String(spec.qty) };
+        if (spec.type === 'LIMIT') { o.price = String(spec.price); o.timeInForce = 'GTC'; }
+        if (spec.reduceOnly) o.reduceOnly = true;
+        o.positionIdx = spec.hedge ? (spec.side === 'SELL' ? 2 : 1) : 0;
+    } else {
+        o = { symbol: sym, side: spec.side === 'SELL' ? 'SELL' : 'BUY',
+              orderType: spec.type === 'LIMIT' ? 'LIMIT' : 'MARKET',
+              qty: String(spec.qty) };
+        if (spec.type === 'LIMIT') { o.price = String(spec.price); o.effect = 'GTC'; }
+        if (spec.reduceOnly) o.reduceOnly = true;
+        if (spec.hedge) o.tradeSide = spec.reduceOnly ? 'CLOSE' : 'OPEN';
+    }
+    return o;
+}
+async function placeOrder(spec) {
+    var map = await loadKeys();
+    map = map || {};
+    var cred = map[spec.ex];
+    if (!cred || !cred.key || !cred.secret) throw new Error((spec.ex === 'bybit' ? 'Bybit' : 'Bitunix') + ': API keys not configured');
+    if (spec.ex === 'bybit') {
+        var r = await bybitPost('/v5/order/create', orderPayload('bybit', spec), cred);
+        return { orderId: (r && r.orderId) || '', raw: r };
+    }
+    var d = await bitunixPost('/api/v1/futures/trade/place_order', orderPayload('bitunix', spec), cred);
+    return { orderId: (d && d.orderId) || '', raw: d };
+}
+// chart symbol button label ('BTC / USDT') → futures symbol 'BTCUSDT'
+function _chartFutsSymbol() {
+    var t = '';
+    try {
+        var b = document.querySelector('[data-role="btn-symbol"]');
+        t = String((b && b.textContent) || '').replace(/\s+/g, '');
+    } catch (_) {}
+    if (!t) return '';
+    if (t.indexOf('/') >= 0) t = t.split('/')[0];
+    if (!/USDT$/.test(t)) t += 'USDT';
+    return t.toUpperCase();
+}
+function tradeSummary() {
+    return (TRD.side === 'SELL' ? 'SELL' : 'BUY') + ' ' + (TRD.qty || '?') + ' ' + (TRD.sym || '?') + ' ' +
+        (TRD.type === 'LIMIT' ? 'LIMIT' : 'MARKET') + (TRD.reduceOnly ? ' · reduce-only' : '');
+}
+function openTrade() {
+    ensureAkCss();
+    if (TRDV) { TRDV.backdrop.remove(); TRDV = null; return; }   // toggle
+    var backdrop = document.createElement('div');
+    backdrop.className = 'ak-backdrop';
+    document.body.appendChild(backdrop);
+    TRDV = { backdrop: backdrop };
+    var sheet = document.createElement('div');
+    sheet.className = 'ak-sheet';
+    backdrop.appendChild(sheet);
+    loadKeys().then(function (map) {
+        map = map || {};
+        var exs = [];
+        if (map.bitunix && map.bitunix.key && map.bitunix.secret) exs.push(['bitunix', 'Bitunix']);
+        if (map.bybit && map.bybit.key && map.bybit.secret) exs.push(['bybit', 'Bybit']);
+        TRD.exs = exs; TRD.err = null;
+        if ((!TRD.ex || !exs.some(function (e) { return e[0] === TRD.ex; })) && exs.length) TRD.ex = exs[0][0];
+        if (!TRD.sym) TRD.sym = _chartFutsSymbol();
+        renderTrade();
+        backdrop.classList.add('open');
+    }).catch(function (e) {
+        TRD.exs = []; TRD.err = e.message;
+        renderTrade();
+        backdrop.classList.add('open');
+    });
+}
+function closeTrade() { if (TRDV) { TRDV.backdrop.remove(); TRDV = null; } }
+function _trToggleRow(id, opts, cur) {
+    var h = '<div class="ak-btnrow" data-tr-row="' + id + '">';
+    opts.forEach(function (o) {
+        h += '<button class="ak-btn' + (o.v === cur ? ' ok' : '') + '" data-tr-tgl="' + id + '" data-tr-v="' + o.v + '">' + o.t + '</button>';
+    });
+    return h + '</div>';
+}
+function renderTrade() {
+    if (!TRDV) return;
+    var sheet = TRDV.backdrop.querySelector('.ak-sheet');
+    if (!sheet) return;
+    var exs = TRD.exs || [];
+    var h = '';
+    h += '<div class="ak-head"><div><span class="ak-title">⚡ Live Order</span><span class="ak-sub">USDT-M futures · REAL account</span></div>' +
+         '<button class="ak-x" data-ak="close">✕</button></div>';
+    if (TRD.err) {
+        h += '<div class="ak-body"><div class="ak-errline">' + esc(TRD.err) + '</div></div>' +
+             '<div class="ak-foot"><button class="ak-btn" data-ak="keys">🔑 API Keys</button></div>';
+    } else if (!exs.length) {
+        h += '<div class="ak-body"><div class="ak-empty">No exchange keys configured.<br>' +
+             'Open <b>⚙ Settings → Portfolio → 🔑 API Keys</b> first — the header ' +
+             '⚡ button appears automatically once a key is saved.</div></div>' +
+             '<div class="ak-foot"><button class="ak-btn" data-ak="keys">🔑 API Keys</button></div>';
+    } else {
+        var sym = TRD.sym || _chartFutsSymbol() || 'BTCUSDT';
+        h += '<div class="ak-body">';
+        h += '<div class="ak-note" style="margin-bottom:6px">This hits your <b>REAL</b> ' +
+             (TRD.ex === 'bybit' ? 'Bybit' : 'Bitunix') + ' futures account — check the size before sending.</div>';
+        h += '<div class="ak-grid">' +
+             '<label>Exchange</label><select data-tr="exsel">' +
+             exs.map(function (e) { return '<option value="' + e[0] + '"' + (e[0] === TRD.ex ? ' selected' : '') + '>' + e[1] + '</option>'; }).join('') +
+             '</select>' +
+             '<label>Symbol</label><input type="text" spellcheck="false" autocapitalize="off" autocomplete="off" data-tr="sym" value="' + esc(sym) + '">' +
+             '<label>Qty (coin)</label><input type="text" inputmode="decimal" spellcheck="false" autocomplete="off" data-tr="qty" placeholder="0.01" value="' + esc(TRD.qty || '') + '">' +
+             '<label>Limit price</label><input type="text" inputmode="decimal" spellcheck="false" autocomplete="off" data-tr="price" placeholder="only for LIMIT" value="' + esc(TRD.price || '') + '"' + (TRD.type === 'LIMIT' ? '' : ' disabled') + '>' +
+             '</div>';
+        h += '<div class="ak-secname" style="margin-top:8px">Side</div>' + _trToggleRow('side', [{ v: 'BUY', t: 'BUY · Long' }, { v: 'SELL', t: 'SELL · Short' }], TRD.side || 'BUY');
+        h += '<div class="ak-secname" style="margin-top:8px">Type</div>' + _trToggleRow('type', [{ v: 'MARKET', t: 'Market' }, { v: 'LIMIT', t: 'Limit' }], TRD.type || 'MARKET');
+        h += '<div style="margin-top:8px;display:flex;flex-direction:column;gap:4px">' +
+             '<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-tr="hedge"' + (loadHedge() ? ' checked' : '') + '> hedge-mode account (Bitunix tradeSide / Bybit positionIdx)</label>' +
+             '<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-tr="reduce"' + (TRD.reduceOnly ? ' checked' : '') + '> reduce-only (close / shrink a position)</label></div>';
+        h += '<div class="ak-status" data-tr-status>' + esc(TRD.status || '') + '</div>';
+        h += '</div>';
+        h += '<div class="ak-foot"><button class="ak-btn ok" data-tr="send"' + (TRD.busy ? ' disabled' : '') + '>' +
+             (TRD.armed ? 'Confirm: ' + esc(tradeSummary()) : 'Send order') + '</button>' +
+             '<button class="ak-btn" data-ak="openpf">💼 Portfolio</button></div>';
+    }
+    sheet.innerHTML = h;
+    var q = function (sel) { return sheet.querySelector(sel); };
+    q('[data-ak="close"]').addEventListener('click', closeTrade);
+    var keysBtn = q('[data-ak="keys"]');
+    if (keysBtn) keysBtn.addEventListener('click', function () { closeTrade(); open(); });
+    var pfBtnM = q('[data-ak="openpf"]');
+    if (pfBtnM) pfBtnM.addEventListener('click', function () { closeTrade(); openPortfolio(); });
+    if (TRD.err || !exs.length) return;
+    q('[data-tr="exsel"]').addEventListener('change', function (e) { TRD.ex = e.target.value; TRD.armed = false; TRD.status = ''; renderTrade(); });
+    q('[data-tr="sym"]').addEventListener('input', function (e) { TRD.sym = e.target.value.trim(); TRD.armed = false; });
+    q('[data-tr="qty"]').addEventListener('input', function (e) { TRD.qty = e.target.value.trim(); TRD.armed = false; });
+    q('[data-tr="price"]').addEventListener('input', function (e) { TRD.price = e.target.value.trim(); TRD.armed = false; });
+    sheet.querySelectorAll('[data-tr-tgl="side"]').forEach(function (b) {
+        b.addEventListener('click', function () { TRD.side = b.dataset.trV; TRD.armed = false; TRD.status = ''; renderTrade(); });
+    });
+    sheet.querySelectorAll('[data-tr-tgl="type"]').forEach(function (b) {
+        b.addEventListener('click', function () { TRD.type = b.dataset.trV; TRD.armed = false; TRD.status = ''; renderTrade(); });
+    });
+    var hx = q('[data-tr="hedge"]');
+    if (hx) hx.addEventListener('change', function () { saveHedge(hx.checked); TRD.armed = false; });
+    var rx = q('[data-tr="reduce"]');
+    if (rx) rx.addEventListener('change', function () { TRD.reduceOnly = rx.checked; TRD.armed = false; renderTrade(); });
+    q('[data-tr="send"]').addEventListener('click', function () {
+        if (TRD.busy) return;
+        // read straight from the DOM inputs at send time
+        TRD.sym = (q('[data-tr="sym"]').value || '').trim().toUpperCase();
+        TRD.qty = (q('[data-tr="qty"]').value || '').trim();
+        TRD.price = (q('[data-tr="price"]').value || '').trim();
+        var qty = Number(TRD.qty);
+        var price = Number(TRD.price);
+        var fail = function (msg) { TRD.armed = false; TRD.busy = false; TRD.status = msg; renderTrade(); };
+        if (!TRD.sym) return fail('Symbol is empty');
+        if (!isFinite(qty) || qty <= 0) return fail('Qty must be > 0');
+        if (TRD.type === 'LIMIT' && (!isFinite(price) || price <= 0)) return fail('Limit price must be > 0');
+        if (!TRD.armed) { TRD.armed = true; renderTrade(); return; }   // first tap → arm
+        TRD.armed = false; TRD.busy = true; TRD.status = 'Sending…'; renderTrade();
+        placeOrder({ ex: TRD.ex, symbol: TRD.sym, side: TRD.side, type: TRD.type,
+                     qty: qty, price: price, hedge: loadHedge(), reduceOnly: TRD.reduceOnly })
+        .then(function (r) {
+            TRD.busy = false;
+            TRD.status = 'OK — orderId ' + (r.orderId || '(none)');
+            renderTrade();   // re-enables the send button, shows the orderId
+            showToastSafe('Order placed: ' + tradeSummary());
+        }, function (e) {
+            fail(e.message);
+        });
+    });
+}
+
 // ── public surface (+ test hooks for the probes) ──
 window.ExchKeys = {
     open: open,
     openPortfolio: openPortfolio,
-    closeAll: function () { closeMgr(); closePf(); },
+    openTrade: openTrade,
+    hasKeys: hasKeys,
+    onKeysChanged: onKeysChanged,
+    closeAll: function () { closeMgr(); closePf(); closeTrade(); },
     _test: {
         sha256Hex: sha256Hex,
         hmacSha256Hex: hmacSha256Hex,
@@ -113494,6 +113857,13 @@ window.ExchKeys = {
         fetchBitunix: fetchBitunix,
         bybitGet: bybitGet,
         bitunixGet: bitunixGet,
+        bitunixPost: bitunixPost,
+        bybitPost: bybitPost,
+        placeOrder: placeOrder,
+        orderPayload: orderPayload,
+        fireKeysChanged: fireKeysChanged,
+        trd: function () { return TRD; },
+        chartFutsSymbol: _chartFutsSymbol,
         bitunixSpotRows: bitunixSpotRows,
         bitunixPriceMap: bitunixPriceMap,
         refreshPortfolio: refreshPortfolio,
