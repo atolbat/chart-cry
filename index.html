@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <!-- V348 BITUNIX RELAY FALLBACK + HUMAN NETWORK DIAGNOSTICS (юзер: «Bitunix network error: failed to fetch»): причина найдена живым probe с песочницы — fapi.bitunix.com стоит за Cloudflare managed challenge, который отвечает даже ПУБЛИЧНЫМ GET (market/tickers) «403 + HTML challenge» (cf-mitigated: challenge) и НЕ шлёт ни одного Access-Control-Allow-* заголовка; OPTIONS-preflight получает ту же 403-страницу, поэтому fetch из браузера под челленджем ВСЕГДА умирает с TypeError «Failed to fetch» (api.bitunix.com и www.bitunix.com — то же самое). Docs подтверждают: auth только через заголовки api-key/nonce/timestamp/sign (query-параметров нет), timestamp-окно 60s. ① ТРАНСПОРТ: bybitGet/bitunixGet переписаны на цепочку попыток direct → (если задан) user relay; API-ошибки (retCode/code != 0) означают что транспорт работает — relay-retry не делается; CF-челлендж (403+HTML) детектится на каждой попытке. Ключевой факт безопасности: подпись Bitunix SHA256(SHA256(nonce+ts+apiKey+queryParams+body)+secret) НЕ покрывает host/path/headers — те же самые подписанные заголовки едут через релей без изменений, СЕКРЕТ никогда не покидает устройство (релей видит только api-key и одноразовый sign, которыми нельзя подписать новый запрос). Релеи OPT-IN и per-exchange: поле Relay URL на карточке (localStorage ce_ak_relay_v1, plaintext — не секрет), форматы: {url}-плейсхолдер / суффикс «=» (encoded) / суффикс «/» (raw, cors-anywhere) / иначе ?url= (allorigins). Прямые запросы остаются первыми — у пользователей с чистым IP всё работает как раньше. ② ДИАГНОСТИКА: netFailHuman() — TypeError «Failed to fetch» больше не показывается сырым; теперь «browser could not reach the endpoint — direct browser calls are blocked (a Cloudflare challenge page has no CORS headers) or the network path is down», таймауты отдельно, каждая попытка помечается [direct]/[relay]; при отсутствии релея в ошибке Bitunix подсказка про Relay URL. ③ UI: на обеих карточках строка Relay URL (Save сохраняет релей даже без ключей, статус «relay on»), кнопка «relay help» открывает общий блок-объяснение с ГОТОВЫМ 20-строчным Cloudflare Worker сниппетом (OPTIONS-preflight 204 + ACAO/ACAH *, forward headers, delete origin/referer/cookie) и кнопкой Copy worker code (clipboard API + execCommand fallback); fetchBybit/fetchBitunix добавляют note «via relay (direct was blocked)» в портфель. ④ Регресс probe_v348_relay: buildRelayUrl все 4 формата бит-в-бит, netFailHuman, saveRelays/loadRelays roundtrip; UI: relay-only save, ключи в vault, Test обеих бирж с ЗААБОРТЕННЫМИ прямыми эндпоинтами → успех только через релей (status «tested OK · relay on»), refreshPortfolio → notes «via relay (direct was blocked)», Bitunix total 109 (=100.5+2+5+1+0.5), Bybit ok; мёртвый релей → «Bitunix network error: …blocked… [relay]» без сырого «Failed to fetch»; help-бокс открывается, сниппет 836 байт, copy есть; pageerror 0; boot-check BOOT-OK code-0 -->
     <!-- V347 INVERTED-SCALE CANDLE BODIES (юзер: «Инвертированные свечи вглядыват будто темнее»): причина — на инвертированной шкале Y yToPix(max) даёт БОЛЬШИЙ пиксель, чем yToPix(min) (большие значения внизу), поэтому в CandlestickRenderer пара bodyTop/bodyBot возвращалась перевёрнутой, дельта bodyBot - bodyTop была ОТРИЦАТЕЛЬНОЙ, и Math.max(MIN_DRAW_PX, h) схлопывала КАЖДОЕ тело свечи в 0.3px-волосинку — оставались только фитильки, из-за чего график выглядел темнее/жидким. Фикс: нормализация в ПИКСЕЛЬНОМ пространстве (bodyTop = меньший y, высота ≥ 0) — на обычной оси ветка свопа не срабатывает и рендер бит-в-бит прежний; заодно заработал hollow-клип фитилей (bBot-bTop > 0.5) на инверсии. Тот же паттерн «clamp пиксельной дельты» вычищен по всем гистограммам: IndicatorBrick._drawHistogram (MACD и все наследуемые), инлайн-гистограммы MACD/AO-кирпичей, FundingRate (обе ветки useLines-сегментов и баров), CVD per-bar гистограмма, RelPerf hidden-axis гистограмма (там ещё и отрицательный panelH = valToPix(max)-valToPix(min) на инвертированной панели целиком скипал оверлей — нормализовано). Volume-бары/BarRenderer, OHLC-бары, VolNorm-свечи, CVD-кирпичи (cumulative) уже были direction-агностичны — не тронуты. Верификация: probe_v347_invert (юнит на мок-ctx: 12/12 тел по 105px на обеих шкалах, зеркальность y_inv = pixelMin+pixelMax - y_norm - h, бит-в-бит высоты; живой канвас: 27.5k/28.4k зелёных/красных пикселей normal vs 28.6k/29.1k inverted — тела полностью видимы в обоих режимах; скриншоты normal/inverted — тела яркие, зеркальные; boot-check 0 code-ошибок). Инструменты/фигуры/портфельные линии ордеров не затронуты — их Y-маппинг уже инверсию уважает (V346).
 -->
     <!-- V340 SWIPE FILTER PARITY + EXCHANGE API KEYS VAULT + LIVE PORTFOLIO (юзер: «Походу когда я скрываю все монеты кроме крипто, то при свайпе он все равно использует весь список в т.ч. акции и етф. / Еще сделай норм безопасный менеджер апи ключей для бирж. В первую очередь битуникс и байбит, чтобы работать с портфолио. Смотри, чтобы они сохранялись сквозь сессии на устройстве, но не в явном виде»): ① СВАЙП = ПИКЕР: _cycleSymbol применял cp.filters (kind/quotes/stables/dead/listingAge/favs/tags), но НЕ фильтр Assets-строки tokenized («Any / Stocks·ETF only / Crypto only», V306) и не dexes (HIP-3 builder-dex, V228) — при «Crypto only» свайп продолжал гонять ПОЛНЫЙ список с токенизированными акциями/ETF. Оба фильтра скопированы из CoinPicker._applyFilters ВЕРБАТИМ (с теми же исключениями: CryptoCap index-строки и k:'coin' типа KOR не считаются токенизированными), дефолт tokenized:'any'/dexes:[] добавлен в оба _cpLoadState (сохранённый объект возвращается как есть — у юзера без Assets-фильтра ключа просто нет); тот же фильтр в _updateCoinPosition — серый индикатор позиции N/M теперь считает ТУ ЖЕ карусель, что и свайп. БОНУС-ФИКС от probe_v340: компаратор _updateCoinPosition был `mul*(b−a)` — двойное отрицание при desc, индикатор ходил список СНИЗУ ВВЕРХ (BTC показывался «5/5» вместо «1/5») и игнорировал все cp.sort.key кроме vol — теперь компаратор и набор полей зеркалят _cycleSymbol вербатим (name/change/listing/funding/oi/price + тай-брейкер по объему). ② ХРАНИЛИЩЕ КЛЮЧЕЙ (window.ExchKeys, свой <script>-блок после PaperPortfolio): plaintext НИКОГДА не попадает в storage/DOM-атрибуты/логи — секреты живут только локальными константами внутри использующих их функций (decrypt-on-demand, без кэша); на диске — AES-GCM 256 шифротекст в IndexedDB (ce_vault_v1/vault, свежий 12-байтный IV на каждую запись), мастер-ключ — NON-EXTRACTABLE CryptoKey (generateKey extractable:false), хранится структурированным объектом в IndexedDB (ce_vault_v1/meta) — рантайм не может вытащить байты, браузер лишь возвращает ключ для encrypt/decrypt в том же origin; wipe = удаление обеих записей; в localStorage только несекретный статус (last-4 API KEY + результат теста). Работает и на https (GitHub Pages), и на file:// (probe): оба secure context. ③ БИРЖИ: Bybit v5 — sign = HMAC_SHA256(secret, ts+apiKey+recvWindow+queryString) lowercase hex, заголовки X-BAPI-API-KEY/X-BAPI-TIMESTAMP/X-BAPI-RECV-WINDOW/X-BAPI-SIGN, recvWindow 10000; кошельки UNIFIED+FUND (failure каждого wallet tolerated отдельно) + /v5/position/list?category=linear&settleCoin=USDT; retCode-подсказки (10002 skew → «sync system time», 10003/10004 key/sign, 10005 permission, 10010 IP whitelist); CORS проверен живым preflight: api.bybit.com эхоит Origin и разрешает X-BAPI-* (прямой fetch из браузера работает). Bitunix futures — sign = SHA256(SHA256(nonce+timestamp+apiKey+queryParams+body)+secret) hex, queryParams = пары отсортированные по key ASCII и склеенные key+value («marginCoinUSDT»), заголовки api-key/nonce/timestamp/sign/language (nonce = 32-hex crypto.getRandomValues, timestamp = ms epoch); эндпоинты GET /api/v1/futures/account?marginCoin=USDT и /api/v1/futures/position/get_pending_positions; тотал = available+frozen+margin+bonus+cross/isolationUnrealizedPNL. ЧАСТНЫЕ запросы ходят ТОЛЬКО напрямую (никаких сторонних CORS-прокси — политика приложения); Cloudflare-челлендж Bitunix детектится (403 + HTML «Just a moment») и показывается человеческим текстом вместо крипто-ошибки. ④ UI: ⚙ Settings → Portfolio → «🔑 API Keys» (CLOSE_ROLES + свой модал) и «💼 Exchange balances»; менеджер — две карточки Bybit/Bitunix (inputs type=password с autocomplete=new-password, поля НИКОГДА не получают сохранённое значение обратно — только placeholder-подсказка «····last4»), Save/Test/Remove (armed-подтверждение на Remove/Wipe), строка статуса; портфель — grand total + по бирже: активы (coin/available/locked/≈USD) и позиции (symbol/side/size/entry/uPnL/lev), Refresh, last-updated, пустое состояние ведёт в менеджер. Только READ-ONLY эндпоинты аккаунта. ⑤ Регресс probe_v340: подписи против Node-crypto векторов (Bybit HMAC + Bitunix double-SHA256), vault-раундтрип save→load (шифротекст в IDB не содержит plaintext-подстрок), wipe, localStorage-инспекция не содержит секретов, свайп: tokenized='hide' выкидывает AAPL/TQQQ-строки из карусели, tokenized='only' наоборот, dexes-фильтр, позиция N/M согласована; pageerror 0 -->
@@ -112590,6 +112591,12 @@ var AK_CSS = [
     '.ak-btn.off{opacity:0.45;}',
     '.ak-status{font-size:9.3px;color:#6e7681;margin-top:6px;line-height:1.45;min-height:12px;}',
     '.ak-status.ok{color:#7ee787;}.ak-status.err{color:#ff9d94;}.ak-status.busy{color:#e3b341;}',
+    // V348: relay-URL row + collapsible worker-snippet help
+    '.ak-linkish{background:none;border:none;color:#58a6ff;font-size:9.6px;cursor:pointer;padding:0;font-family:inherit;text-decoration:underline;text-underline-offset:2px;}',
+    '.ak-relay-help{display:none;margin-top:8px;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.09);border-radius:8px;padding:8px;font-size:9.6px;line-height:1.5;color:#8b949e;}',
+    '.ak-relay-help.open{display:block;}',
+    '.ak-relay-help b{color:#c9d1d9;}',
+    '.ak-relay-help pre{white-space:pre-wrap;word-break:break-all;font-size:9px;line-height:1.4;color:#9ecbff;background:rgba(88,166,255,0.06);border:1px solid rgba(88,166,255,0.18);border-radius:6px;padding:6px;margin:6px 0 4px;font-family:ui-monospace,monospace;}',
     '.ak-tot-row{display:flex;align-items:baseline;justify-content:space-between;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;margin-bottom:10px;}',
     '.ak-tot-lab{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#8b949e;}',
     '.ak-tot-val{font-size:21px;font-weight:800;letter-spacing:0.3px;font-variant-numeric:tabular-nums;}',
@@ -112748,6 +112755,51 @@ var BYBIT_BASE = 'https://api.bybit.com';
 var BITUNIX_BASE = 'https://fapi.bitunix.com';
 var ABORT_MS = 15000;
 
+// ── V348: optional RELAY for direct-blocked exchanges ──
+// Bitunix (fapi.bitunix.com) sits behind a Cloudflare managed challenge that
+// answers even PUBLIC GETs with «403 + HTML challenge» and sends NO
+// Access-Control-Allow-* headers (live-probed V348) — from a challenged client
+// a browser fetch ALWAYS dies with TypeError «Failed to fetch» (the OPTIONS
+// preflight gets the CF page, the browser refuses the response). api.bybit.com
+// echoes Origin and allows its X-BAPI-* headers, so Bybit works direct.
+// The fact that makes a relay SAFE here: the Bitunix signature
+// SHA256(SHA256(nonce+timestamp+apiKey+queryParams+body)+secret) does NOT
+// cover host/path/headers — the exact same auth headers can be relayed
+// unchanged. The SECRET never leaves this device; a relay sees only the
+// api-key and a per-request sign, neither can sign a new request. Relays are
+// OPT-IN: the user pastes their own relay URL on the exchange card (a ready
+// Cloudflare-Worker snippet ships in the manager UI) — never a third-party
+// one for private data (app policy).
+var AK_RELAY_LS = 'ce_ak_relay_v1';
+function loadRelays() {
+    try { return JSON.parse(localStorage.getItem(AK_RELAY_LS) || '{}') || {}; } catch (_) { return {}; }
+}
+function saveRelays(r) { try { localStorage.setItem(AK_RELAY_LS, JSON.stringify(r || {})); } catch (_) {} }
+// Supported relay URL formats:
+//   contains {url} → replaced with the URL-encoded target
+//   ends with '='  → encoded target appended
+//   ends with '/'  → RAW target appended (cors-anywhere style)
+//   otherwise      → '?url=' + encoded target appended (allorigins style)
+function buildRelayUrl(relay, target) {
+    if (relay.indexOf('{url}') >= 0) return relay.replace('{url}', encodeURIComponent(target));
+    if (relay.charAt(relay.length - 1) === '=') return relay + encodeURIComponent(target);
+    if (relay.charAt(relay.length - 1) === '/') return relay + target;
+    return relay + (relay.indexOf('?') >= 0 ? '&' : '?') + 'url=' + encodeURIComponent(target);
+}
+// V348: human-readable network diagnostics — the raw TypeError text
+// («Failed to fetch») gave the user zero information about WHY.
+function netFailHuman(e) {
+    var m = String((e && e.name) || '') + '|' + String((e && e.message) || e);
+    if (/AbortError|TimeoutError|timeout/i.test(m)) return 'timeout (' + ABORT_MS + ' ms)';
+    if (/Failed to fetch|NetworkError|Load failed/i.test(m)) {
+        return 'browser could not reach the endpoint — direct browser calls are blocked ' +
+               '(a Cloudflare challenge page has no CORS headers) or the network path is down';
+    }
+    return (e && e.message) || String(e);
+}
+var BYBIT_LAST_VIA = 'direct';
+var BITUNIX_LAST_VIA = 'direct';
+
 function friendlyHttpError(exchange, res, body) {
     if (res.status === 403 && /<\/html>|cf-mitigated|Just a moment/i.test(body || '')) {
         return exchange + ' blocked the request with a Cloudflare check (HTTP 403 HTML). ' +
@@ -112770,21 +112822,39 @@ async function bybitGet(path, qs, cred) {
     var ts = String(Date.now());
     var recv = '10000';
     var sig = await hmacSha256Hex(cred.secret, ts + cred.key + recv + (qs || ''));
-    var url = BYBIT_BASE + path + (qs ? '?' + qs : '');
-    var res, text;
-    try {
-        res = await fetch(url, { method: 'GET', headers: {
-            'X-BAPI-API-KEY': cred.key, 'X-BAPI-TIMESTAMP': ts,
-            'X-BAPI-RECV-WINDOW': recv, 'X-BAPI-SIGN': sig,
-        }, signal: AbortSignal.timeout(ABORT_MS) });
-        text = await res.text();
-    } catch (e) {
-        throw new Error('Bybit network error: ' + (e && e.message || e));
+    var targetUrl = BYBIT_BASE + path + (qs ? '?' + qs : '');
+    var headers = {
+        'X-BAPI-API-KEY': cred.key, 'X-BAPI-TIMESTAMP': ts,
+        'X-BAPI-RECV-WINDOW': recv, 'X-BAPI-SIGN': sig,
+    };
+    // V348: direct first, then the user relay (if configured). API-level
+    // errors (retCode != 0) mean the TRANSPORT worked — no relay retry.
+    var attempts = [{ url: targetUrl, via: 'direct' }];
+    var relay = (loadRelays().bybit || '').trim();
+    if (relay) attempts.push({ url: buildRelayUrl(relay, targetUrl), via: 'relay' });
+    var lastErr = null;
+    for (var i = 0; i < attempts.length; i++) {
+        var at = attempts[i];
+        var res, text;
+        try {
+            res = await fetch(at.url, { method: 'GET', headers: headers, signal: AbortSignal.timeout(ABORT_MS) });
+            text = await res.text();
+        } catch (e) {
+            lastErr = new Error(netFailHuman(e) + ' [' + at.via + ']');
+            continue;
+        }
+        if (res.status === 403 && /<\/html>|cf-mitigated|Just a moment/i.test(text)) {
+            lastErr = new Error('Cloudflare challenge page (HTTP 403 HTML) [' + at.via + ']');
+            continue;
+        }
+        BYBIT_LAST_VIA = at.via;
+        var j;
+        try { j = JSON.parse(text); } catch (_) { throw new Error(friendlyHttpError('Bybit', res, text)); }
+        if (j.retCode !== 0) throw new Error('Bybit ' + j.retCode + ': ' + bybitHint(j.retCode, j.retMsg));
+        return j.result;
     }
-    var j;
-    try { j = JSON.parse(text); } catch (_) { throw new Error(friendlyHttpError('Bybit', res, text)); }
-    if (j.retCode !== 0) throw new Error('Bybit ' + j.retCode + ': ' + bybitHint(j.retCode, j.retMsg));
-    return j.result;
+    throw new Error('Bybit network error: ' + (lastErr ? lastErr.message : 'unreachable') +
+        (relay ? '' : ' — if your network blocks api.bybit.com, set a Relay URL on the Bybit card'));
 }
 async function bitunixGet(path, pairs, cred) {
     var nonce = randomHex(16);                       // 32-hex random string
@@ -112795,21 +112865,40 @@ async function bitunixGet(path, pairs, cred) {
     var digest = await sha256Hex(nonce + ts + cred.key + qp + '');
     var sign = await sha256Hex(digest + cred.secret);
     var qsPart = sorted.map(function (p) { return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]); }).join('&');
-    var url = BITUNIX_BASE + path + (qsPart ? '?' + qsPart : '');
-    var res, text;
-    try {
-        res = await fetch(url, { method: 'GET', headers: {
-            'api-key': cred.key, 'nonce': nonce, 'timestamp': ts, 'sign': sign,
-            'language': 'en-US', 'Content-Type': 'application/json',
-        }, signal: AbortSignal.timeout(ABORT_MS) });
-        text = await res.text();
-    } catch (e) {
-        throw new Error('Bitunix network error: ' + (e && e.message || e));
+    var targetUrl = BITUNIX_BASE + path + (qsPart ? '?' + qsPart : '');
+    var headers = {
+        'api-key': cred.key, 'nonce': nonce, 'timestamp': ts, 'sign': sign,
+        'language': 'en-US', 'Content-Type': 'application/json',
+    };
+    // V348: direct first, then the user relay (if configured). API-level
+    // errors (code != 0) mean the TRANSPORT worked — no relay retry.
+    var attempts = [{ url: targetUrl, via: 'direct' }];
+    var relay = (loadRelays().bitunix || '').trim();
+    if (relay) attempts.push({ url: buildRelayUrl(relay, targetUrl), via: 'relay' });
+    var lastErr = null;
+    for (var i = 0; i < attempts.length; i++) {
+        var at = attempts[i];
+        var res, text;
+        try {
+            res = await fetch(at.url, { method: 'GET', headers: headers, signal: AbortSignal.timeout(ABORT_MS) });
+            text = await res.text();
+        } catch (e) {
+            lastErr = new Error(netFailHuman(e) + ' [' + at.via + ']');
+            continue;
+        }
+        if (res.status === 403 && /<\/html>|cf-mitigated|Just a moment/i.test(text)) {
+            lastErr = new Error('Cloudflare challenge page (HTTP 403 HTML) [' + at.via + ']');
+            continue;
+        }
+        BITUNIX_LAST_VIA = at.via;
+        var j;
+        try { j = JSON.parse(text); } catch (_) { throw new Error(friendlyHttpError('Bitunix', res, text)); }
+        if (j.code !== 0) throw new Error('Bitunix ' + j.code + ': ' + (j.msg || 'error'));
+        return j.data;
     }
-    var j;
-    try { j = JSON.parse(text); } catch (_) { throw new Error(friendlyHttpError('Bitunix', res, text)); }
-    if (j.code !== 0) throw new Error('Bitunix ' + j.code + ': ' + (j.msg || 'error'));
-    return j.data;
+    throw new Error('Bitunix network error: ' + (lastErr ? lastErr.message : 'unreachable') +
+        (relay ? '' : ' — fapi.bitunix.com is behind a Cloudflare challenge and blocks DIRECT browser calls (CORS); ' +
+         'deploy your own relay and paste its URL into the Relay URL field on the Bitunix card («relay help» link)'));
 }
 
 // Normalize to { total, assets:[{coin,avail,locked,usd}], positions:[{symbol,side,size,entry,mark,uPnl,lev}], notes:[] }
@@ -112855,6 +112944,7 @@ async function fetchBybit(cred) {
             });
         });
     } catch (e) { notes.push('positions: ' + e.message); }
+    if (BYBIT_LAST_VIA === 'relay') notes.push('via relay (direct was blocked)');
     return { total: total, assets: assets, positions: positions, notes: notes };
 }
 async function fetchBitunix(cred) {
@@ -112884,7 +112974,7 @@ async function fetchBitunix(cred) {
         total: total,
         assets: [{ coin: 'USDT', avail: avail, locked: frozen + margin + bonus, usd: total - uPnl }],
         positions: positions,
-        notes: [],
+        notes: (BITUNIX_LAST_VIA === 'relay') ? ['via relay (direct was blocked)'] : [],
     };
 }
 
@@ -112951,7 +113041,8 @@ function renderMgr() {
     h += exchCard('bybit', 'Bybit', 'B', st.bybit);
     h += exchCard('bitunix', 'Bitunix', 'B', st.bitunix);
     h += '<div class="ak-note" style="margin-top:2px">Bybit: Unified + Funding wallets, USDT linear positions. ' +
-         'Bitunix: USDT-margined futures account + pending positions. Portfolio → «Open portfolio».</div>';
+         'Bitunix: USDT-margined futures account + pending positions. Portfolio → «Open portfolio».</div>' +
+         AK_RELAY_HELP_HTML;
     h += '</div>';
     h += '<div class="ak-foot"><button class="ak-btn" data-ak="openpf">💼 Open portfolio</button>' +
          '<button class="ak-btn danger" data-ak="wipe">Wipe all keys</button></div>';
@@ -112973,26 +113064,85 @@ function renderMgr() {
         }).catch(function (e) { showToastSafe('Wipe failed: ' + e.message); });
     });
     ['bybit', 'bitunix'].forEach(function (ex) { wireCard(ex, sheet); });
+    var copyBtn = sheet.querySelector('[data-ak-act="copysnippet"]');
+    if (copyBtn) copyBtn.addEventListener('click', function () {
+        var pre = sheet.querySelector('[data-ak-snippet]');
+        var txt = pre ? pre.textContent : '';
+        var done = function () { copyBtn.textContent = 'Copied ✓'; setTimeout(function () { copyBtn.textContent = 'Copy worker code'; }, 1600); };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(txt).then(done, function () { akFallbackCopy(txt); done(); });
+        } else { akFallbackCopy(txt); done(); }
+    });
 }
+// ── V348: relay help — copy-paste Cloudflare Worker snippet + explainer ──
+var AK_WORKER_SNIPPET = [
+    "export default {",
+    "  async fetch(request) {",
+    "    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: {",
+    "      'Access-Control-Allow-Origin': '*',",
+    "      'Access-Control-Allow-Headers': '*',",
+    "      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' } });",
+    "    const target = new URL(request.url).searchParams.get('url');",
+    "    if (!target) return new Response('missing ?url=', { status: 400 });",
+    "    const fwd = new Headers(request.headers);",
+    "    fwd.delete('origin'); fwd.delete('referer'); fwd.delete('cookie');",
+    "    const r = await fetch(target, { method: request.method, headers: fwd,",
+    "      body: request.method === 'GET' ? undefined : request.body });",
+    "    const h = new Headers(r.headers);",
+    "    h.set('Access-Control-Allow-Origin', '*');",
+    "    return new Response(r.body, { status: r.status, headers: h });",
+    "  }",
+    "};",
+].join('\n');
+var AK_RELAY_HELP_HTML =
+    '<div class="ak-relay-help" data-ak-relayhelp>' +
+    '<b>Why a relay?</b> fapi.bitunix.com answers browser calls with a Cloudflare challenge page that has no CORS ' +
+    'headers — a direct request can never succeed from a challenged client («network error: failed to fetch»). ' +
+    'A relay forwards the SAME request with the SAME signed headers. Signatures are computed on this device; ' +
+    'your <b>secret never leaves it</b> — the relay only sees the api-key and a per-request sign that cannot sign ' +
+    'anything new. Use YOUR OWN relay, never a third-party one.<br>' +
+    'Deploy (free): Cloudflare → Workers &amp; Pages → Create worker → paste the code → Deploy, then put its ' +
+    'https://…workers.dev URL into the Relay URL field of the exchange card.' +
+    '<pre data-ak-snippet>' + AK_WORKER_SNIPPET + '</pre>' +
+    '<button class="ak-btn" data-ak-act="copysnippet" style="flex:0 0 auto;padding:5px 10px;">Copy worker code</button>' +
+    '<div style="margin-top:6px">Relay URL formats: contains <b>{url}</b> → replaced with the encoded target · ends with ' +
+    '<b>=</b> → encoded target appended · ends with <b>/</b> → raw target appended (cors-anywhere style) · otherwise ' +
+    '<b>?url=</b> is appended. The relay is saved per exchange, in plaintext localStorage (it is not a secret).</div>' +
+    '</div>';
+function akFallbackCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (_) {}
+    document.body.removeChild(ta);
+}
+
 function exchCard(ex, label, letter, st) {
-    var saved = st && st.last4 ? ('Saved · ····' + esc(st.last4) + (st.ok === true ? ' · tested OK' : st.ok === false ? ' · last test failed' : '')) : 'Not configured';
+    var saved = st && st.last4 ? ('Saved · ····' + esc(st.last4) + (st.ok === true ? ' · tested OK' : st.ok === false ? ' · last test failed' : '') + (loadRelays()[ex] ? ' · relay on' : '')) : 'Not configured';
     var badge = st && st.last4 ? (st.ok === true ? '<span class="ak-badge ok">OK</span>' : st.ok === false ? '<span class="ak-badge err">ERR</span>' : '<span class="ak-badge">SAVED</span>') : '<span class="ak-badge">EMPTY</span>';
     return '<div class="ak-card" data-ak-card="' + ex + '">' +
         '<div class="ak-card-h"><div class="ak-exch"><span class="ak-exch-logo ' + ex + '">' + letter + '</span>' + esc(label) + '</div>' + badge + '</div>' +
         '<div class="ak-grid">' +
         '<label>API Key</label><input type="password" autocomplete="new-password" spellcheck="false" data-ak-in="key" placeholder="' + (st && st.last4 ? 'saved ····' + esc(st.last4) : 'paste API key') + '">' +
         '<label>Secret</label><input type="password" autocomplete="new-password" spellcheck="false" data-ak-in="secret" placeholder="' + (st && st.last4 ? 'stored (hidden)' : 'paste secret') + '">' +
+        '<label>Relay URL</label><input type="text" spellcheck="false" autocapitalize="off" autocomplete="off" data-ak-in="relay" placeholder="optional — only if direct calls are blocked">' +
         '</div>' +
         '<div class="ak-btnrow"><button class="ak-btn ok" data-ak-act="save">Save</button>' +
         '<button class="ak-btn" data-ak-act="test">Test</button>' +
         '<button class="ak-btn danger" data-ak-act="remove">Remove</button></div>' +
-        '<div class="ak-status" data-ak-status>' + esc(saved) + '</div></div>';
+        '<div class="ak-status" data-ak-status>' + esc(saved) + '</div>' +
+        '<button class="ak-linkish" data-ak-act="relayhelp">relay help — why «failed to fetch» / worker snippet</button>' +
+        '</div>';
 }
 function wireCard(ex, sheet) {
     var card = sheet.querySelector('[data-ak-card="' + ex + '"]');
     if (!card) return;
     var inKey = card.querySelector('[data-ak-in="key"]');
     var inSec = card.querySelector('[data-ak-in="secret"]');
+    var inRelay = card.querySelector('[data-ak-in="relay"]');
+    if (inRelay) inRelay.value = (loadRelays()[ex] || '');
     var stEl = card.querySelector('[data-ak-status]');
     var setSt = function (txt, cls) { stEl.textContent = txt; stEl.className = 'ak-status' + (cls ? ' ' + cls : ''); };
     var getCred = function () {
@@ -113007,7 +113157,16 @@ function wireCard(ex, sheet) {
     };
     card.querySelector('[data-ak-act="save"]').addEventListener('click', function () {
         var key = inKey.value.trim(), secret = inSec.value.trim();
-        if (!key && !secret) { setSt('Nothing to save — paste the key and secret first.', 'err'); return; }
+        // V348: the Relay URL is saved on EVERY Save (and even without keys —
+        // it is not a secret and lives in plaintext localStorage).
+        var relayUrl = (inRelay && inRelay.value.trim()) || '';
+        var relays = loadRelays();
+        if (relays[ex] !== relayUrl) { relays[ex] = relayUrl; saveRelays(relays); }
+        if (!key && !secret) {
+            if (relayUrl) { setSt('Relay URL saved.', 'ok'); renderMgr(); }
+            else setSt('Nothing to save — paste the key and secret first.', 'err');
+            return;
+        }
         setSt('Encrypting…', 'busy');
         loadKeys().then(function (map) {
             map = map || {};
@@ -113051,6 +113210,13 @@ function wireCard(ex, sheet) {
             var st = loadStatus(); delete st[ex]; saveStatus(st);
             return saveKeys(map).then(function () { showToastSafe('Keys removed'); renderMgr(); });
         }).catch(function (e) { setSt('Remove failed: ' + e.message, 'err'); });
+    });
+    var helpBtn = card.querySelector('[data-ak-act="relayhelp"]');
+    if (helpBtn) helpBtn.addEventListener('click', function () {
+        var box = sheet.querySelector('[data-ak-relayhelp]');
+        if (!box) return;
+        box.classList.toggle('open');
+        if (box.classList.contains('open')) box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     });
 }
 
@@ -113166,6 +113332,10 @@ window.ExchKeys = {
         bitunixGet: bitunixGet,
         refreshPortfolio: refreshPortfolio,
         port: function () { return PORT; },
+        loadRelays: loadRelays,
+        saveRelays: saveRelays,
+        buildRelayUrl: buildRelayUrl,
+        netFailHuman: netFailHuman,
         subtleAvailable: subtleAvailable,
         idbNuke: function () {
             return new Promise(function (res) {
