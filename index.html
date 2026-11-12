@@ -3,8 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <!-- V347 INVERTED-SCALE CANDLE BODIES (юзер: «Инвертированные свечи вглядыват будто темнее»): причина — на инвертированной шкале Y yToPix(max) даёт БОЛЬШИЙ пиксель, чем yToPix(min) (большие значения внизу), поэтому в CandlestickRenderer пара bodyTop/bodyBot возвращалась перевёрнутой, дельта bodyBot - bodyTop была ОТРИЦАТЕЛЬНОЙ, и Math.max(MIN_DRAW_PX, h) схлопывала КАЖДОЕ тело свечи в 0.3px-волосинку — оставались только фитильки, из-за чего график выглядел темнее/жидким. Фикс: нормализация в ПИКСЕЛЬНОМ пространстве (bodyTop = меньший y, высота ≥ 0) — на обычной оси ветка свопа не срабатывает и рендер бит-в-бит прежний; заодно заработал hollow-клип фитилей (bBot-bTop > 0.5) на инверсии. Тот же паттерн «clamp пиксельной дельты» вычищен по всем гистограммам: IndicatorBrick._drawHistogram (MACD и все наследуемые), инлайн-гистограммы MACD/AO-кирпичей, FundingRate (обе ветки useLines-сегментов и баров), CVD per-bar гистограмма, RelPerf hidden-axis гистограмма (там ещё и отрицательный panelH = valToPix(max)-valToPix(min) на инвертированной панели целиком скипал оверлей — нормализовано). Volume-бары/BarRenderer, OHLC-бары, VolNorm-свечи, CVD-кирпичи (cumulative) уже были direction-агностичны — не тронуты. Верификация: probe_v347_invert (юнит на мок-ctx: 12/12 тел по 105px на обеих шкалах, зеркальность y_inv = pixelMin+pixelMax - y_norm - h, бит-в-бит высоты; живой канвас: 27.5k/28.4k зелёных/красных пикселей normal vs 28.6k/29.1k inverted — тела полностью видимы в обоих режимах; скриншоты normal/inverted — тела яркие, зеркальные; boot-check 0 code-ошибок). Инструменты/фигуры/портфельные линии ордеров не затронуты — их Y-маппинг уже инверсию уважает (V346).
+-->
+    <!-- V340 SWIPE FILTER PARITY + EXCHANGE API KEYS VAULT + LIVE PORTFOLIO (юзер: «Походу когда я скрываю все монеты кроме крипто, то при свайпе он все равно использует весь список в т.ч. акции и етф. / Еще сделай норм безопасный менеджер апи ключей для бирж. В первую очередь битуникс и байбит, чтобы работать с портфолио. Смотри, чтобы они сохранялись сквозь сессии на устройстве, но не в явном виде»): ① СВАЙП = ПИКЕР: _cycleSymbol применял cp.filters (kind/quotes/stables/dead/listingAge/favs/tags), но НЕ фильтр Assets-строки tokenized («Any / Stocks·ETF only / Crypto only», V306) и не dexes (HIP-3 builder-dex, V228) — при «Crypto only» свайп продолжал гонять ПОЛНЫЙ список с токенизированными акциями/ETF. Оба фильтра скопированы из CoinPicker._applyFilters ВЕРБАТИМ (с теми же исключениями: CryptoCap index-строки и k:'coin' типа KOR не считаются токенизированными), дефолт tokenized:'any'/dexes:[] добавлен в оба _cpLoadState (сохранённый объект возвращается как есть — у юзера без Assets-фильтра ключа просто нет); тот же фильтр в _updateCoinPosition — серый индикатор позиции N/M теперь считает ТУ ЖЕ карусель, что и свайп. БОНУС-ФИКС от probe_v340: компаратор _updateCoinPosition был `mul*(b−a)` — двойное отрицание при desc, индикатор ходил список СНИЗУ ВВЕРХ (BTC показывался «5/5» вместо «1/5») и игнорировал все cp.sort.key кроме vol — теперь компаратор и набор полей зеркалят _cycleSymbol вербатим (name/change/listing/funding/oi/price + тай-брейкер по объему). ② ХРАНИЛИЩЕ КЛЮЧЕЙ (window.ExchKeys, свой <script>-блок после PaperPortfolio): plaintext НИКОГДА не попадает в storage/DOM-атрибуты/логи — секреты живут только локальными константами внутри использующих их функций (decrypt-on-demand, без кэша); на диске — AES-GCM 256 шифротекст в IndexedDB (ce_vault_v1/vault, свежий 12-байтный IV на каждую запись), мастер-ключ — NON-EXTRACTABLE CryptoKey (generateKey extractable:false), хранится структурированным объектом в IndexedDB (ce_vault_v1/meta) — рантайм не может вытащить байты, браузер лишь возвращает ключ для encrypt/decrypt в том же origin; wipe = удаление обеих записей; в localStorage только несекретный статус (last-4 API KEY + результат теста). Работает и на https (GitHub Pages), и на file:// (probe): оба secure context. ③ БИРЖИ: Bybit v5 — sign = HMAC_SHA256(secret, ts+apiKey+recvWindow+queryString) lowercase hex, заголовки X-BAPI-API-KEY/X-BAPI-TIMESTAMP/X-BAPI-RECV-WINDOW/X-BAPI-SIGN, recvWindow 10000; кошельки UNIFIED+FUND (failure каждого wallet tolerated отдельно) + /v5/position/list?category=linear&settleCoin=USDT; retCode-подсказки (10002 skew → «sync system time», 10003/10004 key/sign, 10005 permission, 10010 IP whitelist); CORS проверен живым preflight: api.bybit.com эхоит Origin и разрешает X-BAPI-* (прямой fetch из браузера работает). Bitunix futures — sign = SHA256(SHA256(nonce+timestamp+apiKey+queryParams+body)+secret) hex, queryParams = пары отсортированные по key ASCII и склеенные key+value («marginCoinUSDT»), заголовки api-key/nonce/timestamp/sign/language (nonce = 32-hex crypto.getRandomValues, timestamp = ms epoch); эндпоинты GET /api/v1/futures/account?marginCoin=USDT и /api/v1/futures/position/get_pending_positions; тотал = available+frozen+margin+bonus+cross/isolationUnrealizedPNL. ЧАСТНЫЕ запросы ходят ТОЛЬКО напрямую (никаких сторонних CORS-прокси — политика приложения); Cloudflare-челлендж Bitunix детектится (403 + HTML «Just a moment») и показывается человеческим текстом вместо крипто-ошибки. ④ UI: ⚙ Settings → Portfolio → «🔑 API Keys» (CLOSE_ROLES + свой модал) и «💼 Exchange balances»; менеджер — две карточки Bybit/Bitunix (inputs type=password с autocomplete=new-password, поля НИКОГДА не получают сохранённое значение обратно — только placeholder-подсказка «····last4»), Save/Test/Remove (armed-подтверждение на Remove/Wipe), строка статуса; портфель — grand total + по бирже: активы (coin/available/locked/≈USD) и позиции (symbol/side/size/entry/uPnL/lev), Refresh, last-updated, пустое состояние ведёт в менеджер. Только READ-ONLY эндпоинты аккаунта. ⑤ Регресс probe_v340: подписи против Node-crypto векторов (Bybit HMAC + Bitunix double-SHA256), vault-раундтрип save→load (шифротекст в IDB не содержит plaintext-подстрок), wipe, localStorage-инспекция не содержит секретов, свайп: tokenized='hide' выкидывает AAPL/TQQQ-строки из карусели, tokenized='only' наоборот, dexes-фильтр, позиция N/M согласована; pageerror 0 -->
     <!-- V334 VOLNORM AGG CVD + FLOW WINDOW (юзер: «Некорректно. На cvd spot vol norm какие то дикие прыжки, и судя по свд они ничем не обоснованы. И еще, там должно быть аггрегэйтед свд»): два фикса деноминатора VolNorm Candles в cvd-модах. ① AGGREGATED источник («там должно быть аггрегэйтед свд»): _vnKickCvd больше не берёт биржу с графика (auto → Binance) — фетчится CoinGlass АГРЕГИРОВАННЫЙ символ (список площадок как у CVD-кирпича: Binance+Bybit+OKX+Bitget+Gate дефолт, пресеты top3/top5/top8/binby), символы вида Ex1,…,ExN#BASE#aggregated_spot_buy_sell_coin / aggregated_buy_sell_coin; ключ сессионного кэша теперь РАСКЛАДКА АГРЕГИРОВАННОГО cvd-кирпича (cvd|market|agg|exchange|aggList|mode|reset вместо прежних undefined-полей), причём если на графике есть Aggregated CVD spot/perp панель, VolNorm переиспользует ЕЁ пресет и ключ (тёплый кэш отдаёт данные мгновенно, и знаменатель совпадает с тем CVD, с которым юзер сравнивает — «судя по свд»); при отсутствии — дефолтный top5-ключ. ② ROLLING FLOW WINDOW («дикие прыжки»): замер на живых данных BTC spot 5m — пер-баровый |ΔCVD| даёт max/median тела ≈780× (бар с buy≈sell имеет около-нулевой знаменатель → свеча-монстр; агрегированный поток сглаживает до 46×, но всё равно скачет), поэтому у кирпича новый параметр flowWin «Flow Window (bars)» (1..500, def 20): знаменатель бара = СКОЛЬЗЯЩЕЕ СРЕДНЕЕ |ΔCVD| последних N баров (сначала abs, потом среднее — масштаб ВЕЛИЧИНЫ потока, а не знаковой нетто-дельты, иначе окно с взаимным гашением обнулит знаменатель); агрегированный поток с N=20 даёт max/median ≈6× — ГЛАЖЕ классического volume (10×); flowWin=1 = прежний пер-баровый волк V333 (нулевой бар скипается, разрыв цепочки); при N>1 нулевые/гэп-бары внутри покрытия плавно разбавляют среднее — волк продолжается вместо разрывов; фетч-окно добирает flowWin баров предыстории (padMs = max(8ч, (flowWin+8)×интервал; flowWin=1 → прежние 8ч), _vnFlowPerBar бакетит предысторию тоже и отдаёт последний count после роллинга — каждый видимый бар получает ПОЛНОЕ окно; частичное окно у левого края покрытия (короткая история) рендерится тем, что есть. ③ Спред грубых строк: каденс ряда (мин положительный гэп отсортированных точек) детектит символы/ТФ, где CG отвечает грубее запрошенного интервала — дельта целого каденса, сваленная в ОДИН бар, оставляла соседей нулевыми (скип) и делала свой бар монстром; теперь каждая строка РАВНО распределяется по барам своего каденса (суммы по строкам сохранены). Кэш: flowWin входит в cacheKey _computeRaw (смена окна пересчитывает). Volume-путь бит-в-бит идентичен pre-V334; лейблы панели «VolNorm CVD spot/perp(…)» без изменений; опции normSrc перееименованы (CVD spot/perp (agg, coins)), тултипы/description/META-теги (aggregated, flow window) обновлены. Регресс: probe_v334 33/33 (дискавери реальных agg-ключей fut/spot + раскладка cvd|fut|agg|Binance|top5|cumulative|none; юнит: volume == классика бит-в-бит, rolling-референс flowWin 20/3, flowWin=1 == V333 пер-баровый со скипом нулевого бара, λ=0.5 на роллинг-шкале, λ=0 сырая цена, dollar игнор, fingerprint + re-key по flowWin, спот-ключ, reuse top3-пресета agg-кирпича, _vnFlowPerBar пер-баровый/спред 3×-каденса/пад-полные окна, _vnRollMean NaN/частичное окно, фетч-пад flowWin + aggregated-символ, pending → NaN + «…» → arrive; интеграция: cvd_perp и cvd_spot synClose == независимый rolling-референс по закрытым барам, лейблы, возврат в volume == классика, модалка: Normalize by + Flow Window + volUnit + λ), boot-check code-level 0, probe_v329/v330/v331/v332 ALL PASS, test_v327 exit 0, self-test 981/989: 8 фейлов == прематч (diff с pristine: у pristine ещё +1 исторический тайтл-фейл) -->
     <!-- V335 BTC REALIZED REFRESH (юзер: «Btc realized price перестал корректно работать»): причина — смерть единственного CORS-прокси allorigins (HTTP 522 на /get, таймаут на /raw; corsproxy.io переведён на платные ключи, codetabs/cors.lol — таймаут/429): фетч свежих данных стал падать ВСЕГДА, и индикатор молча откатывался на вшитый эмбед, замороженный на 2026-07-28 — за 3.5 месяца до «сегодня», линия просто обрывалась в июле. ① ЭМБЕД ПЕРЕСОБРАН из живого API (замер 2026-11-09): пофилдовое слияние старого эмбеда (2022-07-29..2026-07-28, 1461 день) с актуальными realized-price/sth-realized-price/lth-realized-price (2022-11-09..2026-11-02) — свежие значения побеждают, поля STH/LTH отсутствующих в свежей выдаче дней сохраняются из старого эмбеда; итого 1558 дней 2022-07-29..2026-11-02, realized покрыт 100%. ② ЦЕПОЧКА ПРОКСИ: fetchJson теперь 5 попыток — прямой запрос (вдруг CORS появится) → allorigins /get → allorigins /raw → codetabs /v1/proxy → cors.lol, каждая с жёстким AbortSignal.timeout(12s) (раньше зависший прокси подвешивал весь фетч), побеждает первый валидный непустой array; распаковка {contents} у allorigins /get сохранена. ③ Правило «заменять _btcData только если ВСЕ 3 эндпоинта ок» и кэш IndexedDB (1ч TTL) не тронуты; throttle 30 мин на инстанс прежний. Известное ограничение источника (не баг): бесплатный тир bitcoin-data.com теперь лагает ~7 дней (заголовок X-Data-Available-Until, на замер — 2026-11-02) и лимитирован 10 req/hour — линия заканчивается на 7 дней позади «сегодня». Регресс: probe_v335 (embed-путь на свежих барах ноя-2026 бит-в-бит с эмбедом, форвард-филл за последний день, не-BTC → NaN, getAutoFitRange, live-фетч через мок allorigins /get со строковыми полями STH/LTH + добор нового дня, fallback на 2-й прокси, все прокси умерли → эмбед цел, throttle), self-test == прематч, boot-check 0 -->
+    <!-- V339 CVD MARKET FOLLOW + RATIO ONE LINE + COARSE TF (3d/2w) + PANEL-MODE COHERENCE (юзер: «На панели на графике если выбираем cvd в монетах, то не указывается что это спот или перп. И походу он всегда пытается показать перп при этом. Второе, если включить /vol линию, то он рисует сразу две для свд и ои. И еще походу свд и ои не умеют на которых ты показываться типа 3д»): ① SPOT/PERP УКАЗАНИЕ И ДЕФОЛТ ПО РЫНКУ ГРАФИКА: бейдж панели и так зовёт вариант честно (panelLabel(): «CVD spot»/«CVD perp»/«CVD USD»/«CVD trades»/«OI»), но (а) к нему лепился бессмысленный суффикс «(20)» — _windowParamLabel подбирал «окном» ratioWin из группы Vol ratio (теперь params с именем /^ratio/ исключены из подбора окна — для cvd их все, бейдж стал чистым «CVD perp»), и (б) новый кирпич ВСЕГДА стартовал с Market=Futures даже на спотовом графике. Теперь дефолт следует за рынком графика: конструктор CVDBrick (cfg.market===undefined && metric='cvd' && adapter.isPerp===false → market='spot') + префилл в модалке настроек (create-ветка, аналогично; пресеты/рестор передают market явно и не трогаются). Плюс в модалке у cvd появилась живая строка «Resolves to: BTCUSDT · SPOT · Binance (chart) · CVD» — зеркалит _cgSpec (метрика→кламп рынка, sourceMode→биржа/агрегат), обновляется на каждое изменение параметров. ② /vol ОДНА ЛИНИЯ: ratioOn («Vol % line (this metric)») больше не рисует ОБЕ линии — только линию метрики этого кирпича (cvd* → CVD/Volume, oi → OI/Volume); ratioBoth («Both lines (CVD + OI)», def off) возвращает старое поведение «обе сразу»; wantCvd/wantOi в _attachVolRatioSeries выводятся из метрики, рендер/автофит/фетч сиблинга подхватывают автоматом (null-массив не рисуется и не фетчится). ③ 3d/2w ТФ: главный убийца — AuxSeriesBrick._getIntervalMs (и копия VolNormBrick) не знали '3d'/'2w' и возвращали 0 → _computeAuxSeries умирал на гварде step 1 ДО фетча — панель CVD/OI/фандинга пустая навсегда (воспроизведено: lineFin=0, ноль CG-запросов на 3d). Карты интервалов дополнены ('3d': 259200000, '2w': 1209600000). Вторая половина: у CoinGlass нет интервалов 3d/2w — cg-либа получила CG_AGG_TF + intervalFor(tf) ('3d'→h24×3 anchor=0, '2w'→'1w'×2 anchor=4d — фаза сетки СТРОГО из движка агрегации баров: 3d epoch-aligned floor(x/3d)×3d, 2w Monday-парная (реальные недельные бары Binance/Bybit открываются в понедельник 00:00 UTC ≡ 4d с epoch-четверга; якорь КОНСТАНТНЫЙ — якорение на моментный lastX давало сдвиг фазы у батча, обогнавшего загрузку свечей при смене ТФ) и aggFlowPoints(points, metric, bucketMs, anchorMs) — саб-TF строки сливаются в бакеты chart-TF: дельты СУММИРУЮТСЯ по бакету (корректно и для пер-бар гистограммы, и для роллинг /vol, кумулятивная линия даёт те же тоталы), OI — уровень НА ОТКРЫТИИ бакета (строка ровно на открытии выигрывает; иначе форвард-филл от предыдущего бакета, без подглядывания; формирующийся бакет показывает свой свежий уровень); детект несортированности — полный O(n) скан (одна вставка не по порядку в растущей серии больше не создаёт фантомный хвостовой бакет). bucketMs = РАЗМЕР БАРА ГРАФИКА (_getIntervalMs ТФ; умножение ещё и на factor давало 9-дневные бакеты — поймано живым замером выравнивания). Все 4 CG-фетчера переведены на intervalFor+агрегацию: CVDBrick._computeRaw.doFetch, _kickRatioFetch, _prefetchCvdSiblings, VolNormBrick._vnKickCvd (bigbuys не тронут — его baseTf-логика и так фетчит 4h на всех TF выше 4h). Живой замер на 3d: 1000/1000 точек на сетке floor(x/3d)×3d, гэпы ровно 3d, lineFin 1001; на 2w — гэпы ровно 14d в фазе 4d. ④ СВЯЗНОСТЬ ПЕРЕНОСА ПАНЕЛИ (доводка V338): api.moveIndicator на СВОЮ панель (<id>_panel) теперь ставит panelMode='separate' (а не 'inherit' — иначе дропдаун Panel и сериализация изображали гостя на собственной панели; обе точки: ChartAPI.moveIndicator + пост-фикс в сэйве модалки); плюс зеркало excludeFromAutoFit при СМЕНЕ размещения — стейл флаг старого размещения заменяется дефолтом нового (overlay на main → excluded, суб-панель → включён), ЕСЛИ чекбокс не трогали руками в этой сессии модалки (_exclTouched; явный тап пользователя всегда побеждает) — «настройки показывают новый цвет, линия — дефолт» из V338③ было той же болезнью. Регресс: probe_v339 10/10 (intervalFor, aggFlowPoints: суммы дельт/3 ветки OI/несортированный вход; дефолт market=spot на спот-графике; «Resolves to» SPOT→PERP с сохранением; бэнды V338 переживают снапшот-раундтрип), debug_v339 (все 3 бага воспроизведены до и закрыты после: бейдж «CVD spot»/«CVD perp» без мусора, ratioOn → ОДНА линия + ratioBoth → обе, 3d → h24-фетч, 1000/1000 выравнено), probe_v331 ALL PASS (адаптирован под V339: ratioBoth в both-ветках + новый чек I5 одиночной линии), probe_v337 ALL 15 (адаптирован под финальное имя API moveIndicator; перенос на свою панель = 'separate', зеркало autofit), probe_v334 ALL PASS, CE.runTests 981/989 == прематч, синтакс 0 фейлов, pageerror 0 -->
     <!-- V336 REALIZED COHORTS + BID/ASK IMBALANCE + SHELVES (юзер: «Новая версия с realized price. Но там более расширенные когорты. Сам распихай по sTH lth и тд. Плюс тут есть полки bid ask, имбаланс. Сделай индикатор имбаланса, а также в статистике монеты пиши текущий имбаланс. Полки бид аск только когда хитимапа ликвидности есть. И если они совсем рядом на экране (несколько пикселей) то показывай ближайшую к цене. Для полок тоже настройки надо, небольшая линия направо от текущего времени типа 5px и очень мелко размер…» — источник: coinglass_lib (5).js + живой OpenAPI bitcoin-data.com): ① РАСШИРЕННЫЕ КОГОРТЫ REALIZED PRICE: в OpenAPI спеке (/api/v3/api-docs, 789 путей) найдены новые именованные эндпоинты realized-price-sth / realized-price-lth / realized-price-sth-30d / realized-price-sth-90d / median-realized-price — они НЕ под рестрикцией X-Data-Available-Until (свежие до вчерашнего дня, замер 2026-11-09: данные по 2026-11-08), в отличие от классических имён (realized-price ограничен 2026-11-02). Кирпич BTC Realized Price: 3 новых линии-когорты Median RP (#bc8cff) / STH <90d (#f06292) / STH <30d (#4dd0e1) с чекбоксами (группа Cohorts, def ON); фетч переписан на конфиг из 6 эндпоинтов (правило «заменять _btcData только если ВСЕ 6 ок» сохранено), idb-кэш инвалидируется по отсутствию median (пре-V336 кэши дотухают); эмбед пересобран пофилдово: 1564 дня 2022-07-29..2026-11-08 — sth/lth продлены свежими алиасами (хвост 11-02 → 11-08!), realized остался на классическом (до 11-02, рестрикция), median/sth30/sth90 добавлены. ② ИНДИКАТОР BID/ASK IMBALANCE (кирпич bidask_imbalance, панель separate, шкала −100..+100, нулевой level): источник — данные Liquidity Heatmap (__cgLbV267._test.data(): tArr/pArr/vArr/bidArr, 300 баров истории стакана); на каждый снапшот — best bid/best ask → mid, суммы bid/ask USD в пределах ±Band% от mid → (bid−ask)/(bid+ask)×100; бар = СРЕДНЕЕ снапшотов внутри [barOpen, barOpen+TF); кэш per-snapshot по (key,rev,band) — живой тик не пересканирует 10^5 ячеек; параметры Band ±% (0.1..10, def 1) и Smoothing EMA (0..100, def 0); panelLabel «Bid/Ask Imb ±1% · venue» когда хитмапа включена; требует включённый Liquidity Heatmap (он — источник данных), иначе панель пустая. ③ ТЕКУЩИЙ ИМБАЛАНС В СТАТИСТИКЕ: _computeStats зовёт новый публичный __cgLbV267.latestBook(band) (±1% от mid последнего снапшота) → строка «Bid/Ask imbalance (book ±1%)» в Price Overview (цветная, +зелёный/−красный, hint с bid/ask USD и mid) + строка в _statsToText; без данных — «—» и подсказка включить хитмапу. ④ ПОЛКИ BID/ASK: __cgLbV267 получил buildShelfList (последний снапшот колонки, бакетизация tick×Shelf merge как в valueAt, суммы USD по сторонам, mid, кэш по key+rev+merge) и drawShelves (экранная работа: сортировка по |price−mid|, кластеризация — если полки ближе DedupPx на экране, остаётся БЛИЖАЙШАЯ К ЦЕНЕ; кап MAX PER SIDE по USD-ценности; клип в плоскость графика; линия от x=текущее время+Offset вправо длиной Len px, толщина Width, мелкий лэйбл $1.2M шрифтом Font px цветом Label color) — рисуется в ОБЕИХ ветках renderOverlay (bake и fallback) поверх хитмапы, ТОЛЬКО когда хитмапа включена (state.enabled — она же источник). Настройки в модалке Liquidity Heatmap → секция «Bid/Ask shelves»: вкл/выкл полок, вкл/выкл лэйблов, длина 1..60px (def 5), ширина 1..6 (def 1), отступ 0..60 (def 2), шрифт 5..14 (def 7), dedup 1..40px (def 5), макс/сторону 1..50 (def 12), Min wall USD, цвета bid/ask/текста — всё в LS ce_cg_liquheat_v1 + __cgHeatUiSync лайв-синк лэйблов. Регресс: probe_v336 (эмбед-когорты на ноябрьских барах, 6 эндпоинт-фетч через мок прокси /get, имбаланс-кирпич на синтетическом стакане с fake-модулем: band-суммы, среднее по барам, EMA, фикс-шкала ±100, panelLabel, latestBook, полки: бакетизация, дедуп-кластеры «ближайшая к цене», кап по USD, отрисовка без исключений), self-test == прематч, probe_v334/v335 ALL PASS, boot-check pageerror 0 -->
     <!-- V338 BANDS EXPORT/IMPORT + KEYPAD LIVE MIRROR + LINE COLOR + PANEL MOVE + SWIPE/EYE DISTINCTION + ALPHA SORT (юзер: «Косяк с экспортом или импортом индикатором из файла. Не учитываются бэнды у линий. / когда у бэндов пытаешься поменять текстбоксы и пишешь во всплывающей клавиатуре новое значение, то значение в текстбоксе не меняется / когда только создаешь новую линию и меняешь цвет с дефолтного на другой, то в настройках показывается новый цвет, а когда выставляешь линию то цвет сбрасывается на дефолтный / проверяй переезд панели нормально / сделай различие, где реально индикатор скрыт через сокрытие/глазик, а где свайп группа и просто сейчас не тот слайд активен… названия панели пиши в скобках, что это свайп мелким шрифтом / видимые индикаторы по алфавиту, невидимые ниже и тоже по алфавиту»): ① БЭНДЫ В ПРЕСЕТАХ: IndicatorBrick-конструктор теперь АДАПТИРУЕТ из cfg bandOverlay + bandOverlayStyle + divergenceConfig + colorSchemes (раньше их писал только рантайм-модал, поэтому _applySnapshot → addIndicator({...cfg}) молча ронял оба поля — экспорт в файл и импорт обратно терял бэнды у линий; воспроизведено и починено, StatePersistence-путь дублировал это пост-хуком, теперь все пути восстановления держат бэнды). ② КЛАВИАТУРА: NumericKeypad ЗЕРКАЛИТ буфер в целевой текстбокс на каждом нажатии (цифры/⌫/±/степперы) — значение меняется прямо во время набора, коммит (OK/Enter/тап вне) шлёт финальные input+change и при совпадении текста тоже (флаг mirrored), ✕/Esc = cancel — возвращает исходное значение; если модал ПЕРЕРИСОВАЛСЯ пока пад открыт — MutationObserver и update()/commit() пере-находят поле по его data-* атрибутам (reattachInput) вместо молчаливой потери черновика. ③ ЦВЕТ НОВОЙ ЛИНИИ: applyLive модалки объекта больше не пишет в захваченный при открытии экземпляр — КАЖДАЯ правка переразрешает ЖИВОЙ объект из overlay.objects по _key, иначе по идентичности (constructor+createdAt+name) — замена объекта под модалкой (boot bucket-load/reconcile/undo) больше не красит мёртвый инстанс («настройки показывают новый цвет, линия — дефолт»); плюс СРАЗУ синхронизируется per-ticker bucket (saveToStorage) — дебаунс-глобал не мог воскресить устаревший бакет. ④ ПЕРЕЕЗД ПАНЕЛИ: главное — ветка isExisting сэйва модалки настроек ВООБЩЕ НЕ ЧИТАЛА [data-panelmode] (значение шло только в create-new ветке — перенос существующего индикатора не работал никуда и никогда); добавлен ChartAPI.moveIndicator(id, pmValue): 'existing:<panelId>' → гость (panelMode='inherit'), 'overlay' → main, 'separate' → своя панель через извлечённый из addIndicator _createSeparatePanel (идемпотентно); при уходе — unregister из свайп-группы старой панели, ОСВОБОЖДЁННАЯ панель удаляется целиком через извлечённый из removeIndicator _removePanelBookkeeping (config.panels/layout ratios+order+configs+computed rect/viewport.panels) когда индикаторов не осталось; чекбокс свайп-группы после переноса синхронизируется с НОВОЙ панелью; сериализация (StatePersistence.serialize + PresetManager._captureSnapshot) теперь хранит panelMode, и api.moveIndicator пропатчен на немедленный save() — перенос ВЫЖИВАЕТ перезагрузку (проверено: перенос zscore → MFI panel через UI, reload — панель та же, старая панель исчезла из config/layout/viewport, свайп-группа MFI не тронута). ⑤ СВАЙП vs ГЛАЗИК в менеджере индикаторов: у панели со свайп-группой секция получает чип «(swipe N)» мелким шрифтом, участники группы — класс slide-ind (фиолетовая полоска + бейдж «slide N/M», активный — зелёный «slide N/M · active», БЕЗ зачёркивания и faded-стиля hidden-ind, которое путало со «скрыт глазиком»); тап по карточке НЕАКТИВНОГО слайда (и его глазик) ОТКРЫВАЕТ этот слайд на графике (handleEyeToggle-активация), тултипы глазика честные («Open this slide (activate)»); реально скрытые глазиком остаются hidden-ind как раньше; Panel-дропдаун в настройках тоже тегает свайп-панели «(swipe N)». ⑥ АЛФАВИТ: не-свайп панели (включая overlays главного чарта) сортируются — видимые по алфавиту (META.label, localeCompare base+numeric), скрытые ниже и тоже по алфавиту; свайп-панели НЕ сортируются (порядок = порядок слайдов карусели). Регресс: browser-e2e (bands survive snapshot→remove→reimport бит-в-бит; keypad live-mirror «33» во время набора/commit/cancel-restore/reattach при подмене DOM → 500 в новом поле; перенос через UI + reload + export/import; клик по слайду RSI активирует (activeIdx 1); сортировка ATR→Bands→CCI→EMA + AO внизу; чипы «(swipe 2)»/«slide 2/2»), CE.runTests 981/989 == прематч (все 8 фейлов совпадают с задокументированными), pageerror 0 -->
     <title>Chart Cry</title>
@@ -13954,7 +13958,12 @@ class PanelLabelRenderer {
      * has no numeric param at all.
      */
     _windowParamLabel(params, values) {
-        const numeric = (params || []).filter(p => p && p.type !== 'bool' && p.type !== 'select' && p.name !== 'mode');
+        // V339: overlay params (the cvd Vol-ratio family: ratioWin/ratioWidth/
+        // ratioAlpha/…) are NOT the brick's window — letting them match the
+        // /window|bars/ heuristics produced meaningless badges like
+        // «CVD perp(20)» where 20 was the ratio window.
+        const numeric = (params || []).filter(p => p && p.type !== 'bool' && p.type !== 'select' && p.name !== 'mode'
+            && !/^ratio/i.test(String(p.name || '')));
         if (numeric.length === 0) return null;
         const p = numeric.find(x => /^(period|window|length|len|bars)$/i.test(String(x.name || '')))
             || numeric.find(x => /period|window|length|lookback|bars/i.test(String(x.name || '') + ' ' + String(x.label || '')))
@@ -19128,8 +19137,18 @@ class CandlestickRenderer {
             const highY  = yToPix(isFinite(high) ? high : Math.max(open, close));
             const lowY   = yToPix(isFinite(low) ? low : Math.min(open, close));
 
-            const bodyTop = yToPix(Math.max(open, close));
-            const bodyBot = yToPix(Math.min(open, close));
+            // V347-invert: on an inverted Y scale yToPix(max(open,close)) lands
+            // BELOW yToPix(min(open,close)) (bigger value → bigger pixel y), so
+            // the raw pair comes back flipped and bodyBot - bodyTop is NEGATIVE.
+            // Math.max(minDrawPx, h) then collapsed EVERY candle body to a
+            // 0.3px hairline (user: «инвертированные свечи будто темнее» — only
+            // the wicks stayed visible). Normalize in PIXEL space: bodyTop is
+            // always the smaller y, body height always ≥ 0. On a normal axis
+            // the swap branch never fires — bit-identical rendering.
+            const bodyTopRaw = yToPix(Math.max(open, close));
+            const bodyBotRaw = yToPix(Math.min(open, close));
+            const bodyTop = bodyTopRaw < bodyBotRaw ? bodyTopRaw : bodyBotRaw;
+            const bodyBot = bodyTopRaw < bodyBotRaw ? bodyBotRaw : bodyTopRaw;
             if (isUp) { upWicks[upWickN++] = px; upWicks[upWickN++] = highY; upWicks[upWickN++] = lowY; upWicks[upWickN++] = bodyTop; upWicks[upWickN++] = bodyBot; }
             else      { downWicks[downWickN++] = px; downWicks[downWickN++] = highY; downWicks[downWickN++] = lowY; downWicks[downWickN++] = bodyTop; downWicks[downWickN++] = bodyBot; }
 
@@ -24363,7 +24382,9 @@ class IndicatorBrick extends IndicatorBase {
             if (!isFinite(v) || v < 0) continue;
             const px = xToPixB(xData[j]);
             const py = yToPixB(v);
-            ctx.fillRect(px - halfW, py, barW, Math.max(0.5, zeroY - py));
+            // V347-invert: pixel-space normalization — on an inverted Y scale
+            // zeroY - py is negative and Math.max(0.5, …) collapsed the bar.
+            ctx.fillRect(px - halfW, Math.min(py, zeroY), barW, Math.max(0.5, Math.abs(zeroY - py)));
         }
         ctx.fillStyle = '#f85149';
         for (let j = 0; j <= (iMax - iMin); j++) {
@@ -24371,7 +24392,7 @@ class IndicatorBrick extends IndicatorBase {
             if (!isFinite(v) || v >= 0) continue;
             const px = xToPixB(xData[j]);
             const py = yToPixB(v);
-            ctx.fillRect(px - halfW, zeroY, barW, Math.max(0.5, py - zeroY));
+            ctx.fillRect(px - halfW, Math.min(py, zeroY), barW, Math.max(0.5, Math.abs(py - zeroY)));
         }
         ctx.globalAlpha = 1;
     }
@@ -26211,8 +26232,9 @@ class MACDBrick extends IndicatorBrick {
                 const px = xToPixH(xData[j]);
                 const py = yToPixH(v);
                 ctx.fillStyle = v >= 0 ? upColor : downColor;
-                if (v >= 0) ctx.fillRect(px - halfW, py, barW, Math.max(0.5, zeroY - py));
-                else        ctx.fillRect(px - halfW, zeroY, barW, Math.max(0.5, py - zeroY));
+                // V347-invert: pixel-space normalization (see _drawHistogram).
+                if (v >= 0) ctx.fillRect(px - halfW, Math.min(py, zeroY), barW, Math.max(0.5, Math.abs(zeroY - py)));
+                else        ctx.fillRect(px - halfW, Math.min(py, zeroY), barW, Math.max(0.5, Math.abs(py - zeroY)));
             }
             ctx.globalAlpha = 1;
         }
@@ -26875,8 +26897,9 @@ class AOBrick extends IndicatorBrick {
                 fillColor = (isFinite(prevV) && v > prevV) ? downFade : downColor;
             }
             ctx.fillStyle = fillColor;
-            if (v >= 0) ctx.fillRect(px - halfW, py, barW, Math.max(0.5, zeroY - py));
-            else        ctx.fillRect(px - halfW, zeroY, barW, Math.max(0.5, py - zeroY));
+            // V347-invert: pixel-space normalization (see _drawHistogram).
+            if (v >= 0) ctx.fillRect(px - halfW, Math.min(py, zeroY), barW, Math.max(0.5, Math.abs(zeroY - py)));
+            else        ctx.fillRect(px - halfW, Math.min(py, zeroY), barW, Math.max(0.5, Math.abs(py - zeroY)));
         }
         ctx.globalAlpha = 1;
         // V49n-fix: draw divergence dots. AOBrick overrides IndicatorBrick.render
@@ -35027,12 +35050,16 @@ class VolNormCandlesBrick extends IndicatorBrick {
         return range?.lastX || 0;
     }
 
-    /** Binance timeframe string → milliseconds. */
+    /** Binance timeframe string → milliseconds.
+     *  V339-coarse-tf: '3d' / '2w' added — same reason as AuxSeriesBrick
+     *  (client-aggregated chart bars; 0 here blanked the VolNorm flow
+     *  denominator on such charts). */
     _getIntervalMs(timeframe) {
         const map = {
             '1m': 60000, '3m': 180000, '5m': 300000, '15m': 900000, '30m': 1800000,
             '1h': 3600000, '2h': 7200000, '4h': 14400000, '6h': 21600000,
-            '8h': 28800000, '12h': 43200000, '1d': 86400000, '1w': 604800000,
+            '8h': 28800000, '12h': 43200000, '1d': 86400000, '3d': 259200000,
+            '2w': 1209600000, '1w': 604800000,
         };
         return map[timeframe] || 0;
     }
@@ -35152,11 +35179,17 @@ class VolNormCandlesBrick extends IndicatorBrick {
         const spec = { metric: 'cvd', market, exchanges: (AGG_LISTS[aggList] || AGG_LISTS.top5).split(','), pair: symbol };
         let symStr;
         try { symStr = cg.flowSymbol(spec); } catch (e) { return; }
-        const iv = cg.CG_INTERVALS[timeframe] || 'h4';
+        // V339-coarse-tf: native sub-TF + client-side chart-TF bucketing —
+        // the flow denominator must sit on the same bar grid as the candles.
+        const agg = cg.intervalFor(timeframe);
         this._vnCvdInflight.add(key);
         this._vnCvdKicks[key] = now;
-        cg.klineRows(symStr, iv, from, to).then(rows => {
-            const pts = rows ? cg.flowPoints('cvd', rows) : null;
+        cg.klineRows(symStr, agg.iv, from, to).then(rows => {
+            let pts = rows ? cg.flowPoints('cvd', rows) : null;
+            if (agg.factor > 1 && pts && pts.length > 1) {
+                pts = cg.aggFlowPoints(pts, 'cvd',
+                    this._getIntervalMs(timeframe), agg.anchorMs);   // bucket = CHART bar, phase = engine's aggregation grid
+            }
             if (pts && pts.length) {
                 let merged = pts;
                 if (why !== 'main') {
@@ -35694,12 +35727,18 @@ class AuxSeriesBrick extends IndicatorBrick {
         return range?.lastX || 0;
     }
 
-    /** Map a Binance timeframe string to milliseconds. */
+    /** Map a Binance timeframe string to milliseconds.
+     *  V339-coarse-tf: '3d' / '2w' are client-aggregated chart TFs (the
+     *  adapters fetch 1d×3 / 1w×2 and merge — _nativeTfFor). Returning 0 for
+     *  them killed the ENTIRE aux pipeline at the guard above
+     *  (_computeAuxSeries step 1) — CVD / OI / funding showed NOTHING on
+     *  such charts («свд и ои не умеют показываться типа 3д»). */
     _getIntervalMs(timeframe) {
         const map = {
             '1m': 60000, '3m': 180000, '5m': 300000, '15m': 900000, '30m': 1800000,
             '1h': 3600000, '2h': 7200000, '4h': 14400000, '6h': 21600000,
-            '8h': 28800000, '12h': 43200000, '1d': 86400000, '1w': 604800000,
+            '8h': 28800000, '12h': 43200000, '1d': 86400000, '3d': 259200000,
+            '2w': 1209600000, '1w': 604800000,
         };
         return map[timeframe] || 0;
     }
@@ -36163,14 +36202,15 @@ function _renderFundingRateBars(ctx, xScale, yScale, xData, computed, visibleRan
                         ctx.lineTo(px, py);
                         ctx.stroke();
                         ctx.fillStyle = prevV >= 0 ? upColor : downColor;
-                        ctx.fillRect(segStartPx - 0.5, py, (px - segStartPx) + 1, Math.max(0.5, zeroY - py));
+                        // V347-invert: pixel-space normalization (see _drawHistogram).
+                        ctx.fillRect(segStartPx - 0.5, Math.min(py, zeroY), (px - segStartPx) + 1, Math.max(0.5, Math.abs(zeroY - py)));
                     } else {
                         ctx.beginPath();
                         ctx.moveTo(segStartPx, py);
                         ctx.lineTo(px, py);
                         ctx.stroke();
                         ctx.fillStyle = prevV >= 0 ? upColor : downColor;
-                        ctx.fillRect(segStartPx - 0.5, zeroY, (px - segStartPx) + 1, Math.max(0.5, py - zeroY));
+                        ctx.fillRect(segStartPx - 0.5, Math.min(py, zeroY), (px - segStartPx) + 1, Math.max(0.5, Math.abs(py - zeroY)));
                     }
                     prevV = NaN;
                 }
@@ -36183,9 +36223,9 @@ function _renderFundingRateBars(ctx, xScale, yScale, xData, computed, visibleRan
                     ctx.lineWidth = 1;
                     ctx.fillStyle = prevV >= 0 ? upColor : downColor;
                     if (prevV >= 0) {
-                        ctx.fillRect(segStartPx - 0.5, py, (px - segStartPx) + 1, Math.max(0.5, zeroY - py));
+                        ctx.fillRect(segStartPx - 0.5, Math.min(py, zeroY), (px - segStartPx) + 1, Math.max(0.5, Math.abs(zeroY - py)));
                     } else {
-                        ctx.fillRect(segStartPx - 0.5, zeroY, (px - segStartPx) + 1, Math.max(0.5, py - zeroY));
+                        ctx.fillRect(segStartPx - 0.5, Math.min(py, zeroY), (px - segStartPx) + 1, Math.max(0.5, Math.abs(py - zeroY)));
                     }
                 }
                 prevV = v;
@@ -36197,9 +36237,9 @@ function _renderFundingRateBars(ctx, xScale, yScale, xData, computed, visibleRan
             const py = yToPixH(prevV);
             ctx.fillStyle = prevV >= 0 ? upColor : downColor;
             if (prevV >= 0) {
-                ctx.fillRect(segStartPx - 0.5, py, (lastPx - segStartPx) + 1, Math.max(0.5, zeroY - py));
+                ctx.fillRect(segStartPx - 0.5, Math.min(py, zeroY), (lastPx - segStartPx) + 1, Math.max(0.5, Math.abs(zeroY - py)));
             } else {
-                ctx.fillRect(segStartPx - 0.5, zeroY, (lastPx - segStartPx) + 1, Math.max(0.5, py - zeroY));
+                ctx.fillRect(segStartPx - 0.5, Math.min(py, zeroY), (lastPx - segStartPx) + 1, Math.max(0.5, Math.abs(py - zeroY)));
             }
         }
     } else {
@@ -36209,8 +36249,9 @@ function _renderFundingRateBars(ctx, xScale, yScale, xData, computed, visibleRan
             const px = xToPixH(xData[j]);
             const py = yToPixH(v);
             ctx.fillStyle = v >= 0 ? upColor : downColor;
-            if (v >= 0) ctx.fillRect(px - halfW, py, barW, Math.max(0.5, zeroY - py));
-            else        ctx.fillRect(px - halfW, zeroY, barW, Math.max(0.5, py - zeroY));
+            // V347-invert: pixel-space normalization (see _drawHistogram).
+            if (v >= 0) ctx.fillRect(px - halfW, Math.min(py, zeroY), barW, Math.max(0.5, Math.abs(zeroY - py)));
+            else        ctx.fillRect(px - halfW, Math.min(py, zeroY), barW, Math.max(0.5, Math.abs(py - zeroY)));
         }
     }
     ctx.globalAlpha = 1;
@@ -36590,15 +36631,20 @@ class CVDBrick extends AuxSeriesBrick {
             //   шкала. Но только у максимума и минимума пиши лэйбл мелкий
             //   сколько это процентов»). Own scale → not in META.outputs, so
             //   the pane auto-fit never sees these arrays.
-            // V332: one master toggle for BOTH lines + full styling (user:
+            // V332: one master toggle + full styling (user:
             //   «можно же сделать один чекбокс на cvd и oi одновременно для
             //   линии. И еще, дай возможность настроить эту линию полностью»).
             //   ratioOn replaces the V331 pair ratioCvdVol/ratioOiVol — legacy
             //   saved configs keep working via the undefined-flag fallback in
             //   _ratioOn(); missing/invalid style params fall back to the
             //   V331 defaults in _ratioStyleRes().
-            new BrickParam({ name: 'ratioOn', label: 'Vol % lines (CVD + OI)', type: 'bool', default: false, group: 'Vol ratio',
-                tooltip: 'Draws BOTH rolling overlays at once: CVD/Volume (the window\'s summed taker buy−sell delta in coins ÷ the same window\'s summed chart volume × 100) and OI/Volume (open interest ÷ the same window volume × 100). Two lines, one toggle, shared band scale; a missing series is fetched automatically when the primary metric differs.' }),
+            // V339-ratio-one-line: the master toggle now draws the line of
+            //   THIS brick's metric only (CVD metrics → CVD/Volume, OI →
+            //   OI/Volume); ratioBoth opts back into drawing both at once.
+            new BrickParam({ name: 'ratioOn', label: 'Vol % line (this metric)', type: 'bool', default: false, group: 'Vol ratio',
+                tooltip: 'Draws the rolling Vol % overlay for this brick\'s metric: CVD/Volume (the window\'s summed taker buy−sell delta in coins ÷ the same window\'s summed chart volume × 100) for CVD metrics, OI/Volume for Open Interest. A missing series is fetched automatically. Enable "Both lines" below to draw CVD + OI together (the pre-V339 behavior).' }),
+            new BrickParam({ name: 'ratioBoth', label: 'Both lines (CVD + OI)', type: 'bool', default: false, group: 'Vol ratio',
+                tooltip: 'Also draw the OTHER metric\'s Vol % line next to this brick\'s own — both overlays at once, sharing the band scale and styling.' }),
             new BrickParam({ name: 'ratioWin', label: 'Ratio window (bars)', default: 20, min: 2, max: 500, step: 1, group: 'Vol ratio',
                 tooltip: 'Rolling window in chart bars: numerator and volume are summed over the LAST N bars, then 100× the quotient is plotted.' }),
             new BrickParam({ name: 'ratioCvdColor', label: 'CVD/Vol color', type: 'color', default: '#e3b341', group: 'Vol ratio',
@@ -36637,6 +36683,23 @@ class CVDBrick extends AuxSeriesBrick {
                              optional: true, name: 'zero', defaultVisible: true }),
         ],
     };
+
+    // V339-market-follow: a fresh CVD (coins) brick on a SPOT chart starts on
+    // the spot market — previously Market always defaulted to Futures, so the
+    // panel silently showed perp data («он всегда пытается показать перп») —
+    // while the badge said CVD perp with no hint spot was available. cfg
+    // values win (presets/restore pass market explicitly); perp charts keep
+    // the futures default; non-cvd metrics are futures-only regardless
+    // (_cgSpec forces market='fut' for them).
+    constructor(cfg) {
+        super(cfg);
+        if (cfg && cfg.market === undefined && this.params.metric === 'cvd') {
+            try {
+                const ad = this._getAdapter ? this._getAdapter() : null;
+                if (ad && ad.isPerp === false) this.params.market = 'spot';
+            } catch (e) { /* fresh/booting chart — keep the default */ }
+        }
+    }
 
     // Resolve the CoinGlass request spec from params + the chart's adapter.
     // V272: pOver — an alternative params object (the sibling-variant prefetch
@@ -36715,7 +36778,10 @@ class CVDBrick extends AuxSeriesBrick {
         if (!adapter || !adapter.symbol) return;
         const symbol = String(adapter.symbol).toUpperCase();
         const timeframe = adapter.timeframe || '1m';
-        const iv = cg.CG_INTERVALS[timeframe] || 'h4';
+        // V339-coarse-tf: native sub-TF + client-side chart-TF bucketing —
+        // the prefetched sibling must land on the same bar grid as the
+        // primary series, otherwise a swipe to it mis-buckets.
+        const agg = cg.intervalFor(timeframe);
         // V272-fix: bricks have no this._manager reference — resolve the
         // IndicatorManager through the chart context (same chain _autoLabel uses).
         const ctx = this._getChartCtx();
@@ -36746,8 +36812,12 @@ class CVDBrick extends AuxSeriesBrick {
                     if (!spec) return;
                     let symStr;
                     try { symStr = cg.flowSymbol(spec); } catch (e) { return; }
-                    const rows = await cg.klineRows(symStr, iv, win.from, win.to);
-                    const pts = cg.flowPoints(job.params.metric, rows);
+                    const rows = await cg.klineRows(symStr, agg.iv, win.from, win.to);
+                    let pts = cg.flowPoints(job.params.metric, rows);
+                    if (agg.factor > 1 && pts && pts.length > 1) {
+                        pts = cg.aggFlowPoints(pts, job.params.metric,
+                            this._getIntervalMs(timeframe), agg.anchorMs);   // bucket = CHART bar, phase = engine's aggregation grid
+                    }
                     if (pts && pts.length) AuxSeriesBrick._auxSessionPut(job.key, pts);
                 } catch (e) { /* best-effort — the sibling will fetch on demand */ }
                 finally { AuxSeriesBrick._prefetchInflight.delete(job.key); }
@@ -36772,13 +36842,22 @@ class CVDBrick extends AuxSeriesBrick {
                 if (!spec) return [];
                 let symStr;
                 try { symStr = cg.flowSymbol(spec); } catch (e) { return []; }
-                const iv = cg.CG_INTERVALS[timeframe] || 'h4';
+                // V339-coarse-tf: '3d'/'2w' fetch the NATIVE sub-TF rows and
+                // merge them into chart-TF buckets client-side (CoinGlass has
+                // no such intervals; the old `|| 'h4'` fallback smeared raw
+                // 4h deltas across neighboring 3d bars).
+                const agg = cg.intervalFor(timeframe);
                 // V272: remember the window — the sibling-variant prefetch reuses it
                 const reqFrom = Math.round(startX) - 3600000, reqTo = Math.round(endX) + 120000;
                 this._auxLastFetchWin = { from: reqFrom, to: reqTo };
                 try {
-                    const rows = await cg.klineRows(symStr, iv, reqFrom, reqTo);
-                    return cg.flowPoints(spec.metric, rows);
+                    const rows = await cg.klineRows(symStr, agg.iv, reqFrom, reqTo);
+                    let pts = cg.flowPoints(spec.metric, rows);
+                    if (agg.factor > 1 && pts && pts.length > 1) {
+                        pts = cg.aggFlowPoints(pts, spec.metric,
+                            this._getIntervalMs(timeframe), agg.anchorMs);   // bucket = CHART bar, phase = engine's aggregation grid
+                    }
+                    return pts;
                 } catch (e) { return []; }
             },
         });
@@ -36883,12 +36962,19 @@ class CVDBrick extends AuxSeriesBrick {
         if (typeof document !== 'undefined' && document.hidden) return;
         let symStr;
         try { symStr = cg.flowSymbol(spec); } catch (e) { return; }
-        const iv = cg.CG_INTERVALS[timeframe] || 'h4';
+        // V339-coarse-tf: native sub-TF + client-side chart-TF bucketing
+        // (same as _computeRaw's doFetch) so the sibling series lands on the
+        // same bar grid as the primary.
+        const agg = cg.intervalFor(timeframe);
         this._ratioInflight.add(key);
         const myGen = this._auxFetchGen || 0;
-        cg.klineRows(symStr, iv, from, to).then(rows => {
+        cg.klineRows(symStr, agg.iv, from, to).then(rows => {
             if ((this._auxFetchGen || 0) !== myGen) return;   // coin switched mid-flight
-            const pts = rows ? cg.flowPoints(kind, rows) : null;
+            let pts = rows ? cg.flowPoints(kind, rows) : null;
+            if (agg.factor > 1 && pts && pts.length > 1) {
+                pts = cg.aggFlowPoints(pts, kind,
+                    this._getIntervalMs(timeframe), agg.anchorMs);   // bucket = CHART bar, phase = engine's aggregation grid
+            }
             if (pts && pts.length) {
                 AuxSeriesBrick._auxSessionPut(key, pts);
                 // coverage bookkeeping: did the snapshot reach the requested left edge?
@@ -37024,12 +37110,19 @@ class CVDBrick extends AuxSeriesBrick {
 
     /** Entry point called from _computeRaw: attaches computed.cvdVolRatio /
      *  computed.oiVolRatio (Float64Array, percent) when the master toggle is
-     *  on — V332: one checkbox controls BOTH lines. */
+     *  on — V339: ONE line, for THIS brick's metric (ratioBoth restores the
+     *  old both-lines behavior). */
     _attachVolRatioSeries(computed, ohlc, count) {
         const p = this.params;
         const st = this._ratioStyleRes();
-        const wantCvd = st.on;
-        const wantOi = st.on;
+        const metric = p.metric || 'cvd';
+        // V339-ratio-one-line: the master toggle draws the Vol % line of THIS
+        // brick's metric only — CVD metrics → CVD/Volume, OI → OI/Volume
+        // («если включить /vol линию, то он рисует сразу две для свд и ои»).
+        // ratioBoth=true opts back into the old both-lines behavior.
+        const both = p.ratioBoth === true;
+        const wantCvd = st.on && (both || metric !== 'oi');
+        const wantOi = st.on && (both || metric === 'oi');
         if (!computed) return;
         if (!wantCvd && !wantOi) {
             computed.cvdVolRatio = null;
@@ -37049,7 +37142,6 @@ class CVDBrick extends AuxSeriesBrick {
         const win = st.win;
         this._ratioCount = count;   // sibling first-fetch window estimate
         const startBarX = lastX - (count - 1) * intervalMs;
-        const metric = p.metric || 'cvd';
         const vol = new Float64Array(count);
         for (let i = 0; i < count; i++) vol[i] = Number(volSrc[i]);
         if (wantCvd) {
@@ -37222,8 +37314,9 @@ class CVDBrick extends AuxSeriesBrick {
                 const px = xToPix(xData[j]);
                 const py = yToPix(v);
                 ctx.fillStyle = v >= 0 ? st.bullS : st.bearS;
-                if (v >= 0) ctx.fillRect(px - halfW, py, barW, Math.max(0.5, zeroY - py));
-                else        ctx.fillRect(px - halfW, zeroY, barW, Math.max(0.5, py - zeroY));
+                // V347-invert: pixel-space normalization (see _drawHistogram).
+                if (v >= 0) ctx.fillRect(px - halfW, Math.min(py, zeroY), barW, Math.max(0.5, Math.abs(zeroY - py)));
+                else        ctx.fillRect(px - halfW, Math.min(py, zeroY), barW, Math.max(0.5, Math.abs(py - zeroY)));
             }
         }
         ctx.globalAlpha = 1;
@@ -37963,8 +38056,14 @@ class RelPerfBrick extends AuxSeriesBrick {
                 // yScale.valToPix(yScale.min) → bottom of this panel's plot area
                 // This correctly handles panel resize, separate panel placement,
                 // and any padding the chart engine applies.
-                const panelTopPx = yScale.valToPix(yScale.max);
-                const panelBotPx = yScale.valToPix(yScale.min);
+                // V347-invert: on an inverted panel valToPix(max) > valToPix(min),
+                // so the raw panelH is negative and the hidden-axis histogram was
+                // skipped entirely. Normalize to pixel-space top/bottom (the
+                // secondary mapping below stays normal-oriented: value-up =
+                // pixel-up — fine for this overlay).
+                let panelTopPx = yScale.valToPix(yScale.max);
+                let panelBotPx = yScale.valToPix(yScale.min);
+                if (panelTopPx > panelBotPx) { const _t = panelTopPx; panelTopPx = panelBotPx; panelBotPx = _t; }
                 const panelH = panelBotPx - panelTopPx;
                 if (panelH > 0 && hMax > hMin) {
                     const hYScale = {
@@ -37984,8 +38083,9 @@ class RelPerfBrick extends AuxSeriesBrick {
                         const px = xScale.valToPix(xData[j]);
                         const py = hYScale.valToPix(v);
                         ctx.fillStyle = v >= 0 ? '#3fb950' : '#f85149';
-                        if (v >= 0) ctx.fillRect(px - halfW, py, barW, Math.max(0.5, zeroY - py));
-                        else        ctx.fillRect(px - halfW, zeroY, barW, Math.max(0.5, py - zeroY));
+                        // V347-invert: pixel-space normalization (see _drawHistogram).
+                        if (v >= 0) ctx.fillRect(px - halfW, Math.min(py, zeroY), barW, Math.max(0.5, Math.abs(zeroY - py)));
+                        else        ctx.fillRect(px - halfW, Math.min(py, zeroY), barW, Math.max(0.5, Math.abs(py - zeroY)));
                     }
                     ctx.globalAlpha = 1;
                 }
@@ -52341,14 +52441,25 @@ class NavigationController {
         const pL = getPanelDims(pId), yR = this.getYRange(pId);
         if (!pL || pL.height <= 0 || !yR) return;
         const scaleMode = this._getYScaleMode(pId);
+        // V346: on an INVERTED axis the pixel-down direction means value-up
+        // on screen, so the pan delta flips sign — content keeps following
+        // the finger in both orientations (see openAxisScaleMenu notes).
+        let _panDir = 1;
+        try {
+            const _k = parseYAxisKey(pId);
+            const _pc = findPanelConfig(this._ctx.config, _k.pId);
+            _panDir = (_k.axisId !== 'default'
+                ? !!_pc?.yAxes?.[_k.axisId]?.inverted
+                : !!_pc?.inverted) ? -1 : 1;
+        } catch (_) { _panDir = 1; }
         let newMin, newMax;
         if (scaleMode === 'log' && yR.min > 0) {
             const logMin = Math.log10(yR.min), logMax = Math.log10(yR.max);
-            const logDdy = ctx.dy * (logMax - logMin) / pL.height;
+            const logDdy = ctx.dy * _panDir * (logMax - logMin) / pL.height;
             newMin = Math.pow(10, logMin + logDdy);
             newMax = Math.pow(10, logMax + logDdy);
         } else {
-            const ddy = ctx.dy * (yR.max - yR.min) / pL.height;
+            const ddy = ctx.dy * _panDir * (yR.max - yR.min) / pL.height;
             newMin = yR.min + ddy;
             newMax = yR.max + ddy;
         }
@@ -52836,7 +52947,12 @@ class IndicatorAPI {
         }
 
         ind.panelId = targetPanelId;
-        ind.panelMode = (targetPanelId === 'main') ? 'overlay' : 'inherit';
+        // V339-panel-mode-coherence: an own-panel target means the indicator
+        // OWNS that panel — keep panelMode 'separate' (the modal's Panel
+        // dropdown and the serialization would otherwise report a guest
+        // ('inherit') sitting on its own panel after the move).
+        ind.panelMode = (targetPanelId === 'main') ? 'overlay'
+            : (targetPanelId === ind.id + '_panel') ? 'separate' : 'inherit';
 
         // Retire the vacated panel when it has no indicators left.
         const imAll = im.getAll ? im.getAll() : [];
@@ -59255,7 +59371,11 @@ class AxisZoomRecognizer extends GestureRecognizer {
                     // V123-fix: bound the per-event factor — a coalesced
                     //   touchmove from a fast flick carries |dx/dy| of hundreds
                     //   of px → factor >= 1 → range inversion (see zoomX clamp).
-                    const fy = Math.max(-0.5, Math.min(0.5, -ctx.dy * 0.005));
+                    // V346: on an inverted axis the drag direction flips so
+                    //   the scale keeps stretching the way the finger moves.
+                    const _inv = (typeof this.api.isAxisInverted === 'function')
+                        ? !!this.api.isAxisInverted(key) : false;
+                    const fy = Math.max(-0.5, Math.min(0.5, (_inv ? ctx.dy : -ctx.dy) * 0.005));
                     this.api.zoomY(key, fy, anchorY);
                 }
             }
@@ -59800,6 +59920,52 @@ class PointerController {
             this._labelLongPressTimer = null;
         }
         this._labelLongPressPending = null;
+    }
+
+    // ── V346: Y-axis scale menu — 800 ms long-press on the axis label column ──
+    // Touch alias of the right-click path (OverlayUIController contextmenu).
+    // While the timer is pending the finger may not move more than
+    // AXIS_MENU_SLOP_PX — otherwise it's a scale drag, not a menu request.
+    static AXIS_MENU_LONG_PRESS_MS = 800;
+    static AXIS_MENU_SLOP_PX = 12;
+
+    /** Start the 800 ms timer that opens the scale menu for the axis under (x, y). */
+    _startAxisMenuLongPress(pId, x, y, clientX, clientY) {
+        this._cancelAxisMenuLongPress();
+        this._axisMenuPending = { panelId: pId, startX: x, startY: y, clientX, clientY };
+        this._axisMenuTimer = setTimeout(() => {
+            const pending = this._axisMenuPending;
+            this._axisMenuPending = null;
+            this._axisMenuTimer = null;
+            if (!pending || this._destroyed) return;
+            // Android fires the NATIVE contextmenu ~500 ms into a hold; the
+            // axis branch of the canvas contextmenu handler has already
+            // opened the scale menu by then. Reopening at 800 ms would flash
+            // — skip if a menu is already up (any stale menu was closed by
+            // the touchstart outside-close listener long ago).
+            if (window.__axisScaleMenu) return;
+            // Cancel any active touch recognizer (AxisZoomRecognizer started
+            // on this touch — it must not zoom while the menu is open).
+            if (this.activeRecognizer?.cancel) this.activeRecognizer.cancel();
+            this.activeRecognizer = null;
+            try { if (navigator.vibrate) navigator.vibrate(25); } catch (_) {}
+            try {
+                const layout = this.api.layout;
+                const hit = layout ? hitTestYAxis(pending.panelId, pending.startX, layout, this.api.config) : null;
+                if (hit) {
+                    openAxisScaleMenu(this.api, hit, pending.panelId, pending.clientX, pending.clientY);
+                }
+            } catch (_) {}
+        }, PointerController.AXIS_MENU_LONG_PRESS_MS);
+    }
+
+    /** Cancel the pending axis-menu long-press (moved / lifted / second finger). */
+    _cancelAxisMenuLongPress() {
+        if (this._axisMenuTimer) {
+            clearTimeout(this._axisMenuTimer);
+            this._axisMenuTimer = null;
+        }
+        this._axisMenuPending = null;
     }
 
     /**
@@ -60781,6 +60947,22 @@ class PointerController {
                 }
             }
 
+            // V346: Y-axis scale menu — 800 ms long-press on the axis label
+            // column (touch alias of the right-click). Cancelled by a move
+            // beyond slop or a lift; recognizers still run so an early drag
+            // remains a normal axis scale gesture.
+            if (this.startZone === 'axis-y') {
+                const apId = this.api.getActivePanel(y)
+                    || this.api.getActivePanel(y - 5)
+                    || this.api.getActivePanel(y + 5);
+                if (apId) {
+                    const t0 = e.touches[0];
+                    this._startAxisMenuLongPress(apId, x, y,
+                        (t0 && t0.clientX != null) ? t0.clientX : x,
+                        (t0 && t0.clientY != null) ? t0.clientY : y);
+                }
+            }
+
             const ctx           = this._buildCtx(e);
             this.activeRecognizer = null;
             for (const rec of this.recognizers) {
@@ -60815,6 +60997,21 @@ class PointerController {
             // which is distracting during the hold.
             return;
         }
+        // V346: axis-menu long-press — while the 800 ms timer is pending,
+        // hold the gesture (no zoom). A move beyond slop cancels the menu
+        // request and falls through as a normal axis scale drag. lastTouches
+        // still updates so the recognizer never sees a position jump.
+        if (this._axisMenuPending && e.touches.length === 1) {
+            const [mx, my] = this._xy(e.touches[0]);
+            const dx = mx - this._axisMenuPending.startX;
+            const dy = my - this._axisMenuPending.startY;
+            this.lastTouches = [...e.touches];
+            if (shouldCancelLongPress(dx, dy, PointerController.AXIS_MENU_SLOP_PX)) {
+                this._cancelAxisMenuLongPress();
+            } else {
+                return;   // still holding still — the menu timer keeps running
+            }
+        }
         // V37: if a panel-delete touch is pending, cancel it when the
         // finger moves beyond slop. This matches native button behavior
         // — a tap is only committed if the finger stays roughly in place.
@@ -60843,6 +61040,8 @@ class PointerController {
     _onTouchEnd(e) {
         if (this._destroyed) return;
         e.preventDefault();
+        // V346: finger lifted before 800 ms — cancel the axis-menu request
+        this._cancelAxisMenuLongPress();
         // V37: panel drag-and-drop — update gap from final touch position,
         // then commit.
         if (this._panelDragging) {
@@ -61035,6 +61234,8 @@ class PointerController {
     _onTouchCancel(e) {
         if (this._destroyed) return;
         e.preventDefault();
+        // V346: a cancelled gesture never opens the scale menu
+        this._cancelAxisMenuLongPress();
         if (this.activeRecognizer?.cancel) this.activeRecognizer.cancel();
         this.activeRecognizer = null;
         // V37: clear any pending panel-delete touch so a cancelled
@@ -62196,6 +62397,141 @@ class PanelMaximizer {
 //   that receives the ChartAPI and DOM references via constructor.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ═══ V346: Y-axis scale context menu (invert · log/linear) ═════════════════
+//
+// Opened by: right-click (mouse) OR 800 ms long-press (touch) on the price
+// axis LABEL column (layout zone 'axis-y'). Lets the user flip the scale
+// direction (inverted) and switch linear/log/percentage for THAT column's
+// axis (default panel axis or a specific overlay axis like volume).
+//
+// Inversion safety: every price↔pixel conversion in the app routes through
+// the Scale object (valToPix / pixToVal) — candles, indicators, drawings
+// (trend lines, fibs, zones), crosshair, tooltips AND the portfolio
+// order/TP/SL/entry lines all map through the same inverted scale, so their
+// Y control stays consistent after the flip. Only two places use raw pixel
+// deltas and need an explicit direction flip: NavigationController._panY
+// (plot Y-pan) and AxisZoomRecognizer.handleMove (axis drag zoom) — both
+// check isAxisInverted below.
+//
+// State lives on config.panels[i].inverted / config.panels[i].yAxes[id]
+// .inverted (set via api.setAxisInverted) and settings.yAxis.panels[id].mode
+// (via api.setYScaleMode) — both persisted by StatePersistence (V346).
+
+/** Build + open the scale menu. Returns the menu element (or null). */
+function openAxisScaleMenu(api, hit, pId, clientX, clientY) {
+    try {
+        if (!api || !hit) return null;
+        const key = hit.key || pId;                        // 'main' or 'main:volume'
+        const axisId = hit.axisId || 'default';
+        const isOverlay = axisId !== 'default';
+        const title = isOverlay
+            ? `${axisId.charAt(0).toUpperCase() + axisId.slice(1)} axis · ${pId}`
+            : `Price axis · ${pId}`;
+
+        // Close any previously open instance
+        closeAxisScaleMenu();
+        const menu = document.createElement('div');
+        menu.className = 'axis-scale-menu';
+        Object.assign(menu.style, {
+            position: 'fixed', zIndex: 100000,
+            minWidth: '196px', padding: '5px',
+            background: 'rgba(24,28,36,0.97)',
+            border: '1px solid rgba(255,255,255,0.14)',
+            borderRadius: '10px',
+            boxShadow: '0 8px 28px rgba(0,0,0,0.55)',
+            font: '12.5px -apple-system, BlinkMacSystemFont, sans-serif',
+            color: '#e8eaed', userSelect: 'none', WebkitUserSelect: 'none',
+            WebkitTapHighlightColor: 'transparent', touchAction: 'none',
+            backdropFilter: 'blur(6px)',
+        });
+
+        const head = document.createElement('div');
+        head.textContent = title;
+        Object.assign(head.style, {
+            padding: '5px 9px 6px', fontSize: '10.5px', letterSpacing: '.3px',
+            color: 'rgba(255,255,255,.45)', textTransform: 'uppercase',
+        });
+        menu.appendChild(head);
+
+        const curMode = (typeof api.getYScaleMode === 'function') ? api.getYScaleMode(key) : 'linear';
+        const curInv  = (typeof api.isAxisInverted === 'function') ? !!api.isAxisInverted(key) : false;
+
+        const mkItem = (label, checked, cb) => {
+            const it = document.createElement('div');
+            it.textContent = (checked ? '✓  ' : '    ') + label;
+            Object.assign(it.style, {
+                padding: '9px 10px', borderRadius: '7px', cursor: 'pointer',
+                whiteSpace: 'nowrap', minHeight: '16px', lineHeight: '16px',
+            });
+            it.addEventListener('pointerenter', () => { it.style.background = 'rgba(255,255,255,0.09)'; });
+            it.addEventListener('pointerleave', () => { it.style.background = 'transparent'; });
+            it.addEventListener('click', (e) => {
+                e.stopPropagation();
+                try { if (navigator.vibrate) navigator.vibrate(12); } catch (_) {}
+                closeAxisScaleMenu();
+                cb();
+            });
+            menu.appendChild(it);
+            return it;
+        };
+
+        // Scale type — radio group (linear is just "not log and not percentage")
+        mkItem('Linear', curMode === 'linear', () => api.setYScaleMode(key, 'linear'));
+        mkItem('Log', curMode === 'log', () => api.setYScaleMode(key, 'log'));
+        mkItem('Percentage', curMode === 'percentage', () => api.setYScaleMode(key, 'percentage'));
+
+        // Divider
+        const div = document.createElement('div');
+        Object.assign(div.style, {
+            height: '1px', margin: '4px 6px',
+            background: 'rgba(255,255,255,0.10)',
+        });
+        menu.appendChild(div);
+
+        mkItem('Invert scale', curInv, () => api.setAxisInverted(key, !curInv));
+
+        // Position — clamped to the viewport
+        document.body.appendChild(menu);
+        const mw = menu.offsetWidth || 200, mh = menu.offsetHeight || 190;
+        let left = Math.max(6, Math.min(clientX, window.innerWidth - mw - 6));
+        let top  = Math.max(6, Math.min(clientY, window.innerHeight - mh - 6));
+        menu.style.left = left + 'px';
+        menu.style.top  = top + 'px';
+        window.__axisScaleMenu = menu;
+
+        // Outside pointerdown closes (armed with a delay: on touch the
+        // long-press finger is still DOWN when the menu opens — the same
+        // gesture must not immediately close it).
+        setTimeout(() => {
+            if (window.__axisScaleMenu !== menu) return;
+            menu.__closeOnOutside = (e) => {
+                if (menu.contains(e.target)) return;
+                closeAxisScaleMenu();
+            };
+            document.addEventListener('pointerdown', menu.__closeOnOutside, true);
+            document.addEventListener('touchstart', menu.__closeOnOutside, true);
+        }, 150);
+        // Escape closes
+        menu.__closeOnEsc = (e) => { if (e.key === 'Escape') closeAxisScaleMenu(); };
+        document.addEventListener('keydown', menu.__closeOnEsc, true);
+        return menu;
+    } catch (e) { try { console.warn('[axis-scale-menu]', e); } catch (_) {} return null; }
+}
+
+function closeAxisScaleMenu() {
+    const menu = window.__axisScaleMenu;
+    if (!menu) return;
+    window.__axisScaleMenu = null;
+    try {
+        if (menu.__closeOnOutside) {
+            document.removeEventListener('pointerdown', menu.__closeOnOutside, true);
+            document.removeEventListener('touchstart', menu.__closeOnOutside, true);
+        }
+        if (menu.__closeOnEsc) document.removeEventListener('keydown', menu.__closeOnEsc, true);
+    } catch (_) {}
+    try { menu.remove(); } catch (_) {}
+}
+
 class OverlayUIController {
     static PRESET_KEYS   = ['static-value', 'current-price', 'range-high', 'range-low', 'swing-high', 'swing-low'];
     static PRESET_LABELS = {
@@ -62290,6 +62626,25 @@ class OverlayUIController {
         this.overlayCanvas.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             const [px, py] = canvasXY(this.overlayCanvas, e.clientX, e.clientY);
+            // V346: right-click on the Y-axis label column → scale menu
+            // (invert / log-linear). Takes priority over the drawing menu —
+            // drawings never render inside the axis column anyway.
+            try {
+                const zone = this.api.getZone ? this.api.getZone(px, py) : null;
+                if (zone === 'axis-y') {
+                    const pId = this.api.getActivePanel(py)
+                        || this.api.getActivePanel(py - 5)
+                        || this.api.getActivePanel(py + 5);
+                    if (pId && this.api.layout) {
+                        const hit = hitTestYAxis(pId, px, this.api.layout, this.api.config);
+                        if (hit) {
+                            this.ovCtx?.classList.remove('open');
+                            openAxisScaleMenu(this.api, hit, pId, e.clientX, e.clientY);
+                            return;
+                        }
+                    }
+                }
+            } catch (err) { /* fall through to the drawing menu */ }
             const obj = this.api.hitTestOverlay(px, py, 8);
             if (obj) {
                 this._ctxObjKey = obj._key;
@@ -81304,7 +81659,10 @@ class SourceUIController {
         //   Previously only kind/excludeStables/excludeDead/listingAge were
         //   applied, and favorites used wrong localStorage key (cp_filterState
         //   instead of cp.filters.onlyFavs) → swipe ignored favorites filter.
-        const filters = _cpLoadState('cp.filters', { kind: 'all', onlyFavs: false, excludeStables: false, excludeDead: true, quotes: [], favTypes: [], listingAge: 'any', favRecency: 'any', tags: [] });
+        // V340-swipe-tokenized: also default tokenized/dexes here — the saved
+        //   cp.filters object is returned AS-IS by _cpLoadState (no merge),
+        //   so a user who never touched the Assets row has no tokenized key.
+        const filters = _cpLoadState('cp.filters', { kind: 'all', onlyFavs: false, excludeStables: false, excludeDead: true, quotes: [], favTypes: [], listingAge: 'any', favRecency: 'any', tags: [], dexes: [], tokenized: 'any' });
         const sort = _cpLoadState('cp.sort', { key: 'vol', dir: 'desc' });
 
         // Filter coins (same logic as CoinPicker._applyFilters)
@@ -81356,6 +81714,26 @@ class SourceUIController {
             if (filters.tags && filters.tags.length > 0) {
                 const tags = _paprikaService.heuristicTags(c.base, null, null);
                 if (!filters.tags.some(t => tags.includes(t))) return false;
+            }
+            // V340-swipe-tokenized: honor the Assets filter (the «Any / Stocks·ETF
+            //   only / Crypto only» row in the picker). Previously swiping cycled
+            //   the FULL list — stocks/ETF kept appearing even when the user hid
+            //   everything except crypto («при свайпе он все равно использует
+            //   весь список в т.ч. акции и етф»). Same logic + same exemptions
+            //   as CoinPicker._applyFilters (V306/V308): CryptoCap index rows
+            //   pass untouched; native crypto flagged k:'coin' (KOR) is NOT a
+            //   tokenized asset.
+            if (filters.tokenized === 'only' || filters.tokenized === 'hide') {
+                const tzRaw = (typeof _ceTokenizedAsset === 'function') ? _ceTokenizedAsset(c.base) : null;
+                const tzRow = (tzRaw && tzRaw.k === 'coin') ? null : tzRaw;
+                if (filters.tokenized === 'only' && !tzRow) return false;
+                if (filters.tokenized === 'hide' && tzRow) return false;
+            }
+            // V340-swipe-dexes: Hyperliquid HIP-3 builder-dex filter (V228) —
+            //   verbatim from the picker, so swipe matches the visible list.
+            if (filters.dexes && filters.dexes.length > 0) {
+                const m0 = c.markets?.[0];
+                if (m0 && m0.hlDex !== undefined && !filters.dexes.includes(m0.hlDex || '')) return false;
             }
             return true;
         });
@@ -81571,7 +81949,10 @@ class SourceUIController {
 
         // V49n-fix: use the same filter + sort + pickMarket logic as _cycleSymbol
         //   so the indicator matches what the user sees in the picker.
-        const filters = _cpLoadState('cp.filters', { kind: 'all', excludeStables: false, excludeDead: true, quotes: [], listingAge: 'any' });
+        // V340: tokenized/dexes filters applied too — the N/M position must
+        //   count the SAME list the swipe cycles (after the swipe fix the
+        //   swipe list can be shorter than the raw list).
+        const filters = _cpLoadState('cp.filters', { kind: 'all', excludeStables: false, excludeDead: true, quotes: [], listingAge: 'any', dexes: [], tokenized: 'any' });
         const sort = _cpLoadState('cp.sort', { key: 'vol', dir: 'desc' });
         const kindFilter = filters.kind || 'all';
         const pickMarket = (coin) => {
@@ -81591,11 +81972,33 @@ class SourceUIController {
                 const totalVol = coin.totalVolume || 0;
                 if (!hasPrice || totalVol <= 0) continue;
             }
+            // V340-swipe-tokenized: same Assets filter as the swipe list.
+            if (filters.tokenized === 'only' || filters.tokenized === 'hide') {
+                const tzRaw = (typeof _ceTokenizedAsset === 'function') ? _ceTokenizedAsset(coin.base) : null;
+                const tzRow = (tzRaw && tzRaw.k === 'coin') ? null : tzRaw;
+                if (filters.tokenized === 'only' && !tzRow) continue;
+                if (filters.tokenized === 'hide' && tzRow) continue;
+            }
+            // V340-swipe-dexes: same Hyperliquid builder-dex filter.
+            if (filters.dexes && filters.dexes.length > 0) {
+                const m0 = coin.markets?.[0];
+                if (m0 && m0.hlDex !== undefined && !filters.dexes.includes(m0.hlDex || '')) continue;
+            }
             const m = pickMarket(coin);
             if (!m) continue;
             flatMarkets.push({
                 symbol: m.symbol,
+                // V340-pos-sort: carry EVERY sort field — the indicator must
+                //   walk the SAME order the picker/swipe use (cp.sort.key can
+                //   be name/change/listing/funding/oi/price, not just vol).
+                name: coin.name,
                 totalVolume: coin.totalVolume || 0,
+                volumeUSD: m.volumeUSD || m.volume || 0,
+                price: m.price || coin.price || 0,
+                change24h: m.change24h ?? coin.change24h ?? 0,
+                fundingRate: m.fundingRate ?? coin.fundingRate,
+                openInterest: m.openInterest ?? coin.openInterest,
+                launchTime: coin.launchTime || 0,
             });
         }
         if (!flatMarkets.length) {
@@ -81604,7 +82007,29 @@ class SourceUIController {
             return;
         }
         const mul = sort.dir === 'desc' ? -1 : 1;
-        flatMarkets.sort((a, b) => mul * ((b.totalVolume || 0) - (a.totalVolume || 0)));
+        const safe = (v, fallback = 0) => { const n = Number(v); return isFinite(n) ? n : fallback; };
+        const totalVol = (m) => safe(m.totalVolume) || safe(m.volumeUSD);
+        // V340-pos-sort: the comparator now mirrors _cycleSymbol VERBATIM
+        //   (mul * (va − vb) + the volume tie-breaker). The old expression
+        //   `mul * ((b − a))` double-negated under desc — the indicator walked
+        //   the list BOTTOM-UP (probe_v340 caught BTC at «5/5» instead of 1/5),
+        //   and it also ignored every cp.sort.key except vol.
+        flatMarkets.sort((a, b) => {
+            if (sort.key === 'name') return mul * (a.name || '').localeCompare(b.name || '');
+            let va, vb;
+            switch (sort.key) {
+                case 'vol':       va = totalVol(a); vb = totalVol(b); break;
+                case 'change':    va = safe(a.change24h); vb = safe(b.change24h); break;
+                case 'listing':   va = safe(a.launchTime); vb = safe(b.launchTime); break;
+                case 'funding':   va = safe(a.fundingRate, -Infinity); vb = safe(b.fundingRate, -Infinity); break;
+                case 'oi':        va = safe(a.openInterest); vb = safe(b.openInterest); break;
+                case 'price':     va = safe(a.price); vb = safe(b.price); break;
+                default:          va = totalVol(a); vb = totalVol(b);
+            }
+            const primary = mul * (va - vb);
+            if (primary !== 0) return primary;
+            return totalVol(b) - totalVol(a);
+        });
 
         const idx = flatMarkets.findIndex(m => m.symbol === lookupSymbol);
         if (idx < 0) {
@@ -83264,6 +83689,8 @@ const TOOLBAR_ARIA_LABELS = {
     'btn-cache-stats':  'Show cache statistics',
     'btn-portfolio':    'Open paper portfolio',
     'btn-pf-sim':       'Toggle portfolio simulation (default OFF)',
+    'btn-api-keys':     'Exchange API keys manager (Bybit / Bitunix)',
+    'btn-exch-pf':      'Live exchange balances (portfolio)',
     'btn-cache-clear':  'Clear all cached candles',
     'btn-vol-mode':     'Cycle volume display mode (coins / dollars)',
     'btn-trend-line':   'Draw trend line',
@@ -83924,6 +84351,10 @@ class ChartFactory {
             try { return localStorage.getItem('ce_pf_sim_enabled_v1') === '1'; } catch (_) { return false; }
         })();
         _addMenuBtn(['btn-pf-sim', 'Sim: ' + (_pfSimInitial ? 'ON' : 'OFF'), { active: _pfSimInitial }]);
+        // V340: live-exchange block — API keys manager + balances. CLOSE_ROLES
+        //   covers both: they open their own modal, so the dropdown must close.
+        _addMenuBtn(['btn-api-keys', '🔑 API Keys']);
+        _addMenuBtn(['btn-exch-pf', '💼 Exchange balances']);
 
         // ─── Theme ─── (V50: multi-theme support)
         _addMenuLabel('Theme');
@@ -84026,7 +84457,7 @@ class ChartFactory {
             //   AutoY, themes, …) keep the menu open so several settings can
             //   be adjusted without the dropdown snapping shut after every
             //   single tap (the "changing VP width closes the modal" bug).
-            const CLOSE_ROLES = ['btn-export', 'btn-cache-stats', 'btn-cache-clear'];
+            const CLOSE_ROLES = ['btn-export', 'btn-cache-stats', 'btn-cache-clear', 'btn-api-keys', 'btn-exch-pf'];
             const btn = e.target.closest('button');
             if (btn && CLOSE_ROLES.includes(btn.dataset.role || '')) {
                 settingsDropdown.classList.remove('open');
@@ -84062,6 +84493,26 @@ class ChartFactory {
                 if (!on) { try { window.PaperPortfolio && window.PaperPortfolio.close(); } catch (_) {} }
                 _pfSimSyncAll(on);
                 try { showToast(on ? '💼 Portfolio simulation ON' : 'Portfolio simulation OFF'); } catch (_) {}
+            });
+        }
+
+        // V340: exchange API keys manager + live balances — the modules live in
+        //   their own script block (window.ExchKeys); here we only route clicks.
+        //   NO stopPropagation: the settingsMenu click handler above must see
+        //   the button to apply CLOSE_ROLES (both open their own modal → the
+        //   dropdown has to close).
+        const _akBtn = settingsMenu.querySelector('[data-role="btn-api-keys"]');
+        if (_akBtn) {
+            _akBtn.addEventListener('click', () => {
+                try { window.ExchKeys && window.ExchKeys.open(); }
+                catch (err) { try { showToast('API keys module failed: ' + err.message); } catch (_) {} }
+            });
+        }
+        const _epBtn = settingsMenu.querySelector('[data-role="btn-exch-pf"]');
+        if (_epBtn) {
+            _epBtn.addEventListener('click', () => {
+                try { window.ExchKeys && window.ExchKeys.openPortfolio(); }
+                catch (err) { try { showToast('Exchange portfolio failed: ' + err.message); } catch (_) {} }
             });
         }
         document.addEventListener('click', (e) => {
@@ -86834,6 +87285,17 @@ class ChartFactory {
             if (indType === 'cvd' && isExisting && existingInd.params?.ratioOn === undefined) {
                 selectedParams.ratioOn = !!(existingInd.params?.ratioCvdVol || existingInd.params?.ratioOiVol);
             }
+            // V339-market-follow: a NEW CVD (coins) brick on a SPOT chart
+            // pre-fills Market = Spot (the constructor fallback can't help
+            // here — the modal passes every default explicitly, which would
+            // pin market='fut' on spot charts; «он всегда пытается показать
+            // перп»). Perp charts keep the Futures default.
+            if (indType === 'cvd' && !isExisting && selectedParams.metric === 'cvd' && selectedParams.market === 'fut') {
+                try {
+                    const _ad = window._chart?.engine?._apiCtx?.dataAdapterManager?.()?.dataAdapter;
+                    if (_ad && _ad.isPerp === false) selectedParams.market = 'spot';
+                } catch (e) { /* keep the default */ }
+            }
 
             // V125-source-dd: groups + current value for the custom Source
             //   dropdown — mounted by _initSourceDropdown() right after
@@ -86919,6 +87381,13 @@ class ChartFactory {
                     currentGroup = grp;
                 }
                 html += `<div class="s-row"><span class="s-row-label">Offset (bars)</span><input type="number" class="s-input" data-param="offset" value="${esc(String(selectedParams.offset ?? 0))}" min="-500" max="500" step="1"></div>`;
+                // V339-market-follow: live «Resolves to» summary — WHICH
+                // market/exchange/coin this CVD brick fetches right now
+                // («не указывается что это спот или перп»). Updated on every
+                // param edit by updateCvdSrc() below.
+                if (indType === 'cvd') {
+                    html += `<div class="s-row" style="align-items:center;gap:6px;flex-wrap:wrap;"><span class="s-row-label">Resolves to</span><span data-cvd-src style="font-size:10px;font-weight:600;letter-spacing:0.3px;color:#e6edf3;background:rgba(88,166,255,0.10);border:1px solid rgba(88,166,255,0.25);border-radius:3px;padding:1px 6px;"></span></div>`;
+                }
             }
             closeGroup();
             // V108: Custom marker editor for TimeMarkerBrick.
@@ -87543,13 +88012,60 @@ class ChartFactory {
             });
 
             // Wire param inputs
+            // V339-market-follow: live «Resolves to» updater for the CVD
+            // brick — mirrors _cgSpec's resolution (metric → market clamp,
+            // sourceMode → exchange/aggregate) against the CURRENT chart.
+            const updateCvdSrc = () => {
+                if (indType !== 'cvd') return;
+                const el = configArea.querySelector('[data-cvd-src]');
+                if (!el) return;
+                const metric = selectedParams.metric || 'cvd';
+                const market = (metric !== 'cvd') ? 'fut'
+                    : ((selectedParams.market === 'spot') ? 'spot' : 'fut');
+                let srcTxt = '';
+                const mode = selectedParams.sourceMode || 'auto';
+                if (mode === 'agg') {
+                    const lists = { top3: 'Binance+Bybit+OKX', top5: 'Binance+Bybit+OKX+Bitget+Gate',
+                        top8: 'Top-8 aggregate', binby: 'Binance+Bybit' };
+                    srcTxt = lists[selectedParams.aggList] || 'Top-5 aggregate';
+                } else if (mode === 'single') {
+                    srcTxt = String(selectedParams.exchange || 'Binance');
+                } else {
+                    let ex = '';
+                    try {
+                        const si = window._chart?.api?.getSourceInfo?.();
+                        ex = String((si && si.exchange) || '').toUpperCase();
+                    } catch (e) { /* best-effort */ }
+                    const map = { BINANCE: 'Binance', BYBIT: 'Bybit', OKX: 'OKX', BITGET: 'Bitget',
+                        GATE: 'Gate', GATEIO: 'Gate', MEXC: 'MEXC', KUCOIN: 'KuCoin',
+                        BITFINEX: 'Bitfinex', KRAKEN: 'Kraken', HYPERLIQUID: 'Hyperliquid',
+                        BITMEX: 'Bitmex', CRYPTO: 'Crypto.com', CRYPTOCOM: 'Crypto.com' };
+                    srcTxt = (map[ex] || 'Binance') + ' (chart)';
+                }
+                let pair = '';
+                try {
+                    const si = window._chart?.api?.getSourceInfo?.();
+                    pair = String((si && si.symbol) || '').toUpperCase();
+                } catch (e) { /* best-effort */ }
+                el.textContent = [pair, market === 'spot' ? 'SPOT' : 'PERP', srcTxt,
+                    metric === 'oi' ? 'Open Interest' : 'CVD'].filter(Boolean).join(' · ');
+            };
             configArea.querySelectorAll('[data-param]').forEach(inp => {
                 inp.addEventListener('input', () => {
                     if (inp.type === 'checkbox') selectedParams[inp.dataset.param] = inp.checked;
                     else if (inp.type === 'number') selectedParams[inp.dataset.param] = parseFloat(inp.value);
                     else selectedParams[inp.dataset.param] = inp.value;
                 });
+                // V339: any param edit may change the resolved source
+                inp.addEventListener('input', updateCvdSrc);
             });
+            updateCvdSrc();
+            // V339-excl-mirror: did the user touch the autofit checkbox in this
+            // modal session? (An untouched checkbox loses to the placement
+            // default mirror when the panel placement changes.)
+            let _exclTouched = false;
+            const _exclCb0 = configArea.querySelector('[data-exclude-autofit]');
+            if (_exclCb0) _exclCb0.addEventListener('change', () => { _exclTouched = true; });
             // V109e: show/hide "swipe target" checkbox based on panel selection
             const pmSelEl = configArea.querySelector('[data-panelmode]');
             const swipeRow = configArea.querySelector('#swipe-target-row');
@@ -88194,10 +88710,24 @@ class ChartFactory {
                                         targetPanelId === '__separate__' ? 'separate' : pmValEx);
                                     if (movedTo) {
                                         // Keep own-panel bookkeeping coherent:
-                                        // a moved indicator is a guest ('inherit')
-                                        // unless it landed on main ('overlay').
+                                        // 'overlay' on main, 'separate' on the
+                                        // indicator's own panel, 'inherit' as a
+                                        // guest on a foreign panel.
                                         existingInd.panelMode =
-                                            (movedTo === 'main') ? 'overlay' : 'inherit';
+                                            (movedTo === 'main') ? 'overlay'
+                                            : (movedTo === existingInd.id + '_panel') ? 'separate'
+                                            : 'inherit';
+                                        // V339-excl-mirror: the placement changed —
+                                        // the stale autofit flag from the OLD
+                                        // placement is meaningless. Mirror the
+                                        // destination's default (overlays on main
+                                        // are excluded from auto-fit, sub-panel
+                                        // indicators are included) UNLESS the user
+                                        // explicitly toggled the checkbox in this
+                                        // modal session — their pick wins.
+                                        if (!_exclTouched) {
+                                            existingInd.excludeFromAutoFit = (movedTo === 'main');
+                                        }
                                     }
                                 } catch (eMove) {
                                     console.warn('[V338-panel-move] failed:', eMove);
@@ -97522,6 +98052,24 @@ const ChartStatePersistence = (() => {
             };
         } catch (e) { /* skip */ }
 
+        // ── V346: per-panel/axis inverted Y-scale flags ──
+        // Direction lives on config.panels[i].inverted (default axis) and
+        // config.panels[i].yAxes[id].inverted (overlay axes) — outside
+        // settings.yAxis, so it needs its own save block.
+        try {
+            const inv = {};
+            for (const p of (engine.config.panels || [])) {
+                if (!p) continue;
+                if (p.inverted) inv[p.id] = true;
+                if (p.yAxes) {
+                    for (const axId in p.yAxes) {
+                        if (p.yAxes[axId]?.inverted) inv[p.id + ':' + axId] = true;
+                    }
+                }
+            }
+            if (Object.keys(inv).length > 0) state.axisInverted = inv;
+        } catch (e) { /* skip */ }
+
         // ── Indicators ──
         try {
             const im = engine.indicatorManager;
@@ -97914,6 +98462,26 @@ const ChartStatePersistence = (() => {
                 console.warn('[StatePersistence] settings restore failed:', e?.message || e);
             }
         }
+
+        // ── V346: restore per-panel/axis inverted Y-scale flags ──
+        // Applied BEFORE the first frame: a fresh engine renders through
+        // RenderContext._frame, which reads panelCfg.inverted / oCfg.inverted.
+        try {
+            const inv = state.axisInverted;
+            if (inv && typeof inv === 'object') {
+                const panels = engine.config?.panels || [];
+                for (const key in inv) {
+                    if (inv[key] !== true) continue;
+                    const ci = key.indexOf(':');
+                    const pId = ci < 0 ? key : key.slice(0, ci);
+                    const axId = ci < 0 ? 'default' : key.slice(ci + 1);
+                    const panel = panels.find(p => p && p.id === pId);
+                    if (!panel) continue;
+                    if (axId === 'default') panel.inverted = true;
+                    else if (panel.yAxes && panel.yAxes[axId]) panel.yAxes[axId].inverted = true;
+                }
+            }
+        } catch (e) { /* skip */ }
 
         // ── 2. Apply source (exchange / symbol / timeframe) ──
         // Wait for the initial data load to complete before switching source,
@@ -98731,6 +99299,17 @@ const ChartStatePersistence = (() => {
             if (origResizePair) api.resizePanelPair = function(...args) { const r = origResizePair(...args); save(); return r; };
             if (origReorder) api.reorderPanel = function(...args) { const r = origReorder(...args); save(); return r; };
             if (origSwap) api.swapPanels = function(...args) { const r = origSwap(...args); save(); return r; };
+        } catch (e) {}
+
+        // V346: persist Y-scale type (linear/log/percentage) + direction
+        //   (inverted) changes — they arrive from the axis context menu
+        //   (right-click / 800 ms long-press on the axis labels) and the
+        //   toolbar Scale button. Without this patch a reload reset both.
+        try {
+            const origYSM = api.setYScaleMode ? api.setYScaleMode.bind(api) : null;
+            if (origYSM) api.setYScaleMode = function(...args) { const r = origYSM(...args); save(); return r; };
+            const origSAI = api.setAxisInverted ? api.setAxisInverted.bind(api) : null;
+            if (origSAI) api.setAxisInverted = function(...args) { const r = origSAI(...args); save(); return r; };
         } catch (e) {}
 
         // Overlay changes — patch api.addObject / api.removeObject / api.updateObject
@@ -100574,6 +101153,90 @@ window.__cgV267 = (function () {
         return out;
     }
 
+    // ── V339-coarse-tf: client-aggregated chart TFs ('3d', '2w') ──────────
+    // The chart builds these bars by merging a NATIVE sub-TF client-side
+    // (1d×3 / 1w×2 — see the adapters' _nativeTfFor), and CoinGlass has no
+    // '3d'/'2w' kline interval. Fetch the native rows, then merge them into
+    // chart-TF buckets client-side so the aux pipeline (which maps raw
+    // points onto bars over the lastX-anchored uniform grid) receives one
+    // point per bar instead of ~3 smearing sub-rows per bar.
+    const CG_AGG_TF = {
+        '3d': { iv: 'h24', factor: 3, anchorMs: 0 },
+        '2w': { iv: '1w', factor: 2, anchorMs: 4 * 86400000 },
+    };
+
+    /** Chart timeframe → { iv, factor, anchorMs }: the CoinGlass kline
+     *  interval to request, how many native rows merge into one chart bar,
+     *  and the bucket-grid phase (anchorMs + k×bucketMs). The phase mirrors
+     *  the chart engine's own aggregation grid — 3d bars are epoch-aligned
+     *  (floor(x/3d)×3d: daily sub-bars are epoch-aligned, so off=0), 2w bars
+     *  are Monday-paired (weekly sub-bars open Monday 00:00 UTC ≡ 4d since
+     *  the Thursday epoch; off = lastWeeklyX mod 7d = 4d, step 14d). A
+     *  CONSTANT anchor keeps every fetch batch of a session on the same
+     *  grid — anchoring to the momentary lastX made a fetch that raced the
+     *  TF-switch candle load merge a phase-shifted chunk into the series. */
+    function intervalFor(timeframe) {
+        const agg = CG_AGG_TF[String(timeframe)];
+        if (agg) return { iv: agg.iv, factor: agg.factor, anchorMs: agg.anchorMs };
+        return { iv: CG_INTERVALS[timeframe] || 'h4', factor: 1, anchorMs: 0 };
+    }
+
+    /** Merge sub-TF flow points into chart-TF buckets.
+     *  points — [{timestamp, value}] sorted ascending (flowPoints output);
+     *  metric — 'cvd'|'cvd_usd'|'cvd_trades'|'oi';
+     *  bucketMs — the CHART bar size (AuxSeriesBrick._getIntervalMs of the
+     *    chart TF — NOT multiplied by the factor: factor only chose which
+     *    native sub-TF to fetch; 3d buckets are 3d wide, not 9d);
+     *  anchorMs — the chart's last bar open: pins the bucket grid to the
+     *    SAME uniform grid _forwardFillToBars / _deltaPerBarFromRaw use
+     *    (startBarX = lastX − k×intervalMs), so bucketed points map 1:1
+     *    onto bars regardless of epoch phase.
+     *  Delta metrics: bucket value = SUM of the deltas inside the bucket
+     *  (a 3d bar's delta = the sum of its three daily deltas — correct for
+     *  the per-bar histogram AND for the rolling Vol % lines; the
+     *  cumulative line re-derives the same totals from bucket sums).
+     *  'oi': bucket value = the LEVEL at the bucket OPEN (a snapshot exactly
+     *  at the open wins; otherwise the freshest level of the PREVIOUS bucket
+     *  — plain forward-fill semantics, no lookahead). The FORMING bucket
+     *  (the one containing anchorMs) shows its own freshest level so the
+     *  right edge keeps tracking the live OI. */
+    function aggFlowPoints(points, metric, bucketMs, anchorMs) {
+        if (!bucketMs || bucketMs <= 0 || !Array.isArray(points) || points.length < 2) return points;
+        const anchor = ((Number(anchorMs || 0) % bucketMs) + bucketMs) % bucketMs;
+        const bOf = (t) => anchor + Math.floor((t - anchor) / bucketMs) * bucketMs;
+        // V339: full-order scan, not just [0]>[1] — a single out-of-order
+        // row appended to an otherwise ascending series (merge leftovers)
+        // must not create a phantom trailing bucket.
+        let needsSort = false;
+        for (let i = 1; i < points.length; i++) {
+            if (Number(points[i].timestamp) < Number(points[i - 1].timestamp)) { needsSort = true; break; }
+        }
+        const sorted = needsSort ? points.slice().sort((a, b) => a.timestamp - b.timestamp) : points;
+        const buckets = [];
+        for (const p of sorted) {
+            const t = Number(p.timestamp), v = Number(p.value);
+            if (!isFinite(t) || !isFinite(v)) continue;
+            const b = bOf(t);
+            const lastB = buckets[buckets.length - 1];
+            if (!lastB || lastB.b !== b) buckets.push({ b, sum: v, last: v, first: v, firstT: t });
+            else { lastB.sum += v; lastB.last = v; }
+        }
+        if (!buckets.length) return [];
+        if (metric === 'oi') {
+            const out = [];
+            for (let i = 0; i < buckets.length; i++) {
+                const bk = buckets[i];
+                let v;
+                if (i === buckets.length - 1) v = bk.last;                      // forming bar — live level
+                else if (bk.firstT === bk.b) v = bk.first;                      // row exactly at the open
+                else v = (i > 0) ? buckets[i - 1].last : bk.first;              // forward-fill from the left
+                out.push({ timestamp: bk.b, value: v });
+            }
+            return out;
+        }
+        return buckets.map(bk => ({ timestamp: bk.b, value: bk.sum }));
+    }
+
     // ── Liquidation heatmap (legend; anonymous; data = TOTP+AES) ──
     async function liqHeatmap(symbolStr, model, interval, signal) {
         return cgGet(API.LIQ_LEGEND.replace('{m}', String(model || 1)), {
@@ -100733,7 +101396,7 @@ window.__cgV267 = (function () {
     }
 
     return {
-        CG_INTERVALS, flowSymbol, flowPoints, klineRows, liqHeatmap, obhVenue, obhAgg,
+        CG_INTERVALS, intervalFor, aggFlowPoints, flowSymbol, flowPoints, klineRows, liqHeatmap, obhVenue, obhAgg,
         coinInfoV2, unlockDetailV2, optionStats,
         _test: { totpAt, dataParam, aesEcb, cgGet, utf8Bytes, stripQuote },
     };
@@ -111839,6 +112502,677 @@ window.PaperPortfolio = {
     _pfLiqProx: function (p) { return pfLiqProx(p); },                             // V304
     _testDraw: function (ctx, layout, xScale, yScales) {
         try { overlayDraw(ctx, layout, xScale, yScales, null); } catch (_) {}
+    },
+};
+})();
+</script>
+
+<script>
+// ═════════════════════ V340: EXCHANGE API KEYS VAULT + LIVE PORTFOLIO ═════════════════════
+// (юзер: «еще сделай норм безопасный менеджер апи ключей для бирж. В первую
+//  очередь битуникс и байбит, чтобы работать с портфолио. Смотри, чтобы они
+//  сохранялись сквозь сессии на устройстве, но не в явном виде»)
+//
+//  ── SECURITY MODEL (device-bound, non-plaintext) ──
+//  • Plaintext NEVER hits storage, DOM value attributes, console or network
+//    logs. Secrets exist ONLY as local consts inside the functions that use
+//    them — decrypt-on-demand, no plaintext cache.
+//  • At rest: AES-GCM 256 ciphertext. The master key is a NON-EXTRACTABLE
+//    CryptoKey (crypto.subtle.generateKey, extractable:false) stored as a
+//    structured-clone object in IndexedDB (ce_vault_v1/meta). JS cannot dump
+//    its raw bytes — the browser can only hand it back for sign/decrypt
+//    inside the same origin on the same device profile.
+//  • Ciphertext lives in IndexedDB (ce_vault_v1/vault), fresh random 12-byte
+//    IV on every write. Survives sessions/devices restarts; nothing leaves
+//    the device (no servers, no third-party proxies — signed requests go
+//    DIRECT to the exchanges, matching the app's no-proxy-for-private-data
+//    policy).
+//  • UI: password inputs that never receive the stored value back (mask +
+//    last-4 hint of the API KEY only, never of the secret). Read-only key
+//    usage is enforced by API choice: only account-read endpoints are called.
+//
+//  ── EXCHANGES (verified specs, Nov 2026) ──
+//  • Bybit v5 (https://api.bybit.com, CORS-verified: echoes Origin + allows
+//    the X-BAPI-* headers): sign = HMAC_SHA256(secret, ts + apiKey +
+//    recvWindow + queryString) → lowercase hex; headers X-BAPI-API-KEY /
+//    X-BAPI-TIMESTAMP / X-BAPI-RECV-WINDOW / X-BAPI-SIGN. Endpoints: GET
+//    /v5/account/wallet-balance?accountType=UNIFIED (and =FUND), GET
+//    /v5/position/list?category=linear&settleCoin=USDT.
+//  • Bitunix futures (https://fapi.bitunix.com): sign = SHA256(SHA256(nonce +
+//    timestamp + apiKey + queryParams + body) + secretKey), hex; queryParams
+//    = pairs sorted by key ASCII, concatenated key+value ("marginCoinUSDT");
+//    headers api-key / nonce / timestamp / sign / language. Endpoints: GET
+//    /api/v1/futures/account?marginCoin=USDT, GET
+//    /api/v1/futures/position/get_pending_positions.
+//
+//  UI entry: ⚙ Settings → Portfolio → «🔑 API Keys» / «💼 Exchange balances»
+//  (wired in ChartFactory._buildToolbar; window.ExchKeys.open/openPortfolio).
+// ═════════════════════════════════════════════════════════════════════════════════
+(function () {
+'use strict';
+
+// ── CSS (ak-* family, same design language as the pf-sheet portfolio) ──
+var AK_CSS = [
+    '.ak-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.62);z-index:10190;display:none;align-items:stretch;justify-content:center;}',
+    '.ak-backdrop.open{display:flex;}',
+    '.ak-sheet{position:relative;z-index:10200;width:min(520px,100%);height:100%;display:flex;flex-direction:column;background:#0d1117;',
+      'border-left:1px solid rgba(255,255,255,0.12);border-right:1px solid rgba(255,255,255,0.12);box-shadow:0 12px 40px rgba(0,0,0,0.65);',
+      "font-family:-apple-system,'Segoe UI',system-ui,sans-serif;color:#e6edf3;font-size:12px;}",
+    '@media (min-width:540px){.ak-sheet{margin:14px 0;height:calc(100% - 28px);border-radius:14px;border:1px solid rgba(255,255,255,0.12);}}',
+    '.ak-head{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.08);}',
+    '.ak-title{font-size:14px;font-weight:700;}',
+    '.ak-sub{font-size:9px;font-weight:600;letter-spacing:0.8px;text-transform:uppercase;color:#8b949e;margin-left:6px;}',
+    '.ak-x{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#c9d1d9;width:26px;height:26px;border-radius:7px;font-size:13px;cursor:pointer;}',
+    '.ak-body{flex:1 1 auto;overflow-y:auto;padding:10px 12px 14px;-webkit-overflow-scrolling:touch;}',
+    '.ak-foot{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-top:1px solid rgba(255,255,255,0.08);gap:8px;}',
+    '.ak-note{font-size:9.5px;color:#6e7681;}',
+    '.ak-sec{display:flex;gap:8px;align-items:flex-start;background:rgba(63,185,80,0.07);border:1px solid rgba(63,185,80,0.25);border-radius:10px;padding:8px 9px;font-size:9.8px;line-height:1.5;color:#8b949e;margin-bottom:10px;}',
+    '.ak-sec b{color:#7ee787;}',
+    '.ak-sec .lk{flex:0 0 auto;width:14px;height:14px;border-radius:4px;background:rgba(63,185,80,0.15);display:flex;align-items:center;justify-content:center;font-size:9px;color:#7ee787;}',
+    '.ak-card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:9px;margin-bottom:9px;}',
+    '.ak-card-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px;gap:6px;}',
+    '.ak-exch{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:700;}',
+    '.ak-exch-logo{width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:800;color:#fff;flex:0 0 auto;}',
+    '.ak-exch-logo.bybit{background:#f7a600;color:#111;}',
+    '.ak-exch-logo.bitunix{background:#2f6bff;}',
+    '.ak-badge{display:inline-block;font-size:8.5px;font-weight:800;letter-spacing:0.6px;padding:1px 6px;border-radius:6px;background:rgba(255,255,255,0.07);color:#8b949e;}',
+    '.ak-badge.ok{color:#7ee787;background:rgba(63,185,80,0.14);}',
+    '.ak-badge.err{color:#ff9d94;background:rgba(248,81,73,0.14);}',
+    '.ak-grid{display:grid;grid-template-columns:64px 1fr;gap:6px 8px;align-items:center;}',
+    '.ak-grid label{font-size:9.8px;color:#8b949e;}',
+    '.ak-grid input{background:#0d1117;border:1px solid rgba(255,255,255,0.16);border-radius:7px;color:#e6edf3;padding:6px 8px;font-size:12px;width:100%;box-sizing:border-box;font-family:ui-monospace,monospace;letter-spacing:0.5px;}',
+    '.ak-grid input:focus{outline:none;border-color:rgba(88,166,255,0.6);}',
+    '.ak-btnrow{display:flex;gap:6px;margin-top:8px;}',
+    '.ak-btn{flex:1;padding:7px 10px;border-radius:9px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.05);color:#e6edf3;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;}',
+    '.ak-btn.ok{background:rgba(63,185,80,0.16);border-color:rgba(63,185,80,0.45);color:#7ee787;}',
+    '.ak-btn.warn{background:rgba(240,180,41,0.13);border-color:rgba(240,180,41,0.4);color:#f0b429;}',
+    '.ak-btn.danger{background:rgba(248,81,73,0.1);border-color:rgba(248,81,73,0.4);color:#ff9d94;}',
+    '.ak-btn.off{opacity:0.45;}',
+    '.ak-status{font-size:9.3px;color:#6e7681;margin-top:6px;line-height:1.45;min-height:12px;}',
+    '.ak-status.ok{color:#7ee787;}.ak-status.err{color:#ff9d94;}.ak-status.busy{color:#e3b341;}',
+    '.ak-tot-row{display:flex;align-items:baseline;justify-content:space-between;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;margin-bottom:10px;}',
+    '.ak-tot-lab{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#8b949e;}',
+    '.ak-tot-val{font-size:21px;font-weight:800;letter-spacing:0.3px;font-variant-numeric:tabular-nums;}',
+    '.ak-exch-pf{margin-top:10px;}',
+    '.ak-exch-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px;gap:6px;}',
+    '.ak-exch-tot{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;}',
+    '.ak-tbl{width:100%;border-collapse:collapse;font-size:10.2px;}',
+    '.ak-tbl th{text-align:left;color:#8b949e;font-size:8.6px;text-transform:uppercase;letter-spacing:0.4px;padding:4px 3px;border-bottom:1px solid rgba(255,255,255,0.1);white-space:nowrap;}',
+    '.ak-tbl th.num,.ak-tbl td.num{text-align:right;font-variant-numeric:tabular-nums;}',
+    '.ak-tbl td{padding:5px 3px;border-bottom:1px solid rgba(255,255,255,0.045);white-space:nowrap;}',
+    '.up{color:#3fb950;}.down{color:#f85149;}',
+    '.ak-errline{font-size:9.6px;color:#ff9d94;background:rgba(248,81,73,0.08);border:1px solid rgba(248,81,73,0.25);border-radius:8px;padding:6px 8px;margin:6px 0;line-height:1.5;word-break:break-word;}',
+    '.ak-empty{font-size:10.5px;color:#6e7681;padding:10px 2px;line-height:1.6;}',
+    '.ak-hint{font-size:9.3px;color:#6e7681;line-height:1.5;}',
+    '.ak-secname{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#8b949e;margin:12px 0 6px;display:flex;align-items:center;justify-content:space-between;}',
+].join('\n');
+function ensureAkCss() {
+    if (document.getElementById('ak-style')) return;
+    var st = document.createElement('style');
+    st.id = 'ak-style';
+    st.textContent = AK_CSS;
+    document.head.appendChild(st);
+}
+
+// ── tiny helpers ──
+function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+}
+function showToastSafe(msg) { try { if (typeof showToast === 'function') showToast(msg); } catch (_) {} }
+function fmtUsd(v) {
+    var n = Number(v);
+    if (!isFinite(n)) return '—';
+    var abs = Math.abs(n), s;
+    if (abs >= 1e6) s = (n / 1e6).toFixed(2) + 'M';
+    else if (abs >= 1e4) s = n.toFixed(0);
+    else if (abs >= 1) s = n.toFixed(2);
+    else if (abs > 0) s = n.toPrecision(3);
+    else s = '0';
+    return '$' + s;
+}
+function fmtNum(v, d) {
+    var n = Number(v);
+    if (!isFinite(n)) return '—';
+    if (Math.abs(n) >= 1e5) return n.toPrecision(6).replace(/\.?0+$/, '');
+    return n.toFixed(d == null ? (Math.abs(n) >= 100 ? 2 : Math.abs(n) >= 1 ? 4 : 6) : d);
+}
+function last4(s) { s = String(s || ''); return s.length >= 4 ? s.slice(-4) : (s ? s : ''); }
+
+// ── hex / crypto helpers ──
+function bufToHex(buf) {
+    var u = new Uint8Array(buf), out = '', i;
+    for (i = 0; i < u.length; i++) out += ('0' + u[i].toString(16)).slice(-2);
+    return out;
+}
+function hexToBuf(hex) {
+    var out = new Uint8Array(hex.length >> 1), i;
+    for (i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+    return out.buffer;
+}
+function randomHex(bytes) {
+    var u = new Uint8Array(bytes);
+    crypto.getRandomValues(u);
+    return bufToHex(u.buffer);
+}
+function subtleAvailable() { return !!(typeof crypto !== 'undefined' && crypto && crypto.subtle); }
+function sha256Hex(str) {
+    return crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)).then(bufToHex);
+}
+async function hmacSha256Hex(secret, msg) {
+    var k = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret),
+        { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    return bufToHex(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(msg)));
+}
+
+// ── IndexedDB plumbing ──
+var AK_DB = 'ce_vault_v1';
+function idbOpen() {
+    return new Promise(function (res, rej) {
+        var rq = indexedDB.open(AK_DB, 1);
+        rq.onupgradeneeded = function () {
+            var db = rq.result;
+            if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'id' });
+            if (!db.objectStoreNames.contains('vault')) db.createObjectStore('vault', { keyPath: 'id' });
+        };
+        rq.onsuccess = function () { res(rq.result); };
+        rq.onerror = function () { rej(rq.error || new Error('idb open failed')); };
+    });
+}
+function idbReq(store, mode, fn) {
+    return idbOpen().then(function (db) {
+        return new Promise(function (res, rej) {
+            var tx = db.transaction(store, mode);
+            var st = tx.objectStore(store);
+            var rq = fn(st);
+            tx.oncomplete = function () { db.close(); res(rq ? rq.result : undefined); };
+            tx.onerror = function () { db.close(); rej(tx.error || new Error('idb tx failed')); };
+        });
+    });
+}
+function idbGet(store, id) { return idbReq(store, 'readonly', function (st) { return st.get(id); }); }
+function idbPut(store, rec) { return idbReq(store, 'readwrite', function (st) { return st.put(rec); }); }
+function idbDel(store, id) { return idbReq(store, 'readwrite', function (st) { return st['delete'](id); }); }
+
+// ── THE VAULT: non-extractable master key + AES-GCM records ──
+function getMasterKey() {
+    return idbGet('meta', 'master').then(function (rec) {
+        if (rec && rec.key) return rec.key;
+        // createKey with extractable:false — the raw bytes can never be read
+        // back by ANY script; the browser just hands the CryptoKey object over.
+        return crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
+            .then(function (key) {
+                return idbPut('meta', { id: 'master', key: key, ts: Date.now() }).then(function () { return key; });
+            });
+    });
+}
+function encryptJson(obj, key) {
+    var iv = crypto.getRandomValues(new Uint8Array(12));   // fresh IV per write
+    var plain = new TextEncoder().encode(JSON.stringify(obj));
+    return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, plain).then(function (ct) {
+        return { id: 'keys', iv: iv.buffer, ct: ct, ts: Date.now() };
+    });
+}
+function decryptJson(rec, key) {
+    return crypto.subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(rec.iv) }, key, new Uint8Array(rec.ct))
+        .then(function (plain) { return JSON.parse(new TextDecoder().decode(plain)); });
+}
+function saveKeys(map) {
+    // map: { bybit:{key,secret}|null, bitunix:{key,secret}|null }
+    return getMasterKey().then(function (mk) {
+        var any = map && (map.bybit || map.bitunix);
+        if (!any) return idbDel('vault', 'keys');
+        return encryptJson(map, mk).then(function (rec) { return idbPut('vault', rec); });
+    });
+}
+function loadKeys() {
+    return Promise.all([getMasterKey(), idbGet('vault', 'keys')]).then(function (r) {
+        if (!r[1]) return null;
+        return decryptJson(r[1], r[0]);
+    }).catch(function (e) { throw new Error('Vault decrypt failed (' + (e && e.message || e) + ')'); });
+}
+function wipeVault() {
+    return Promise.all([idbDel('meta', 'master'), idbDel('vault', 'keys')]).then(function () { return true; });
+}
+
+// ── status metadata (NON-sensitive: last-4 of the API KEY + test result) ──
+var AK_STATUS_LS = 'ce_ak_status_v1';
+function loadStatus() {
+    try { return JSON.parse(localStorage.getItem(AK_STATUS_LS) || '{}') || {}; } catch (_) { return {}; }
+}
+function saveStatus(st) { try { localStorage.setItem(AK_STATUS_LS, JSON.stringify(st)); } catch (_) {} }
+
+// ── EXCHANGE CLIENTS ──
+var BYBIT_BASE = 'https://api.bybit.com';
+var BITUNIX_BASE = 'https://fapi.bitunix.com';
+var ABORT_MS = 15000;
+
+function friendlyHttpError(exchange, res, body) {
+    if (res.status === 403 && /<\/html>|cf-mitigated|Just a moment/i.test(body || '')) {
+        return exchange + ' blocked the request with a Cloudflare check (HTTP 403 HTML). ' +
+            'Retry later or from another network — keys/signature were not the problem.';
+    }
+    if (res.status === 403 || res.status === 451) return exchange + ' refused the request (HTTP ' + res.status + '). Check API-key permissions and IP whitelist.';
+    if (res.status === 401) return exchange + ' rejected the credentials (HTTP 401). Re-check key/secret.';
+    if (res.status === 429) return exchange + ' rate limit (HTTP 429). Wait a bit and retry.';
+    return exchange + ' HTTP ' + res.status;
+}
+function bybitHint(retCode, retMsg) {
+    var m = String(retMsg || '');
+    if (retCode === 10002) return m + ' — device clock skew? Sync system time.';
+    if (retCode === 10003 || retCode === 10004) return m + ' — check API key / secret.';
+    if (retCode === 10005) return m + ' — the key lacks account-read permission.';
+    if (retCode === 10010) return m + ' — the API key has an IP whitelist that does not include you.';
+    return m;
+}
+async function bybitGet(path, qs, cred) {
+    var ts = String(Date.now());
+    var recv = '10000';
+    var sig = await hmacSha256Hex(cred.secret, ts + cred.key + recv + (qs || ''));
+    var url = BYBIT_BASE + path + (qs ? '?' + qs : '');
+    var res, text;
+    try {
+        res = await fetch(url, { method: 'GET', headers: {
+            'X-BAPI-API-KEY': cred.key, 'X-BAPI-TIMESTAMP': ts,
+            'X-BAPI-RECV-WINDOW': recv, 'X-BAPI-SIGN': sig,
+        }, signal: AbortSignal.timeout(ABORT_MS) });
+        text = await res.text();
+    } catch (e) {
+        throw new Error('Bybit network error: ' + (e && e.message || e));
+    }
+    var j;
+    try { j = JSON.parse(text); } catch (_) { throw new Error(friendlyHttpError('Bybit', res, text)); }
+    if (j.retCode !== 0) throw new Error('Bybit ' + j.retCode + ': ' + bybitHint(j.retCode, j.retMsg));
+    return j.result;
+}
+async function bitunixGet(path, pairs, cred) {
+    var nonce = randomHex(16);                       // 32-hex random string
+    var ts = String(Date.now());
+    // queryParams = pairs sorted by key (ASCII), concatenated key+value, no separators
+    var sorted = (pairs || []).slice().sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0; });
+    var qp = sorted.map(function (p) { return p[0] + p[1]; }).join('');
+    var digest = await sha256Hex(nonce + ts + cred.key + qp + '');
+    var sign = await sha256Hex(digest + cred.secret);
+    var qsPart = sorted.map(function (p) { return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]); }).join('&');
+    var url = BITUNIX_BASE + path + (qsPart ? '?' + qsPart : '');
+    var res, text;
+    try {
+        res = await fetch(url, { method: 'GET', headers: {
+            'api-key': cred.key, 'nonce': nonce, 'timestamp': ts, 'sign': sign,
+            'language': 'en-US', 'Content-Type': 'application/json',
+        }, signal: AbortSignal.timeout(ABORT_MS) });
+        text = await res.text();
+    } catch (e) {
+        throw new Error('Bitunix network error: ' + (e && e.message || e));
+    }
+    var j;
+    try { j = JSON.parse(text); } catch (_) { throw new Error(friendlyHttpError('Bitunix', res, text)); }
+    if (j.code !== 0) throw new Error('Bitunix ' + j.code + ': ' + (j.msg || 'error'));
+    return j.data;
+}
+
+// Normalize to { total, assets:[{coin,avail,locked,usd}], positions:[{symbol,side,size,entry,mark,uPnl,lev}], notes:[] }
+async function fetchBybit(cred) {
+    var notes = [];
+    var uni = null, fund = null;
+    try { uni = await bybitGet('/v5/account/wallet-balance', 'accountType=UNIFIED', cred); }
+    catch (e) { throw new Error(e.message); }
+    try { fund = await bybitGet('/v5/account/wallet-balance', 'accountType=FUND', cred); }
+    catch (e) { notes.push('funding wallet: ' + e.message); }
+    var assets = [], total = 0, positions = [];
+    var addList = function (lst) {
+        (lst || []).forEach(function (acc) {
+            var te = Number(acc.totalEquity);
+            if (isFinite(te)) total += te;
+            (acc.coin || []).forEach(function (c) {
+                var wb = Number(c.walletBalance) || 0;
+                if (!wb && !Number(c.usdValue)) return;
+                var usd = Number(c.usdValue);
+                if (!isFinite(usd)) usd = null;
+                else total += 0;   // totalEquity already counted — don't double-add
+                var prev = assets.find(function (a) { return a.coin === c.coin; });
+                if (prev) {
+                    prev.avail += wb;
+                    if (usd != null) prev.usd = (prev.usd || 0) + usd;
+                } else {
+                    assets.push({ coin: c.coin, avail: wb, locked: 0, usd: usd });
+                }
+            });
+        });
+    };
+    addList(uni && uni.list);
+    addList(fund && fund.list);
+    try {
+        var pl = await bybitGet('/v5/position/list', 'category=linear&settleCoin=USDT', cred);
+        (pl && pl.list || []).forEach(function (p) {
+            var sz = Number(p.size);
+            if (!sz) return;
+            positions.push({
+                symbol: p.symbol, side: p.side || '',
+                size: sz, entry: Number(p.avgPrice), mark: Number(p.markPrice),
+                uPnl: Number(p.unrealisedPnl), lev: p.leverage ? p.leverage + 'x' : '',
+            });
+        });
+    } catch (e) { notes.push('positions: ' + e.message); }
+    return { total: total, assets: assets, positions: positions, notes: notes };
+}
+async function fetchBitunix(cred) {
+    var acc = await bitunixGet('/api/v1/futures/account', [['marginCoin', 'USDT']], cred);
+    var row = Array.isArray(acc) ? acc[0] : acc;
+    if (!row) throw new Error('Bitunix: empty account response');
+    var avail = Number(row.available) || 0;
+    var frozen = Number(row.frozen) || 0;
+    var margin = Number(row.margin) || 0;
+    var bonus = Number(row.bonus) || 0;
+    var uPnl = (Number(row.crossUnrealizedPNL) || 0) + (Number(row.isolationUnrealizedPNL) || 0);
+    var total = avail + frozen + margin + bonus + uPnl;
+    var positions = [];
+    try {
+        var pl = await bitunixGet('/api/v1/futures/position/get_pending_positions', [], cred);
+        (Array.isArray(pl) ? pl : []).forEach(function (p) {
+            var qty = Number(p.qty);
+            if (!qty) return;
+            positions.push({
+                symbol: p.symbol, side: (p.side || '').toLowerCase(),
+                size: qty, entry: Number(p.avgOpenPrice), mark: null,
+                uPnl: Number(p.unrealizedPNL), lev: p.leverage ? p.leverage + 'x' : '',
+            });
+        });
+    } catch (e) { /* positions are cosmetic — keep the balance */ }
+    return {
+        total: total,
+        assets: [{ coin: 'USDT', avail: avail, locked: frozen + margin + bonus, usd: total - uPnl }],
+        positions: positions,
+        notes: [],
+    };
+}
+
+// ── PORTFOLIO STATE ──
+var PORT = { rows: null, ts: 0, busy: false };
+async function refreshPortfolio() {
+    if (PORT.busy) return PORT;
+    PORT.busy = true;
+    try {
+        var map = await loadKeys();
+        var jobs = [];
+        if (map && map.bybit && map.bybit.key && map.bybit.secret) {
+            jobs.push(fetchBybit(map.bybit).then(function (d) {
+                return { exchange: 'Bybit', ok: true, d: d };
+            }, function (e) {
+                return { exchange: 'Bybit', ok: false, err: e.message };
+            }));
+        }
+        if (map && map.bitunix && map.bitunix.key && map.bitunix.secret) {
+            jobs.push(fetchBitunix(map.bitunix).then(function (d) {
+                return { exchange: 'Bitunix', ok: true, d: d };
+            }, function (e) {
+                return { exchange: 'Bitunix', ok: false, err: e.message };
+            }));
+        }
+        var rows = await Promise.all(jobs);
+        PORT = { rows: rows, ts: Date.now(), busy: false };
+    } catch (e) {
+        PORT.busy = false;
+        throw e;
+    }
+    return PORT;
+}
+
+// ── UI: MANAGER MODAL ──
+var MGR = null;   // { backdrop, refresh }
+function open() {
+    ensureAkCss();
+    if (MGR) { MGR.backdrop.remove(); MGR = null; return; }   // toggle
+    var backdrop = document.createElement('div');
+    backdrop.className = 'ak-backdrop';
+    document.body.appendChild(backdrop);
+    MGR = { backdrop: backdrop };
+    var sheet = document.createElement('div');
+    sheet.className = 'ak-sheet';
+    backdrop.appendChild(sheet);
+    renderMgr();
+    backdrop.classList.add('open');
+}
+function closeMgr() { if (MGR) { MGR.backdrop.remove(); MGR = null; } }
+
+function renderMgr() {
+    if (!MGR) return;
+    var st = loadStatus();
+    var h = '';
+    h += '<div class="ak-head"><div><span class="ak-title">🔑 API Keys</span><span class="ak-sub">Bybit · Bitunix</span></div>' +
+         '<button class="ak-x" data-ak="close">✕</button></div>';
+    h += '<div class="ak-body">';
+    h += '<div class="ak-sec"><span class="lk">🔒</span><div>' +
+         '<b>Encrypted on this device.</b> Keys are sealed with AES-GCM 256; the master key is a non-extractable ' +
+         'CryptoKey stored in the browser’s IndexedDB — plaintext is never written to storage, DOM or logs and never ' +
+         'leaves the device (requests are signed locally and sent directly to the exchange). ' +
+         'Create <b>read-only</b> keys (no withdrawal permission); a trade key is not needed for balances.</div></div>';
+    h += exchCard('bybit', 'Bybit', 'B', st.bybit);
+    h += exchCard('bitunix', 'Bitunix', 'B', st.bitunix);
+    h += '<div class="ak-note" style="margin-top:2px">Bybit: Unified + Funding wallets, USDT linear positions. ' +
+         'Bitunix: USDT-margined futures account + pending positions. Portfolio → «Open portfolio».</div>';
+    h += '</div>';
+    h += '<div class="ak-foot"><button class="ak-btn" data-ak="openpf">💼 Open portfolio</button>' +
+         '<button class="ak-btn danger" data-ak="wipe">Wipe all keys</button></div>';
+    // re-render: keep the sheet node, replace only its contents (the backdrop
+    //   owns the sheet; wiping the whole backdrop would orphan the listeners
+    //   that query .ak-sheet afterwards).
+    var sheet = MGR.backdrop.querySelector('.ak-sheet');
+    if (!sheet) return;
+    sheet.innerHTML = h;
+    sheet.querySelector('[data-ak="close"]').addEventListener('click', closeMgr);
+    sheet.querySelector('[data-ak="openpf"]').addEventListener('click', function () { closeMgr(); openPortfolio(); });
+    sheet.querySelector('[data-ak="wipe"]').addEventListener('click', function () {
+        var b = sheet.querySelector('[data-ak="wipe"]');
+        if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Tap again to confirm'; return; }
+        wipeVault().then(function () {
+            try { localStorage.removeItem(AK_STATUS_LS); } catch (_) {}
+            showToastSafe('API keys wiped from this device');
+            renderMgr();
+        }).catch(function (e) { showToastSafe('Wipe failed: ' + e.message); });
+    });
+    ['bybit', 'bitunix'].forEach(function (ex) { wireCard(ex, sheet); });
+}
+function exchCard(ex, label, letter, st) {
+    var saved = st && st.last4 ? ('Saved · ····' + esc(st.last4) + (st.ok === true ? ' · tested OK' : st.ok === false ? ' · last test failed' : '')) : 'Not configured';
+    var badge = st && st.last4 ? (st.ok === true ? '<span class="ak-badge ok">OK</span>' : st.ok === false ? '<span class="ak-badge err">ERR</span>' : '<span class="ak-badge">SAVED</span>') : '<span class="ak-badge">EMPTY</span>';
+    return '<div class="ak-card" data-ak-card="' + ex + '">' +
+        '<div class="ak-card-h"><div class="ak-exch"><span class="ak-exch-logo ' + ex + '">' + letter + '</span>' + esc(label) + '</div>' + badge + '</div>' +
+        '<div class="ak-grid">' +
+        '<label>API Key</label><input type="password" autocomplete="new-password" spellcheck="false" data-ak-in="key" placeholder="' + (st && st.last4 ? 'saved ····' + esc(st.last4) : 'paste API key') + '">' +
+        '<label>Secret</label><input type="password" autocomplete="new-password" spellcheck="false" data-ak-in="secret" placeholder="' + (st && st.last4 ? 'stored (hidden)' : 'paste secret') + '">' +
+        '</div>' +
+        '<div class="ak-btnrow"><button class="ak-btn ok" data-ak-act="save">Save</button>' +
+        '<button class="ak-btn" data-ak-act="test">Test</button>' +
+        '<button class="ak-btn danger" data-ak-act="remove">Remove</button></div>' +
+        '<div class="ak-status" data-ak-status>' + esc(saved) + '</div></div>';
+}
+function wireCard(ex, sheet) {
+    var card = sheet.querySelector('[data-ak-card="' + ex + '"]');
+    if (!card) return;
+    var inKey = card.querySelector('[data-ak-in="key"]');
+    var inSec = card.querySelector('[data-ak-in="secret"]');
+    var stEl = card.querySelector('[data-ak-status]');
+    var setSt = function (txt, cls) { stEl.textContent = txt; stEl.className = 'ak-status' + (cls ? ' ' + cls : ''); };
+    var getCred = function () {
+        return loadKeys().then(function (map) {
+            map = map || {};
+            var cur = map[ex] || {};
+            var key = inKey.value.trim() || cur.key || '';
+            var secret = inSec.value.trim() || cur.secret || '';
+            if (!key || !secret) throw new Error(ex + ': enter both API key and secret');
+            return { key: key, secret: secret };
+        });
+    };
+    card.querySelector('[data-ak-act="save"]').addEventListener('click', function () {
+        var key = inKey.value.trim(), secret = inSec.value.trim();
+        if (!key && !secret) { setSt('Nothing to save — paste the key and secret first.', 'err'); return; }
+        setSt('Encrypting…', 'busy');
+        loadKeys().then(function (map) {
+            map = map || {};
+            var cur = map[ex] || {};
+            map[ex] = { key: key || cur.key || '', secret: secret || cur.secret || '' };
+            if (!map[ex].key || !map[ex].secret) throw new Error('Both API key and secret are required');
+            return saveKeys(map).then(function () {
+                var st = loadStatus();
+                st[ex] = { last4: last4(map[ex].key), ts: Date.now(), ok: (st[ex] && st[ex].ok === true) ? true : undefined };
+                saveStatus(st);
+                inKey.value = ''; inSec.value = '';
+                showToastSafe(ex === 'bybit' ? 'Bybit keys saved (encrypted)' : 'Bitunix keys saved (encrypted)');
+                renderMgr();
+            });
+        }).catch(function (e) { setSt('Save failed: ' + e.message, 'err'); });
+    });
+    card.querySelector('[data-ak-act="test"]').addEventListener('click', function () {
+        setSt('Testing…', 'busy');
+        getCred().then(function (cred) {
+            var fn = ex === 'bybit' ? fetchBybit : fetchBitunix;
+            return fn(cred).then(function (d) {
+                var st = loadStatus();
+                st[ex] = { last4: last4(cred.key), ts: Date.now(), ok: true };
+                saveStatus(st);
+                setSt('OK — ' + fmtUsd(d.total) + ' total · ' + d.assets.length + ' asset(s) · ' + d.positions.length + ' position(s)', 'ok');
+                renderMgr();
+            }, function (e) {
+                var st = loadStatus();
+                st[ex] = { last4: last4(cred.key), ts: Date.now(), ok: false };
+                saveStatus(st);
+                setSt(e.message, 'err');
+            });
+        }).catch(function (e) { setSt(e.message, 'err'); });
+    });
+    card.querySelector('[data-ak-act="remove"]').addEventListener('click', function () {
+        var b = card.querySelector('[data-ak-act="remove"]');
+        if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Confirm'; return; }
+        loadKeys().then(function (map) {
+            map = map || {};
+            delete map[ex];
+            var st = loadStatus(); delete st[ex]; saveStatus(st);
+            return saveKeys(map).then(function () { showToastSafe('Keys removed'); renderMgr(); });
+        }).catch(function (e) { setSt('Remove failed: ' + e.message, 'err'); });
+    });
+}
+
+// ── UI: PORTFOLIO MODAL ──
+var PFV = null;
+function openPortfolio() {
+    ensureAkCss();
+    if (PFV) { PFV.backdrop.remove(); PFV = null; return; }   // toggle
+    var backdrop = document.createElement('div');
+    backdrop.className = 'ak-backdrop';
+    document.body.appendChild(backdrop);
+    PFV = { backdrop: backdrop };
+    var sheet = document.createElement('div');
+    sheet.className = 'ak-sheet';
+    backdrop.appendChild(sheet);
+    renderPf();
+    backdrop.classList.add('open');
+    if (!PORT.rows) refreshPortfolio().then(renderPf, function (e) { renderPf(); showToastSafe('Portfolio refresh failed: ' + e.message); });
+}
+function closePf() { if (PFV) { PFV.backdrop.remove(); PFV = null; } }
+function renderPf() {
+    if (!PFV) return;
+    var h = '';
+    h += '<div class="ak-head"><div><span class="ak-title">💼 Exchange Portfolio</span><span class="ak-sub">live</span></div>' +
+         '<div style="display:flex;gap:6px;align-items:center">' +
+         (PORT.ts ? '<span class="ak-note" data-ak-ts>upd ' + new Date(PORT.ts).toLocaleTimeString() + '</span>' : '') +
+         '<button class="ak-x" data-ak="close">✕</button></div></div>';
+    h += '<div class="ak-body">';
+    var rows = PORT.rows;
+    if (!rows) {
+        h += '<div class="ak-empty">Loading…</div>';
+    } else if (!rows.length) {
+        h += '<div class="ak-empty">No exchange keys configured yet.<br>' +
+             'Open <b>⚙ Settings → Portfolio → 🔑 API Keys</b>, add a read-only key for Bybit or Bitunix, then come back.</div>';
+    } else {
+        var grand = 0;
+        rows.forEach(function (r) { if (r.ok) grand += r.d.total; });
+        h += '<div class="ak-tot-row"><div><div class="ak-tot-lab">Total equity</div>' +
+             '<div class="ak-note">' + rows.filter(function (r) { return r.ok; }).map(function (r) { return esc(r.exchange) + ' ' + fmtUsd(r.d.total); }).join(' + ') + '</div></div>' +
+             '<div class="ak-tot-val">' + fmtUsd(grand) + '</div></div>';
+        rows.forEach(function (r) {
+            h += '<div class="ak-exch-pf">';
+            h += '<div class="ak-exch-h"><div class="ak-exch"><span class="ak-exch-logo ' + (r.exchange === 'Bybit' ? 'bybit' : 'bitunix') + '">B</span>' +
+                 esc(r.exchange) + '</div>';
+            if (r.ok) h += '<div class="ak-exch-tot">' + fmtUsd(r.d.total) + '</div>';
+            h += '</div>';
+            if (!r.ok) {
+                h += '<div class="ak-errline">' + esc(r.err) + '</div>';
+            } else {
+                var d = r.d;
+                var assets = d.assets.filter(function (a) { return a.avail || a.locked || a.usd; });
+                if (assets.length) {
+                    h += '<table class="ak-tbl"><tr><th>Coin</th><th class="num">Available</th><th class="num">Locked</th><th class="num">≈USD</th></tr>';
+                    assets.sort(function (a, b) { return (b.usd || 0) - (a.usd || 0); });
+                    assets.forEach(function (a) {
+                        h += '<tr><td><b>' + esc(a.coin) + '</b></td><td class="num">' + fmtNum(a.avail) + '</td>' +
+                             '<td class="num">' + fmtNum(a.locked) + '</td><td class="num">' + (a.usd != null ? fmtUsd(a.usd) : '—') + '</td></tr>';
+                    });
+                    h += '</table>';
+                }
+                if (d.positions.length) {
+                    h += '<div class="ak-secname" style="margin-top:9px">Positions</div>';
+                    h += '<table class="ak-tbl"><tr><th>Symbol</th><th>Side</th><th class="num">Size</th><th class="num">Entry</th><th class="num">uPnL</th><th>Lev</th></tr>';
+                    d.positions.forEach(function (p) {
+                        var pnlCls = p.uPnl > 0 ? 'up' : p.uPnl < 0 ? 'down' : '';
+                        h += '<tr><td><b>' + esc(p.symbol) + '</b></td><td>' + esc(p.side) + '</td>' +
+                             '<td class="num">' + fmtNum(p.size, 4) + '</td><td class="num">' + fmtNum(p.entry) + '</td>' +
+                             '<td class="num ' + pnlCls + '">' + (isFinite(p.uPnl) ? fmtUsd(p.uPnl) : '—') + '</td><td>' + esc(p.lev) + '</td></tr>';
+                    });
+                    h += '</table>';
+                }
+                (d.notes || []).forEach(function (n) { h += '<div class="ak-note">· ' + esc(n) + '</div>'; });
+                if (!assets.length && !d.positions.length) h += '<div class="ak-empty">Empty account (no assets, no open positions).</div>';
+            }
+            h += '</div>';
+        });
+        h += '<div class="ak-hint" style="margin-top:8px">USD values are as reported by the exchanges (Bybit equity in USD; Bitunix USDT≈USD). ' +
+             'Read-only access: this app only calls account-balance endpoints.</div>';
+    }
+    h += '</div>';
+    h += '<div class="ak-foot"><button class="ak-btn" data-ak="keys">🔑 API Keys</button>' +
+         '<button class="ak-btn' + (PORT.busy ? ' off' : '') + '" data-ak="refresh">↻ Refresh</button></div>';
+    var sheet = PFV.backdrop.querySelector('.ak-sheet');
+    if (!sheet) return;
+    sheet.innerHTML = h;
+    sheet.querySelector('[data-ak="close"]').addEventListener('click', closePf);
+    sheet.querySelector('[data-ak="keys"]').addEventListener('click', function () { closePf(); open(); });
+    sheet.querySelector('[data-ak="refresh"]').addEventListener('click', function () {
+        var b = sheet.querySelector('[data-ak="refresh"]');
+        b.classList.add('off');
+        refreshPortfolio().then(renderPf, function (e) { renderPf(); showToastSafe('Refresh failed: ' + e.message); });
+    });
+}
+
+// ── public surface (+ test hooks for the probes) ──
+window.ExchKeys = {
+    open: open,
+    openPortfolio: openPortfolio,
+    closeAll: function () { closeMgr(); closePf(); },
+    _test: {
+        sha256Hex: sha256Hex,
+        hmacSha256Hex: hmacSha256Hex,
+        randomHex: randomHex,
+        saveKeys: saveKeys,
+        loadKeys: loadKeys,
+        wipeVault: wipeVault,
+        getMasterKey: getMasterKey,
+        encryptJson: encryptJson,
+        decryptJson: decryptJson,
+        fetchBybit: fetchBybit,
+        fetchBitunix: fetchBitunix,
+        bybitGet: bybitGet,
+        bitunixGet: bitunixGet,
+        refreshPortfolio: refreshPortfolio,
+        port: function () { return PORT; },
+        subtleAvailable: subtleAvailable,
+        idbNuke: function () {
+            return new Promise(function (res) {
+                var rq = indexedDB.deleteDatabase(AK_DB);
+                rq.onsuccess = rq.onerror = rq.onblocked = function () { res(true); };
+            });
+        },
     },
 };
 })();
