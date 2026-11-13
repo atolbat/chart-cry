@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <!-- V355 LIVE PORTFOLIO = ТОЧНАЯ КОПИЯ Сим-модалки, полностью на биржевой механике (юзер: «мне нужна [та самая] модалка. Абсолютно точно такая же, без изменений, со всеми функциями что там были, подтверждениями слайдером и прочими графиками и таблицами. Ещё раз: АБСОЛЮТНО ТОЧНУЮ КОПИЮ»): ① ОДНА модалка портфолио — openPortfolio теперь строит КОПИЮ Сим-модалки (PaperPortfolio): тот же pf-backdrop/pf-sheet, pf-head «💼 Portfolio» + sub «live · Bitunix», ⚙/↻/✕ в хэдере, pf-sum-grid (eq, chips uPnL/realized, cash·tokens·frozen), canvas pfPie (реальное распределение), pf-chart-wrap с canvas lpPnl (equity-кривая из снапшотов grand-total: localStorage ce_lp_eq_hist_v1 ≤420, точка на каждом рефетче, «PnL since first snapshot», Reset в foot сбрасывает baseline — биржевой аналог бумажного Reset, счёт не трогает), Allocation-слайдер USDT⇄Tokens (drag → слайдер-конфирм с планом ног → РЕАЛЬНЫЕ спот market-ордера: Bitunix POST /api/spot/v1/order/place_order {side:'2'/'1', type:'2', volume, price:'0'} + Bybit /v5/order/create category:spot; минимальная нога $10 как в Симе), ⏸ Pause → all USDT (продать спот + при чекбоксе close_all_position/cancel_all_orders Bitunix; Bybit-позиции закрыть ✕ — честно написано в конфирме), Positions: pf-pos строки с side/lev/margin/TP/SL/LIQ (liqPrice бит-в-бит из позиции) + кнопки TP/SL (Bitunix POST /api/v1/futures/tpsl/position/place_order {symbol, positionId, tpPrice/slPrice, MARK_PRICE} / Bybit /v5/position/trading-stop) и ✕ (market reduce-only через placeOrder V352 — слайдер-конфирм), Limit orders: реальные открытые ордера (Bitunix GET trade/get_pending_orders limit 100 / Bybit GET /v5/order/realtime) + ✕ (cancel_orders {symbol, orderList} / /v5/order/cancel — без конфирма, как в Симе), Allocations: pf-table с теми же колонками Coin/Price/24h/Qty/Value/Share/PnL/✕ (tap заполняет формы, long-press — coin card с Spot/Futures блоками и Sell all, ✕ — спот sell-all слайдером), формы ＋New/＋New как в Симе (Coin/Side/Margin/Leverage/TP%/SL% и Coin/Side/Amount/Price) → market/LIMIT place_order + автопостановка TP/SL после открытия, ⚙ — Live settings (auto-refresh 30 с, hide dust, pause-close, Reset baseline). ② Слайдер-подтверждения: lpConfirm — побайтовая копия pf-confirm Сим-модалки (тот же жест knob→правый край, snap-анимация, mkt-тег SPOT/PERP/SPOT+PERP, programmatic _lpSlideDone для проб). ③ Парсеры: fetchBitunix/fetchBybit позиции теперь несут positionId/margin/liq/realized/tp/sl + orders; refreshPortfolio пушит equity-снапшот. ④ Старый V354 ak-лист (Exchange Portfolio + встроенная ⚡-форма) удалён полностью (TRD/_trFormHtml/_trWireForm/tradeSummary/_trToggleRow), openTrade — alias; кнопка-чемодан и пункт «💼 Live portfolio» открывают ЭТУ модалку; PaperPortfolio (бумажный движок+Sim) НЕ тронут — моков больше нет только в UI портфолио. ⑤ РЕГРЕСС: probe_v355_live (A ключи→кнопка; B клик→pf-sheet с pie/canvas/таблицами; C market BUY через форму со слайдер-конфирмом → подпись бит-в-бит; D LIMIT-валидация; E cancel_orders подпись; F спот-ребаланс; G equity-hist + кривая; H ⚙-сет; I coin card), probe_v352b_prekeys/probe_v351_pfbtn переписаны на pf-лист, boot-check BOOT-OK, pageerror 0 -->
     <!-- V354 UNIFIED LIVE PORTFOLIO MODAL («одна модалка», юзер: «Я тебе изначально говорил, когда мы делали ту модалку, что мы делаем, чтобы с ней работать на биржах, но пока проверим на моках. Теперь моки не нужны, нужно ее полностью перевести на биржевую механику. То есть это должна быть одна модалка для портфолио, та что была в Симе» + «Погоди, там одна кнопка ст стрелками вверх и вниз. Кнопки чемодана нет, хоть есть ключи… где модалка, что была»): ① ОДНА МОДАЛКА — форма реального ордера (V352 ⚡ Live Order: биржа из настроенных, символ префиллерится с графика, qty, цена только для LIMIT, BUY·Long/SELL·Short, Market/Limit, hedge tradeSide/positionIdx, reduce-only, двухтапное подтверждение, статус orderId/ошибки) переехала ВНУТРЬ модалки «💼 Exchange Portfolio» (V340/V350/V351: тотал, активы coin/available/locked/≈USD, позиции, notes, ↻ Refresh, авто-рефетч при открытии >60 с) — теперь это ОДИН лист: балансы + позиции + «⚡ Place order — REAL …futures» + hint; после успешного ордера автоматически запускается refreshPortfolio (балансы/позиции обновляются сами); отдельная модалка ⚡ и её кнопка в футере «💼 Portfolio» удалены, openTrade() оставлен как alias→openPortfolio для API/проб. ② ХЭДЕР — ОДНА кнопка: чемодан btn-portfolio теперь виден ТОЛЬКО при наличии ключей (та же V353-схема: _pfKeyWire поллит window.ExchKeys до 15 с, подписка onKeysChanged, sync НА вайринг-тике — иначе кнопка не появится при ключах из прошлой сессии), клик → openPortfolio; Sim-гейт V326 и бумажное long-press quick-меню V313 с кнопки СНЯТЫ (Sim-тоггл остался в Settings — он управляет только бумажным движком на графике; pfSyncSimButtons и _pfSimSyncAll больше НЕ трогают btn-portfolio); кнопка ⚡ btn-live-trade удалена из хэдера (тултип тоже), ICONS.trade остался в палитре. ③ Тексты: empty-state и hint теперь честно говорят про ордера (двухтапное подтверждение, реальные счета), тултип чемодана «Portfolio — live balances, positions & orders (needs API keys)». Бумажный движок PaperPortfolio НЕ тронут (график/Sim работают как раньше) — модалка просто больше не показывает моки. ④ РЕГРЕСС: probe_v354_unified (A без ключей чемодан скрыт; B UI-Save → чемодан виден; C клик → ОДНА модалка: заголовок Exchange Portfolio, таблицы активов/позиций И форма ордера с префиллом BTCUSDT; D market BUY через мок-релей → подпись бит-в-бит, orderId, авто-рефетч после ордера; E LIMIT без цены → валидация; F wipe → чемодан скрылся), probe_v352b_prekeys (пре-сейв: fresh boot моб/десктоп, reload — btn-portfolio виден сам), probe_v351_pfbtn (меню «💼 Live portfolio» → та же единая модалка, авто-рефетч fresh/stale), probe_v350_spot, probe_v352_trade A–J переписаны на unified-модалку, boot-check BOOT-OK, pageerror 0 -->
     <!-- V353 FIX «Кнопки нет» (юзер: «Нифига там нет» в fixed (17) + «Кнопки нет»): подтверждено расследованием — в fixed (17) живой кнопки ордеров и НЕ БЫЛО (grep placeOrder/bitunixPost/TRD = 0, там только бумажная 💼-кнопка V313, скрытая при Sim OFF с V326), кнопка ордеров собрана заново в V352 — но она НЕ ПОЯВЛЯЛАСЬ у юзера, потому что его ключи сохранены в ПРОШЛОЙ сессии: воспроизведено probe_v352b_prekeys (P2 свежая загрузка моб 420px, P3 десктоп 1366px: hasKeys()===true, а кнопка display:none навсегда). Причина: _ltWire() на первом же тике полла (как только window.ExchKeys появился) подписывался на onKeysChanged и СРАЗУ clearInterval — _ltSync() на этом тике НЕ вызывался, а fireKeysChanged при загрузке страницы не происходит (он только после Save/Remove/Wipe в менеджере) — probe B (сейв в той же сессии) эту дыру маскировал. Фикс: _ltWire() сам вызывает _ltSync() сразу после подписки — первая проверка hasKeys() выполняется в момент появления модуля, кнопка ⚡ btn-live-trade появляется сама через ~миллисекунды после загрузки. Проба probe_v352b_prekeys.js ПОСЛЕ фикса: P1 сейв в сессии → видна, P2 свежая загрузка с пре-сейвом → видна сама (16 мс), P2 reload → видна (15 мс), P3 десктоп → видна, на экране (x=280,w=26), клик → модалка «⚡ Live Order» с префиллом BTCUSDT; РЕГРЕСС probe_v352_trade A–J, probe_v351_pfbtn A–D, probe_v350_spot (UNIT/SPOT-UI/DICT/UNREC/FALLBACK/LIVE), boot-check BOOT-OK — все true, pageerror 0 -->
     <!-- V352 LIVE ORDER BUTTON IN THE HEADER + WRITE CLIENTS (юзер: «Я не про exchange balances, я про кнопку что была в хэдере основной странице. Она должна была пропадать, если нет ключей, но щас они есть. Там еще можно было ордера открывать» + «Это было в фиксед 17»): расследование — в (17) из биржевого была ТОЛЬКО бумажная кнопка-кошелёк с long-press меню бумажных ордеров (V313); подписи/ключи/nonce в (17) НЕТ ВООБЩЕ (grep apiKey/secret/nonce = 0), а живой read-only появился только в V340, и только GET. Кнопка «пропала» потому что с V326 кошелёк скрыт при Sim OFF. Сделано то, что юзер реально хочет: ① КНОПКА В ХЭДЕРЕ (btn-live-trade, иконка trade — стрелки sell-down/buy-up, сразу после кошелька): видна ТОЛЬКО когда настроен хотя бы один ключ — hasKeys() (расшифровка vault) + подписка onKeysChanged (fireKeysChanged после Save/Remove/Wipe в менеджере) + отложенный re-check (setTimeout 800 мс — страховка порядка script-блоков); клик → модалка. ② WRITE-КЛИЕНТЫ bitunixPost/bybitPost — та же V349-цепочка попыток direct → relay(формат по хвосту) → relay(альт), nonce/ts/sign ПЕРЕгенерируются на попытку; Bitunix POST-подпись покрывает ТЕЛО: sign = sha256(sha256(nonce+ts+apiKey+''+bodyStr)+secret), bodyStr сериализуется ОДИН раз и этим же стрингом подписывается и отправляется; Bybit POST: HMAC(secret, ts+key+recvWindow+bodyStr) (для POST queryString = сырой JSON-body), Content-Type application/json; релей безопасен — v2-сниппет форвардит body и headers, content-length пересчитывается. ③ МОДАЛКА «⚡ Live Order» (USDT-M futures, РЕАЛЬНЫЙ счёт): биржа из настроенных, символ префиллерится с графика (btn-symbol 'BTC / USDT' → BTCUSDT, редактируемый), qty, цена только для LIMIT, тогглы BUY·Long/SELL·Short и Market/Limit, чекбоксы hedge-режим (localStorage ce_ak_hedge_v1; Bitunix tradeSide OPEN/CLOSE — в доке place_order «Only required in hedge-mode», Bybit positionIdx 1/2; one-way не шлёт ничего) и reduce-only; ОТПРАВКА ДВУХТАПНАЯ (armed «Confirm: BUY 0.01 BTCUSDT MARKET» — как Remove/Wipe), валидация qty/цены ДО сети, статус orderId / человеческая ошибка (Bitunix code/msg, Bybit retCode). ④ PAYLOAD по докам: Bitunix POST /api/v1/futures/trade/place_order {symbol, side BUY|SELL, orderType MARKET|LIMIT, qty, price+effect GTC для LIMIT, reduceOnly?} — БЕЗ marginCoin (в доке поля нет); Bybit POST /v5/order/create {category linear, side Buy|Sell, orderType Market|Limit, qty, price+timeInForce GTC, reduceOnly?, positionIdx}. ⑤ РЕГРЕСС probe_v352_trade: кнопка скрыта без ключей → реальный UI-Save в менеджере → кнопка появилась (fireKeysChanged), клик → модалка с префиллом BTCUSDT; market BUY через мок-релей → Node-проверка ПОДПИСИ бит-в-бит (sha256(sha256(nonce+ts+key+''+body)+secret)) + тела (symbol/side/orderType/qty), orderId показан; LIMIT без цены → валидация без сети; hedge → tradeSide OPEN; Bybit → HMAC-подпись бит-в-бит, positionIdx 0, hedge-sell → positionIdx 2; API-ошибка (Bitunix 4001) показана как есть; wipe → кнопка скрылась; boot-check BOOT-OK, pageerror 0 -->
@@ -113100,14 +113101,34 @@ async function fetchBybit(cred) {
             var sz = Number(p.size);
             if (!sz) return;
             positions.push({
-                symbol: p.symbol, side: p.side || '',
+                symbol: p.symbol, side: (p.side || '').toLowerCase(),
                 size: sz, entry: Number(p.avgPrice), mark: Number(p.markPrice),
                 uPnl: Number(p.unrealisedPnl), lev: p.leverage ? p.leverage + 'x' : '',
+                // V355: live-sheet fields — margin/liq/TP/SL for the portfolio rows
+                positionId: p.positionIdx != null ? String(p.positionIdx) : '',
+                margin: Number(p.positionIM) || 0,
+                liq: Number(p.liqPrice) || 0,
+                tp: Number(p.takeProfit) || 0,
+                sl: Number(p.stopLoss) || 0,
             });
         });
     } catch (e) { notes.push('positions: ' + e.message); }
+    // V355: open (pending) orders — /v5/order/realtime
+    var orders = [];
+    try {
+        var ol = await bybitGet('/v5/order/realtime', 'category=linear&limit=50', cred);
+        (ol && ol.list || []).forEach(function (o) {
+            orders.push({
+                orderId: o.orderId, symbol: o.symbol,
+                side: (o.side || '').toLowerCase(), qty: Number(o.qty),
+                price: Number(o.price) || 0,
+                type: /LIMIT/i.test(String(o.orderType || '')) ? 'LIMIT' : 'MARKET',
+                status: o.orderStatus || '',
+            });
+        });
+    } catch (e) { notes.push('orders: ' + e.message); }
     if (BYBIT_LAST_VIA === 'relay') notes.push('via relay (direct was blocked)');
-    return { total: total, assets: assets, positions: positions, notes: notes };
+    return { total: total, assets: assets, positions: positions, orders: orders, notes: notes };
 }
 // ── V350: Bitunix SPOT wallet (openapi.bitunix.com) ──
 // The spot docs are SPA-only (no verbatim response example was obtainable;
@@ -113218,11 +113239,32 @@ async function fetchBitunix(cred) {
                 symbol: p.symbol, side: (p.side || '').toLowerCase(),
                 size: qty, entry: Number(p.avgOpenPrice), mark: null,
                 uPnl: Number(p.unrealizedPNL), lev: p.leverage ? p.leverage + 'x' : '',
+                // V355: live-sheet fields — positionId needed for TP/SL place_order
+                positionId: p.positionId != null ? String(p.positionId) : '',
+                margin: Number(p.margin) || 0,
+                liq: Number(p.liqPrice) || 0,
+                realized: Number(p.realizedPNL) || 0,
+                marginMode: p.marginMode || '',
             });
         });
     } catch (e) { notes.push('positions: ' + e.message); }
+    // V355: open (pending) orders — GET trade/get_pending_orders (limit 100)
+    var orders = [];
+    try {
+        var ol = await bitunixGet('/api/v1/futures/trade/get_pending_orders', [['limit', '100']], cred);
+        var lst = Array.isArray(ol) ? ol : ((ol && ol.orderList) || []);
+        (lst || []).forEach(function (o) {
+            orders.push({
+                orderId: o.orderId, symbol: o.symbol,
+                side: (o.side || '').toLowerCase(), qty: Number(o.qty) || 0,
+                price: Number(o.price) || 0,
+                type: /LIMIT/i.test(String(o.orderType || '')) ? 'LIMIT' : 'MARKET',
+                status: o.status || '',
+            });
+        });
+    } catch (e) { notes.push('orders: ' + e.message); }
     if (BITUNIX_LAST_VIA === 'relay') notes.push('via relay (direct was blocked)');
-    return { total: total, assets: assets, positions: positions, notes: notes };
+    return { total: total, assets: assets, positions: positions, orders: orders, notes: notes };
 }
 
 // ── PORTFOLIO STATE ──
@@ -113249,6 +113291,7 @@ async function refreshPortfolio() {
         }
         var rows = await Promise.all(jobs);
         PORT = { rows: rows, ts: Date.now(), busy: false };
+        try { lpPushPoint(); } catch (_) {}   // V355: equity snapshot on every refresh
     } catch (e) {
         PORT.busy = false;
         throw e;
@@ -113482,203 +113525,14 @@ function wireCard(ex, sheet) {
 
 // ── UI: PORTFOLIO MODAL ──
 var PFV = null;
-function openPortfolio() {
-    ensureAkCss();
-    if (PFV) { PFV.backdrop.remove(); PFV = null; return; }   // toggle
-    var backdrop = document.createElement('div');
-    backdrop.className = 'ak-backdrop';
-    document.body.appendChild(backdrop);
-    PFV = { backdrop: backdrop };
-    var sheet = document.createElement('div');
-    sheet.className = 'ak-sheet';
-    backdrop.appendChild(sheet);
-    renderPf();
-    backdrop.classList.add('open');
-    // V354: the sheet is now ALSO the order-entry surface («одна модалка»):
-    //   refresh the configured-exchange list for the form and prefill the
-    //   symbol from the chart exactly like the removed ⚡ modal did.
-    loadKeys().then(function (map) {
-        if (!PFV) return;
-        map = map || {};
-        var exs = [];
-        if (map.bitunix && map.bitunix.key && map.bitunix.secret) exs.push(['bitunix', 'Bitunix']);
-        if (map.bybit && map.bybit.key && map.bybit.secret) exs.push(['bybit', 'Bybit']);
-        TRD.exs = exs; TRD.err = null;
-        if ((!TRD.ex || !exs.some(function (e) { return e[0] === TRD.ex; })) && exs.length) TRD.ex = exs[0][0];
-        if (!TRD.sym) TRD.sym = _chartFutsSymbol();
-        renderPf();
-    }).catch(function () {});
-    // V351: refetch on open not only when there is NO data at all (first open)
-    //   but also when the snapshot is STALE (>60 s) — reopening the modal an
-    //   hour later no longer shows a dead total. A fresh snapshot (or an
-    //   in-flight refresh, PORT.busy) costs zero extra requests; ↻ Refresh
-    //   stays manual on top of this.
-    if (!PORT.rows || (Date.now() - (PORT.ts || 0) > 60000)) {
-        refreshPortfolio().then(renderPf, function (e) { renderPf(); showToastSafe('Portfolio refresh failed: ' + e.message); });
-    }
-}
-function closePf() { if (PFV) { PFV.backdrop.remove(); PFV = null; } }
-function renderPf() {
-    if (!PFV) return;
-    var h = '';
-    h += '<div class="ak-head"><div><span class="ak-title">💼 Exchange Portfolio</span><span class="ak-sub">live</span></div>' +
-         '<div style="display:flex;gap:6px;align-items:center">' +
-         (PORT.ts ? '<span class="ak-note" data-ak-ts>upd ' + new Date(PORT.ts).toLocaleTimeString() + '</span>' : '') +
-         '<button class="ak-x" data-ak="close">✕</button></div></div>';
-    h += '<div class="ak-body">';
-    var rows = PORT.rows;
-    if (!rows) {
-        h += '<div class="ak-empty">Loading…</div>';
-    } else if (!rows.length) {
-        h += '<div class="ak-empty">No exchange keys configured yet.<br>' +
-             'Open <b>⚙ Settings → Portfolio → 🔑 API Keys</b> and add a key for Bybit or Bitunix.<br>' +
-             'The 💼 header button appears automatically once a key is saved — ' +
-             'this sheet then holds your live balances, positions and the real order form.</div>';
-    } else {
-        var grand = 0;
-        rows.forEach(function (r) { if (r.ok) grand += r.d.total; });
-        h += '<div class="ak-tot-row"><div><div class="ak-tot-lab">Total equity</div>' +
-             '<div class="ak-note">' + rows.filter(function (r) { return r.ok; }).map(function (r) { return esc(r.exchange) + ' ' + fmtUsd(r.d.total); }).join(' + ') + '</div></div>' +
-             '<div class="ak-tot-val">' + fmtUsd(grand) + '</div></div>';
-        rows.forEach(function (r) {
-            h += '<div class="ak-exch-pf">';
-            h += '<div class="ak-exch-h"><div class="ak-exch"><span class="ak-exch-logo ' + (r.exchange === 'Bybit' ? 'bybit' : 'bitunix') + '">B</span>' +
-                 esc(r.exchange) + '</div>';
-            if (r.ok) h += '<div class="ak-exch-tot">' + fmtUsd(r.d.total) + '</div>';
-            h += '</div>';
-            if (!r.ok) {
-                h += '<div class="ak-errline">' + esc(r.err) + '</div>';
-            } else {
-                var d = r.d;
-                var assets = d.assets.filter(function (a) { return a.avail || a.locked || a.usd; });
-                if (assets.length) {
-                    h += '<table class="ak-tbl"><tr><th>Coin</th><th class="num">Available</th><th class="num">Locked</th><th class="num">≈USD</th></tr>';
-                    assets.sort(function (a, b) { return (b.usd || 0) - (a.usd || 0); });
-                    assets.forEach(function (a) {
-                        h += '<tr><td><b>' + esc(a.coin) + '</b></td><td class="num">' + fmtNum(a.avail) + '</td>' +
-                             '<td class="num">' + fmtNum(a.locked) + '</td><td class="num">' + (a.usd != null ? fmtUsd(a.usd) : '—') + '</td></tr>';
-                    });
-                    h += '</table>';
-                }
-                if (d.positions.length) {
-                    h += '<div class="ak-secname" style="margin-top:9px">Positions</div>';
-                    h += '<table class="ak-tbl"><tr><th>Symbol</th><th>Side</th><th class="num">Size</th><th class="num">Entry</th><th class="num">uPnL</th><th>Lev</th></tr>';
-                    d.positions.forEach(function (p) {
-                        var pnlCls = p.uPnl > 0 ? 'up' : p.uPnl < 0 ? 'down' : '';
-                        h += '<tr><td><b>' + esc(p.symbol) + '</b></td><td>' + esc(p.side) + '</td>' +
-                             '<td class="num">' + fmtNum(p.size, 4) + '</td><td class="num">' + fmtNum(p.entry) + '</td>' +
-                             '<td class="num ' + pnlCls + '">' + (isFinite(p.uPnl) ? fmtUsd(p.uPnl) : '—') + '</td><td>' + esc(p.lev) + '</td></tr>';
-                    });
-                    h += '</table>';
-                }
-                (d.notes || []).forEach(function (n) { h += '<div class="ak-note">· ' + esc(n) + '</div>';
-                });
-                if (!assets.length && !d.positions.length) h += '<div class="ak-empty">Empty account (no assets, no open positions).</div>';
-            }
-            h += '</div>';
-        });
-        // V354: the REAL order form lives INSIDE this sheet — «одна модалка
-        //   для портфолио… там еще можно было ордера открывать». Rendered
-        //   only when at least one exchange key is configured.
-        if ((TRD.exs || []).length) h += _trFormHtml();
-        h += '<div class="ak-hint" style="margin-top:8px">Balances & positions are live from the exchanges; the order form sends REAL orders — the send button arms first (two-tap confirm). ' +
-             'USD values are as reported by the exchanges (Bybit equity in USD; Bitunix USDT≈USD).</div>';
-    }
-    h += '</div>';
-    h += '<div class="ak-foot"><button class="ak-btn" data-ak="keys">🔑 API Keys</button>' +
-         '<button class="ak-btn' + (PORT.busy ? ' off' : '') + '" data-ak="refresh">↻ Refresh</button></div>';
-    var sheet = PFV.backdrop.querySelector('.ak-sheet');
-    if (!sheet) return;
-    sheet.innerHTML = h;
-    sheet.querySelector('[data-ak="close"]').addEventListener('click', closePf);
-    sheet.querySelector('[data-ak="keys"]').addEventListener('click', function () { closePf(); open(); });
-    sheet.querySelector('[data-ak="refresh"]').addEventListener('click', function () {
-        var b = sheet.querySelector('[data-ak="refresh"]');
-        b.classList.add('off');
-        refreshPortfolio().then(renderPf, function (e) { renderPf(); showToastSafe('Refresh failed: ' + e.message); });
-    });
-    if ((TRD.exs || []).length) _trWireForm(sheet, renderPf);
-}
+function openPortfolio() { lpOpen(); }
+function closePf() { lpClose(); }
 
-// ── V354: ORDER FORM, embedded in the unified portfolio sheet ──
-// Extracted from the removed standalone ⚡ Live Order modal (V352). Same
-// state (TRD), same payloads (orderPayload), same two-tap arming; the form
-// is a SECTION of the portfolio sheet now.
-function _trFormHtml() {
-    var exs = TRD.exs || [];
-    var sym = TRD.sym || _chartFutsSymbol() || 'BTCUSDT';
-    var h = '';
-    h += '<div class="ak-secname" style="margin-top:12px">⚡ Place order — REAL ' +
-         (TRD.ex === 'bybit' ? 'Bybit' : 'Bitunix') + ' futures</div>';
-    h += '<div class="ak-note" style="margin:4px 0 6px">Symbol is prefilled from the chart and stays editable.</div>';
-    h += '<div class="ak-grid">' +
-         '<label>Exchange</label><select data-tr="exsel">' +
-         exs.map(function (e) { return '<option value="' + e[0] + '"' + (e[0] === TRD.ex ? ' selected' : '') + '>' + e[1] + '</option>'; }).join('') +
-         '</select>' +
-         '<label>Symbol</label><input type="text" spellcheck="false" autocapitalize="off" autocomplete="off" data-tr="sym" value="' + esc(sym) + '">' +
-         '<label>Qty (coin)</label><input type="text" inputmode="decimal" spellcheck="false" autocomplete="off" data-tr="qty" placeholder="0.01" value="' + esc(TRD.qty || '') + '">' +
-         '<label>Limit price</label><input type="text" inputmode="decimal" spellcheck="false" autocomplete="off" data-tr="price" placeholder="only for LIMIT" value="' + esc(TRD.price || '') + '"' + (TRD.type === 'LIMIT' ? '' : ' disabled') + '>' +
-         '</div>';
-    h += '<div class="ak-secname" style="margin-top:8px">Side</div>' + _trToggleRow('side', [{ v: 'BUY', t: 'BUY · Long' }, { v: 'SELL', t: 'SELL · Short' }], TRD.side || 'BUY');
-    h += '<div class="ak-secname" style="margin-top:8px">Type</div>' + _trToggleRow('type', [{ v: 'MARKET', t: 'Market' }, { v: 'LIMIT', t: 'Limit' }], TRD.type || 'MARKET');
-    h += '<div style="margin-top:8px;display:flex;flex-direction:column;gap:4px">' +
-         '<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-tr="hedge"' + (loadHedge() ? ' checked' : '') + '> hedge-mode account (Bitunix tradeSide / Bybit positionIdx)</label>' +
-         '<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-tr="reduce"' + (TRD.reduceOnly ? ' checked' : '') + '> reduce-only (close / shrink a position)</label></div>';
-    h += '<div class="ak-status" data-tr-status>' + esc(TRD.status || '') + '</div>';
-    h += '<div style="margin-top:8px"><button class="ak-btn ok" data-tr="send"' + (TRD.busy ? ' disabled' : '') + '>' +
-         (TRD.armed ? 'Confirm: ' + esc(tradeSummary()) : 'Send order') + '</button></div>';
-    return h;
-}
-function _trWireForm(sheet, rerender) {
-    var q = function (sel) { return sheet.querySelector(sel); };
-    q('[data-tr="exsel"]').addEventListener('change', function (e) { TRD.ex = e.target.value; TRD.armed = false; TRD.status = ''; rerender(); });
-    q('[data-tr="sym"]').addEventListener('input', function (e) { TRD.sym = e.target.value.trim(); TRD.armed = false; });
-    q('[data-tr="qty"]').addEventListener('input', function (e) { TRD.qty = e.target.value.trim(); TRD.armed = false; });
-    q('[data-tr="price"]').addEventListener('input', function (e) { TRD.price = e.target.value.trim(); TRD.armed = false; });
-    sheet.querySelectorAll('[data-tr-tgl="side"]').forEach(function (b) {
-        b.addEventListener('click', function () { TRD.side = b.dataset.trV; TRD.armed = false; TRD.status = ''; rerender(); });
-    });
-    sheet.querySelectorAll('[data-tr-tgl="type"]').forEach(function (b) {
-        b.addEventListener('click', function () { TRD.type = b.dataset.trV; TRD.armed = false; TRD.status = ''; rerender(); });
-    });
-    var hx = q('[data-tr="hedge"]');
-    if (hx) hx.addEventListener('change', function () { saveHedge(hx.checked); TRD.armed = false; });
-    var rx = q('[data-tr="reduce"]');
-    if (rx) rx.addEventListener('change', function () { TRD.reduceOnly = rx.checked; TRD.armed = false; rerender(); });
-    q('[data-tr="send"]').addEventListener('click', function () {
-        if (TRD.busy) return;
-        // read straight from the DOM inputs at send time
-        TRD.sym = (q('[data-tr="sym"]').value || '').trim().toUpperCase();
-        TRD.qty = (q('[data-tr="qty"]').value || '').trim();
-        TRD.price = (q('[data-tr="price"]').value || '').trim();
-        var qty = Number(TRD.qty);
-        var price = Number(TRD.price);
-        var fail = function (msg) { TRD.armed = false; TRD.busy = false; TRD.status = msg; rerender(); };
-        if (!TRD.sym) return fail('Symbol is empty');
-        if (!isFinite(qty) || qty <= 0) return fail('Qty must be > 0');
-        if (TRD.type === 'LIMIT' && (!isFinite(price) || price <= 0)) return fail('Limit price must be > 0');
-        if (!TRD.armed) { TRD.armed = true; rerender(); return; }   // first tap → arm
-        TRD.armed = false; TRD.busy = true; TRD.status = 'Sending…'; rerender();
-        placeOrder({ ex: TRD.ex, symbol: TRD.sym, side: TRD.side, type: TRD.type,
-                     qty: qty, price: price, hedge: loadHedge(), reduceOnly: TRD.reduceOnly })
-        .then(function (r) {
-            TRD.busy = false;
-            TRD.status = 'OK — orderId ' + (r.orderId || '(none)');
-            rerender();   // re-enables the send button, shows the orderId
-            showToastSafe('Order placed: ' + tradeSummary());
-            // the account just changed — pull fresh balances/positions
-            refreshPortfolio().then(rerender, function () {});
-        }, function (e) {
-            fail(e.message);
-        });
-    });
-}
+// V355: the V354 embedded order form (_trFormHtml/_trWireForm) is retired —
+// the LIVE PORTFOLIO sheet below has its own position / limit-order forms,
+// exact copies of the Sim modal forms, wired to real exchange orders.
 
-// ── V352→V354: LIVE ORDER STATE + WRITE CLIENTS (USDT-M futures, REAL account)
-// V352 had a standalone ⚡ Live Order modal; V354 folded it INTO the unified
-// portfolio sheet («одна модалка») — the state, payloads and two-tap arming
-// below now drive the embedded form (_trFormHtml/_trWireForm).
-var TRD = { ex: null, exs: [], side: 'BUY', type: 'MARKET', sym: '', qty: '', price: '', hedge: false, reduceOnly: false, armed: false, busy: false, status: '', err: null };
+// ── keys-changed subscriptions + hedge flag (used by the live sheet) ──
 var KEYS_CB = [];
 function fireKeysChanged() { KEYS_CB.forEach(function (cb) { try { cb(); } catch (_) {} }); }
 function onKeysChanged(cb) { if (typeof cb === 'function') KEYS_CB.push(cb); }
@@ -113750,24 +113604,1419 @@ function _chartFutsSymbol() {
     if (!/USDT$/.test(t)) t += 'USDT';
     return t.toUpperCase();
 }
-function tradeSummary() {
-    return (TRD.side === 'SELL' ? 'SELL' : 'BUY') + ' ' + (TRD.qty || '?') + ' ' + (TRD.sym || '?') + ' ' +
-        (TRD.type === 'LIMIT' ? 'LIMIT' : 'MARKET') + (TRD.reduceOnly ? ' · reduce-only' : '');
-}
-// V354: the standalone ⚡ modal is gone — openTrade kept as an alias for the
-// public API/probes, it now opens the unified portfolio sheet.
+// V355: openTrade kept as an alias for the public API/probes — it opens the
+// live portfolio sheet (the ONE portfolio modal).
 function openTrade() { openPortfolio(); }
-function _trToggleRow(id, opts, cur) {
-    var h = '<div class="ak-btnrow" data-tr-row="' + id + '">';
-    opts.forEach(function (o) {
-        h += '<button class="ak-btn' + (o.v === cur ? ' ok' : '') + '" data-tr-tgl="' + id + '" data-tr-v="' + o.v + '">' + o.t + '</button>';
-    });
-    return h + '</div>';
+// V355: _trToggleRow (ak-form toggle row) retired with the ak-sheet form.
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// V355: LIVE PORTFOLIO — ОДНА модалка портфолио, ТОЧНАЯ КОПИЯ той, что была в
+// Симе (PaperPortfolio): тот же pf-sheet, тот же layout (сводка+pie, PnL-график,
+// Allocation-слайдер, позиции с TP/SL/✕ и LIQ-строкой, лимит-ордера, таблица
+// аллокаций, ⚙/✕ в хэдере, foot с note+Reset), те же слайдер-подтверждения
+// («Slide to …») — но 100% БИРЖЕВАЯ механика: балансы/позиции/ордера тянутся по
+// сохранённым ключам, каждая кнопка шлёт РЕАЛЬНЫЕ запросы. Моков больше нет.
+// (юзер: «мне нужна [та самая] модалка. Абсолютно точно такая же, без
+//   изменений, со всеми функциями что там были, подтверждениями слайдером и
+//   прочими графиками и таблицами. Ещё раз: АБСОЛЮТНО ТОЧНУЮ КОПИЮ»)
+// Endpoints (официальные дока/SDK Bitunix + дока Bybit v5):
+//   futures: place_order (V352), GET trade/get_pending_orders,
+//            POST trade/cancel_orders {symbol, orderList:[{orderId}]},
+//            POST trade/cancel_all_orders, POST trade/close_all_position,
+//            POST tpsl/position/place_order {symbol, positionId, tpPrice?,
+//            slPrice?} (в доке путь /api/v1/futures/tpsl/position/place_order)
+//   spot:    POST /api/spot/v1/order/place_order {symbol, side:'2'buy|'1'sell,
+//            type:'2'market|'1'limit, volume, price:'0' для market}
+//   bybit:   GET /v5/order/realtime, POST /v5/order/cancel {category,symbol,
+//            orderId}, POST /v5/position/trading-stop {category,symbol,
+//            takeProfit?,stopLoss?,positionIdx}
+// Equity-кривая: снапшоты grand-total при каждом рефетче (localStorage,
+//   ce_lp_eq_hist_v1, ≤420 точек) — «PnL since first snapshot», Reset в foot
+//   сбрасывает базовую точку (аналог бумажного Reset, безопасный для счёта).
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── CSS: побайтовая копия правил pf-* из PaperPortfolio (модалка = та же) ──
+var LP_CSS = [
+    '.pf-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.62);z-index:10190;display:none;align-items:stretch;justify-content:center;}',
+    '.pf-backdrop.pf-set{z-index:10240;}',
+    '.pf-backdrop canvas,.pf-confirm canvas{position:static !important;top:auto !important;left:auto !important;}',
+    '.pf-backdrop.open{display:flex;}',
+    '.pf-sheet{position:relative;z-index:10200;width:min(520px,100%);height:100%;display:flex;flex-direction:column;background:#0d1117;',
+      'border-left:1px solid rgba(255,255,255,0.12);border-right:1px solid rgba(255,255,255,0.12);box-shadow:0 12px 40px rgba(0,0,0,0.65);',
+      'font-family:-apple-system,\'Segoe UI\',system-ui,sans-serif;color:#e6edf3;font-size:12px;}',
+    '@media (min-width:540px){.pf-sheet{margin:14px 0;height:calc(100% - 28px);border-radius:14px;border:1px solid rgba(255,255,255,0.12);}}',
+    '.pf-head{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.08);}',
+    '.pf-title{font-size:14px;font-weight:700;}',
+    '.pf-sub{font-size:9px;font-weight:600;letter-spacing:0.8px;text-transform:uppercase;color:#8b949e;margin-left:6px;}',
+    '.pf-x{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#c9d1d9;width:26px;height:26px;border-radius:7px;font-size:13px;cursor:pointer;}',
+    '.pf-body{flex:1 1 auto;overflow-y:auto;padding:10px 12px 14px;-webkit-overflow-scrolling:touch;}',
+    '.pf-foot{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-top:1px solid rgba(255,255,255,0.08);gap:8px;}',
+    '.pf-note{font-size:9.5px;color:#6e7681;}',
+    '.pf-sum-grid{display:flex;align-items:center;justify-content:space-between;gap:10px;}',
+    '.pf-eq{font-size:21px;font-weight:800;letter-spacing:0.3px;}',
+    '.pf-chips{display:flex;gap:5px;margin:5px 0 3px;flex-wrap:wrap;}',
+    '.pf-chip{font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:8px;background:rgba(255,255,255,0.06);color:#8b949e;}',
+    '.pf-chip.up{color:#3fb950;background:rgba(63,185,80,0.12);}',
+    '.pf-chip.down{color:#f85149;background:rgba(248,81,73,0.12);}',
+    '.pf-sub2{font-size:9.8px;color:#8b949e;}',
+    '.pf-sub2.up{color:#3fb950;}.pf-sub2.down{color:#f85149;}',
+    '.pf-sum-right{flex:0 0 auto;}',
+    '.pf-chart-wrap{margin-top:8px;border:1px solid rgba(255,255,255,0.08);border-radius:10px;background:rgba(255,255,255,0.02);padding:6px 4px 2px;}',
+    '#lpPnl{display:block;width:100%;height:118px;}',
+    '.pf-chart-cap{font-size:9px;color:#6e7681;padding:2px 6px 4px;}',
+    '.pf-sec{margin-top:12px;}',
+    '.pf-sec-h{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#8b949e;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;}',
+    '.pf-slider-row{display:flex;align-items:center;gap:8px;}',
+    '.pf-sl-lab{font-size:9.5px;color:#8b949e;white-space:nowrap;}',
+    '.pf-sl-lab b{color:#e6edf3;font-size:10.5px;display:block;}',
+    '.pf-slider-row input[type=range]{flex:1;accent-color:#58a6ff;height:26px;min-width:60px;}',
+    '.pf-sl-hint{font-size:9.3px;color:#6e7681;margin:4px 0 8px;}',
+    '.pf-btnrow{display:flex;gap:8px;}',
+    '.pf-btn{flex:1;padding:8px 10px;border-radius:9px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.05);color:#e6edf3;font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit;}',
+    '.pf-btn.ok{background:rgba(63,185,80,0.16);border-color:rgba(63,185,80,0.45);color:#7ee787;}',
+    '.pf-btn.warn{background:rgba(240,180,41,0.13);border-color:rgba(240,180,41,0.4);color:#f0b429;}',
+    '.pf-btn.ghost{background:rgba(255,255,255,0.05);color:#c9d1d9;}',
+    '.pf-btn.off{opacity:0.45;}',
+    '.pf-btn.wide{width:100%;margin-top:8px;}',
+    '.pf-empty{font-size:10.5px;color:#6e7681;padding:8px 2px;}',
+    '.pf-pos,.pf-ord{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 2px;border-bottom:1px solid rgba(255,255,255,0.05);}',
+    '.pf-badge{display:inline-block;font-size:8.5px;font-weight:800;letter-spacing:0.6px;padding:1px 6px;border-radius:6px;background:rgba(255,255,255,0.07);color:#8b949e;}',
+    '.pf-badge.up{color:#7ee787;background:rgba(63,185,80,0.14);}',
+    '.pf-badge.down{color:#ff9d94;background:rgba(248,81,73,0.14);}',
+    '.pf-pnl{font-size:11.5px;font-weight:800;}',
+    '.pf-pnl.up{color:#3fb950;}.pf-pnl.down{color:#f85149;}',
+    '.up{color:#3fb950;}.down{color:#f85149;}',
+    '.pf-pos-side{text-align:right;flex:0 0 auto;}',
+    '.pf-rowbtns{display:flex;gap:4px;justify-content:flex-end;margin-top:3px;}',
+    '.pf-mini{background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.14);color:#c9d1d9;border-radius:6px;font-size:9.5px;font-weight:700;padding:2px 7px;cursor:pointer;font-family:inherit;}',
+    '.pf-mini.danger{color:#ff9d94;border-color:rgba(248,81,73,0.4);background:rgba(248,81,73,0.1);}',
+    '.pf-form{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:8px;margin-bottom:8px;}',
+    '.pf-grid{display:grid;grid-template-columns:92px 1fr;gap:6px 8px;align-items:center;}',
+    '.pf-grid label{font-size:9.8px;color:#8b949e;}',
+    '.pf-grid input,.pf-grid select{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.14);border-radius:7px;color:#e6edf3;padding:5px 7px;font-size:12px;width:100%;box-sizing:border-box;font-family:inherit;}',
+    '.pf-toggle{display:flex;gap:4px;}',
+    '.pf-toggle button{flex:1;padding:5px 0;border-radius:7px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.04);color:#8b949e;font-size:10.5px;font-weight:700;cursor:pointer;font-family:inherit;}',
+    '.pf-toggle button.active{background:rgba(88,166,255,0.18);border-color:rgba(88,166,255,0.5);color:#79c0ff;}',
+    '.pf-table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}',
+    '.pf-table{width:100%;border-collapse:collapse;font-size:10.2px;}',
+    '.pf-table th{text-align:left;color:#8b949e;font-size:8.6px;text-transform:uppercase;letter-spacing:0.4px;padding:4px 3px;border-bottom:1px solid rgba(255,255,255,0.1);cursor:pointer;user-select:none;white-space:nowrap;}',
+    '.pf-table th.num,.pf-table td.num{text-align:right;}',
+    '.pf-table td{padding:5px 3px;border-bottom:1px solid rgba(255,255,255,0.045);white-space:nowrap;}',
+    '.pf-pnl-stack{display:inline-flex;flex-direction:column;align-items:flex-end;line-height:1.25;}',
+    '.pf-sub3{font-size:8.8px;color:#8b949e;}',
+    '.pf-liq{font-size:9.3px;color:#8b949e;}',
+    '.pf-liqb{display:inline-block;font-size:8.4px;font-weight:800;letter-spacing:0.4px;padding:1px 6px;border-radius:6px;margin:0 2px;font-variant-numeric:tabular-nums;}',
+    '.pf-liqb.lv0{color:#7ee787;background:rgba(63,185,80,0.14);}',
+    '.pf-liqb.lv1{color:#e3b341;background:rgba(240,180,41,0.16);}',
+    '.pf-liqb.lv2{color:#ffa657;background:rgba(240,136,62,0.18);}',
+    '.pf-liqb.lv3{color:#ff9d94;background:rgba(248,81,73,0.2);}',
+    '.pf-check{display:flex;gap:8px;align-items:flex-start;margin-top:8px;font-size:9.8px;line-height:1.45;color:#8b949e;cursor:pointer;}',
+    '.pf-check input{margin:1px 0 0;accent-color:#58a6ff;flex:0 0 auto;width:13px;height:13px;}',
+    '.pf-check b{color:#c9d1d9;}',
+    '.pf-sheet input[type=number],.pf-sheet input[type=text],.pf-sheet select{background:#0d1117;border:1px solid rgba(255,255,255,.16);color:#e6edf3;border-radius:7px;}',
+    '.pf-sheet select{-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=%27http://www.w3.org/2000/svg%27 width=%278%27 height=%276%27><path d=%27M1 1l3 3 3-3%27 stroke=%27%238b949e%27 stroke-width=%271.4%27 fill=%27none%27/></svg>");background-repeat:no-repeat;background-position:right 7px center;padding-right:20px;}',
+    '.pf-sheet select option{background:#0d1117;color:#e6edf3;}',
+    '.pf-sheet input[type=checkbox]{-webkit-appearance:none;appearance:none;width:15px;height:15px;border:1.5px solid rgba(255,255,255,.28);border-radius:4px;background:#0d1117;position:relative;cursor:pointer;margin:1px 0 0;flex:0 0 auto;transition:background .12s,border-color .12s;}',
+    '.pf-sheet input[type=checkbox]:hover{border-color:rgba(255,255,255,.45);}',
+    '.pf-sheet input[type=checkbox]:checked{background:#1f6feb;border-color:#1f6feb;}',
+    '.pf-sheet input[type=checkbox]:checked::after{content:"✓";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:800;line-height:1;}',
+    '.pf-cf-grid{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:11px;margin-bottom:4px;}',
+    '.pf-cf-grid .k{color:#8b949e;white-space:nowrap;}',
+    '.pf-cf-grid .v{text-align:right;color:#e6edf3;font-weight:600;}',
+    '.pf-cf-sep{border-top:1px solid rgba(255,255,255,0.08);margin:7px 0;}',
+    '.pf-cf-note{font-size:9.6px;color:#8b949e;line-height:1.5;margin-top:5px;}',
+    '.pf-cf-note.warn{color:#f0b429;}',
+    '.pf-cf-slip{display:flex;justify-content:space-between;font-size:10.5px;margin-top:6px;color:#c9d1d9;}',
+    '.pf-slide{position:relative;height:44px;border-radius:11px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);margin:2px 0 9px;overflow:hidden;user-select:none;-webkit-user-select:none;}',
+    '.pf-slide.snap .pf-slide-knob{transition:transform 0.18s ease;}',
+    '.pf-slide.snap .pf-slide-fill{transition:width 0.18s ease;}',
+    '.pf-slide-fill{position:absolute;left:0;top:0;bottom:0;width:0;pointer-events:none;}',
+    '.pf-slide-hint{position:absolute;left:0;right:0;top:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:700;color:#c9d1d9;letter-spacing:0.4px;pointer-events:none;white-space:nowrap;}',
+    '.pf-slide-knob{position:absolute;left:2px;top:2px;bottom:2px;width:58px;border-radius:9px;background:#58a6ff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;color:rgba(0,0,0,0.72);cursor:grab;touch-action:none;box-shadow:0 2px 10px rgba(0,0,0,0.45);}',
+    '.pf-slide.done .pf-slide-knob{cursor:default;}',
+    '.pf-table tr.pf-nav{cursor:pointer;}',
+    '.pf-table tr.pf-nav:hover{background:rgba(88,166,255,0.07);}',
+    '.pf-cash td{color:#8b949e;}',
+    '.pf-confirm{position:fixed;inset:0;z-index:10400;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;padding:18px;}',
+    '.pf-confirm-box{width:min(410px,100%);max-height:calc(100% - 8px);overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;background:#161b22;border:1px solid rgba(255,255,255,0.14);border-radius:13px;padding:13px;box-shadow:0 16px 48px rgba(0,0,0,0.6);}',
+    '.pf-confirm-t{font-size:13px;font-weight:800;margin-bottom:7px;}',
+    '.pf-confirm-b{font-size:11.5px;color:#c9d1d9;line-height:1.5;margin-bottom:11px;}',
+    '.pf-confirm-b b{color:#e6edf3;}',
+    '.pf-confirm-btns{display:flex;gap:8px;}',
+    '.pf-confirm-btns .pf-btn{padding:8px 0;}',
+    '.pf-inline input{width:100%;margin-top:6px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.16);border-radius:7px;color:#e6edf3;padding:7px 8px;font-size:13px;box-sizing:border-box;font-family:inherit;}',
+    '.pf-confirm .pf-confirm-t{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}',
+    '.pf-mkt-tag{font-size:8px;font-weight:800;letter-spacing:.7px;padding:1px 6px;border-radius:5px;line-height:1.5;background:rgba(88,166,255,0.14);color:#79c0ff;border:1px solid rgba(88,166,255,0.35);flex:0 0 auto;}',
+    '.pf-confirm .pf-confirm-b > * + *{margin-top:9px;}',
+    '.pf-confirm .pf-inline input{margin-top:0;}',
+    '.pf-confirm .pf-cf-grid{margin-bottom:0;}',
+    '.pf-xcell{width:24px;text-align:center;padding-right:2px !important;}',
+    '.pf-xcell button{width:20px;height:20px;padding:0;line-height:1;border-radius:6px;font-size:11px;}',
+    '.pf-pos[data-sym]{cursor:pointer;}',
+    '.pf-table tr,.pf-pos{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;}',
+    // coin card (long-press a table row / a position row)
+    '.pf-cm-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:10300;display:flex;align-items:flex-end;justify-content:center;}',
+    '.pf-cm{width:min(380px,100%);max-height:86dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;background:#161b22;border:1px solid rgba(255,255,255,0.14);border-bottom:none;border-radius:16px 16px 0 0;padding:12px 12px calc(14px + env(safe-area-inset-bottom,0px));box-shadow:0 -12px 44px rgba(0,0,0,0.65);font-family:-apple-system,\'Segoe UI\',system-ui,sans-serif;color:#e6edf3;font-size:12px;animation:lpCmIn .2s ease-out;}',
+    '@keyframes lpCmIn{from{opacity:0;transform:translateY(24px);}to{opacity:1;transform:translateY(0);}}',
+    '@media (min-width:540px){.pf-cm-backdrop{align-items:center;padding:18px;}.pf-cm{border-radius:14px;border-bottom:1px solid rgba(255,255,255,0.14);padding-bottom:14px;}}',
+    '.pf-cm-h{display:flex;align-items:center;gap:9px;margin-bottom:2px;}',
+    '.pf-cm-title{font-size:15px;font-weight:800;letter-spacing:0.3px;flex:1;min-width:0;}',
+    '.pf-cm-title small{font-size:9.5px;font-weight:600;color:#8b949e;letter-spacing:0.2px;margin-left:6px;}',
+    '.pf-cm-sec{margin-top:10px;padding-top:9px;border-top:1px solid rgba(255,255,255,0.07);}',
+    '.pf-cm-h2{font-size:9.5px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:#8b949e;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;gap:8px;}',
+    '.pf-cm-grid{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:11px;margin-bottom:7px;}',
+    '.pf-cm-grid .k{color:#8b949e;white-space:nowrap;}',
+    '.pf-cm-grid .v{text-align:right;font-weight:600;}',
+    '.pf-inl{width:100%;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.16);border-radius:7px;color:#e6edf3;padding:6px 8px;font-size:12px;box-sizing:border-box;font-family:inherit;}',
+    // V355 addition: exchange tag on rows
+    '.lp-extag{display:inline-block;font-size:8px;font-weight:800;letter-spacing:.5px;padding:0 5px;border-radius:5px;background:rgba(255,255,255,0.07);color:#8b949e;margin-left:5px;vertical-align:1px;}',
+    '.lp-busy{font-size:10px;color:#8b949e;padding:4px 2px;}',
+].join('\n');
+function ensureLpCss() {
+    if (document.getElementById('lp-style')) return;
+    var st = document.createElement('style');
+    st.id = 'lp-style';
+    st.textContent = LP_CSS;
+    try { (document.head || document.documentElement).appendChild(st); } catch (_) {}
 }
-// V354: renderTrade() removed — the form renders inside the unified
-// portfolio sheet via _trFormHtml/_trWireForm above.
 
+// ── helpers (pf-style formatting, local to this module) ──
+function lpcSign(v) { return v > 1e-7 ? 'up' : (v < -1e-7 ? 'down' : ''); }
+function lpfMoney(v) {
+    if (v == null || !isFinite(v)) return '—';
+    return (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function lpfMoneySign(v) { return (v >= 0 ? '+' : '') + lpfMoney(v); }
+function lpfMoneyC(v) {
+    if (v == null || !isFinite(v)) return '—';
+    var a = Math.abs(v);
+    var s = a.toLocaleString('en-US', { minimumFractionDigits: a >= 1000 ? 0 : 2, maximumFractionDigits: a >= 1000 ? 0 : 2 });
+    return (v < 0 ? '-' : '') + '$' + s;
+}
+function lpfPx(v) {
+    if (v == null || !isFinite(v)) return '—';
+    var a = Math.abs(v);
+    if (a >= 1000) return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    if (a >= 1) return v.toFixed(3);
+    if (a >= 0.01) return v.toFixed(4);
+    return v.toPrecision(4);
+}
+function lpfQty(v) {
+    if (v == null || !isFinite(v)) return '—';
+    var a = Math.abs(v);
+    if (a >= 1000) return v.toLocaleString('en-US', { maximumFractionDigits: 0 });
+    if (a >= 1) return String(+(v.toFixed(3)));
+    return String(+(v.toPrecision(4)));
+}
+function lpfPct(v) { if (v == null || !isFinite(v)) return '—'; return (v >= 0 ? '+' : '') + v.toFixed(2) + '%'; }
+function lpCF(k, v) { return '<div class="k">' + k + '</div><div class="v">' + v + '</div>'; }
+function lpDtm(t) {
+    var d = new Date(t), mn = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];
+    return d.getDate() + ' ' + mn + ' ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+}
 
+// ── state ──
+var LP = { open: false, root: null, setRoot: null, setOpen: false, confirmEl: null, cm: null,
+           posSide: 'long', ordSide: 'buy', sliding: false, sortKey: 'value', sortDir: -1,
+           autoTimer: null, busy: false };
+var LP_HIST_LS = 'ce_lp_eq_hist_v1';
+var LP_SET_LS = 'ce_lp_set_v1';
+var LP_EQ_MAX = 420;
+var LP_MIN_NOTIONAL = 10;   // как в Симе: минимальная нога ребаланса/байбека
+function lpLoadSet() { try { return JSON.parse(localStorage.getItem(LP_SET_LS)) || {}; } catch (_) { return {}; } }
+function lpSaveSet(s) { try { localStorage.setItem(LP_SET_LS, JSON.stringify(s)); } catch (_) {} }
+function lpSet() { var s = lpLoadSet(); if (s.auto == null) s.auto = true; return s; }
+function lpLoadHist() { try { var h = JSON.parse(localStorage.getItem(LP_HIST_LS)); return Array.isArray(h) ? h : []; } catch (_) { return []; } }
+function lpSaveHist(h) { try { localStorage.setItem(LP_HIST_LS, JSON.stringify(h.slice(-LP_EQ_MAX))); } catch (_) {} }
+function lpTotal() {
+    var t = 0;
+    (PORT.rows || []).forEach(function (r) { if (r.ok && isFinite(r.d.total)) t += r.d.total; });
+    return t;
+}
+function lpPushPoint() {
+    var v = lpTotal();
+    if (!(v > 0)) return;
+    var h = lpLoadHist();
+    var last = h[h.length - 1];
+    if (last && Math.abs(last.v - v) < 1e-9 && Date.now() - last.t < 59500) return;
+    h.push({ t: Date.now(), v: v });
+    lpSaveHist(h);
+}
+
+// ── confirm = SLIDE-TO-CONFIRM (побайтовая копия pf-confirm из Сим-модалки) ──
+function lpHideConfirm() {
+    if (LP.confirmEl) { try { LP.confirmEl.remove(); } catch (_) {} LP.confirmEl = null; }
+}
+function lpConfirm(title, bodyHtml, yesLabel, cb, opts) {
+    ensureLpCss();
+    lpHideConfirm();
+    var col = (opts && opts.color) || '#58a6ff';
+    var el = document.createElement('div');
+    el.className = 'pf-confirm';
+    var _mktTag = (opts && opts.mkt) ? '<span class="pf-mkt-tag">' + esc(String(opts.mkt)) + '</span>' : '';
+    el.innerHTML = '<div class="pf-confirm-box"><div class="pf-confirm-t">' + esc(title) + _mktTag + '</div>' +
+        '<div class="pf-confirm-b">' + bodyHtml + '</div>' +
+        '<div class="pf-slide"><div class="pf-slide-fill"></div>' +
+        '<div class="pf-slide-hint">' + esc(yesLabel || 'Confirm') + ' · slide →</div>' +
+        '<div class="pf-slide-knob">»</div></div>' +
+        '<div class="pf-confirm-btns"><button type="button" class="pf-btn ghost">Cancel</button></div></div>';
+    document.body.appendChild(el);
+    LP.confirmEl = el;
+    el.querySelector('.pf-confirm-btns button').addEventListener('click', lpHideConfirm);
+    el.addEventListener('pointerdown', function (e) { if (e.target === el) lpHideConfirm(); });
+    var track = el.querySelector('.pf-slide'), fill = el.querySelector('.pf-slide-fill'),
+        knob = el.querySelector('.pf-slide-knob'), hint = el.querySelector('.pf-slide-hint');
+    knob.style.background = col;
+    fill.style.background = (function (hex, a) {
+        var h = String(hex).replace('#', '');
+        var n = parseInt(h, 16);
+        return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+    })(col, 0.26);
+    var cur = 0, startX = 0, max = 1, dragging = false, done = false;
+    function measure() { max = Math.max(1, track.clientWidth - knob.offsetWidth - 4); }
+    function setX(x, anim) {
+        cur = Math.max(0, Math.min(max, x));
+        if (anim) track.classList.add('snap'); else track.classList.remove('snap');
+        knob.style.transform = 'translateX(' + cur + 'px)';
+        fill.style.width = (cur + knob.offsetWidth - 4) + 'px';
+        hint.style.opacity = String(Math.max(0.25, 1 - (cur / max) * 1.4));
+    }
+    function finish() {
+        if (done) return;
+        done = true; dragging = false;
+        track.classList.add('done');
+        hint.textContent = '✓ ' + (yesLabel || 'Confirmed');
+        hint.style.opacity = '1';
+        setTimeout(function () { var c = LP.confirmEl; lpHideConfirm(); if (cb) cb(c || el); }, 220);
+    }
+    knob.addEventListener('pointerdown', function (e) {
+        if (done) return;
+        measure();
+        dragging = true;
+        startX = e.clientX - cur;
+        track.classList.remove('snap');
+        try { knob.setPointerCapture(e.pointerId); } catch (_) {}
+        e.preventDefault();
+    });
+    knob.addEventListener('pointermove', function (e) {
+        if (!dragging || done) return;
+        setX(e.clientX - startX, false);
+        if (cur >= max) finish();
+    });
+    function release(e) {
+        if (!dragging || done) return;
+        dragging = false;
+        if (cur >= max * 0.92) finish();
+        else setX(0, true);
+        try { if (e && e.pointerId !== undefined && knob.hasPointerCapture && knob.hasPointerCapture(e.pointerId)) knob.releasePointerCapture(e.pointerId); } catch (_) {}
+    }
+    knob.addEventListener('pointerup', release);
+    knob.addEventListener('pointercancel', release);
+    el._lpSlideDone = finish;
+}
+
+// ── aggregate view:PORT → один «бумажному виду»-подобный портфель ──
+function lpView() {
+    var v = { labels: [], total: 0, cash: 0, tokens: 0, locked: 0, coins: [], positions: [], orders: [], notes: [], bitunix: false, bybit: false };
+    var coinMap = {};
+    (PORT.rows || []).forEach(function (r) {
+        if (!r.ok) { v.notes.push(r.exchange + ': ' + (r.err || 'request failed')); return; }
+        v.labels.push(r.exchange);
+        if (r.exchange === 'Bitunix') v.bitunix = true; else v.bybit = true;
+        v.total += r.d.total || 0;
+        (r.d.assets || []).forEach(function (a) {
+            var usd = isFinite(a.usd) ? a.usd : 0;
+            if (BITUNIX_USD_STABLES[a.coin]) { v.cash += usd; return; }
+            if (!(usd > 0)) return;
+            var prev = coinMap[a.coin];
+            if (prev) { prev.qty += (a.avail + a.locked); prev.usd += usd; prev.ex.push(r.exchange); }
+            else coinMap[a.coin] = { coin: a.coin, qty: a.avail + a.locked, usd: usd, ex: [r.exchange] };
+        });
+        (r.d.positions || []).forEach(function (p) {
+            var q = Object.assign({}, p);
+            q.ex = r.exchange;
+            v.positions.push(q);
+        });
+        (r.d.orders || []).forEach(function (o) {
+            var q = Object.assign({}, o);
+            q.ex = r.exchange;
+            v.orders.push(q);
+        });
+        (r.d.notes || []).forEach(function (n) { v.notes.push(r.exchange + ' · ' + n); });
+    });
+    Object.keys(coinMap).forEach(function (k) {
+        var c = coinMap[k];
+        c.px = c.qty > 0 ? c.usd / c.qty : NaN;
+        v.coins.push(c);
+    });
+    v.coins.sort(function (a, b) { return b.usd - a.usd; });
+    v.coins.forEach(function (c) { v.tokens += c.usd; });
+    v.coins.forEach(function (c) { if (c.ex.length) v.locked += 0; });
+    // locked: сумма locked-частей не-стейблов (из assets напрямую)
+    (PORT.rows || []).forEach(function (r) {
+        if (!r.ok) return;
+        (r.d.assets || []).forEach(function (a) {
+            if (BITUNIX_USD_STABLES[a.coin]) return;
+            var px = null;
+            for (var i = 0; i < v.coins.length; i++) if (v.coins[i].coin === a.coin) px = v.coins[i].px;
+            if (isFinite(a.locked) && a.locked > 0 && isFinite(px)) v.locked += a.locked * px;
+        });
+    });
+    return v;
+}
+function lpPxFor(sym) {
+    var base = String(sym || '').toUpperCase().replace(/USDT$/, '');
+    var v = lpView();
+    for (var i = 0; i < v.coins.length; i++) if (v.coins[i].coin === base && isFinite(v.coins[i].px)) return v.coins[i].px;
+    for (var j = 0; j < v.positions.length; j++) {
+        if (v.positions[j].symbol === String(sym).toUpperCase()) {
+            var p = v.positions[j];
+            if (isFinite(p.mark) && p.mark > 0) return p.mark;
+            if (isFinite(p.entry) && p.entry > 0) return p.entry;
+        }
+    }
+    return NaN;
+}
+function lpSymOptions() {
+    var set = {};
+    ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'TON'].forEach(function (c) { set[c + 'USDT'] = 1; });
+    (PORT.rows || []).forEach(function (r) {
+        if (!r.ok) return;
+        (r.d.positions || []).forEach(function (p) { set[p.symbol] = 1; });
+        (r.d.orders || []).forEach(function (o) { set[o.symbol] = 1; });
+        (r.d.assets || []).forEach(function (a) { if (!BITUNIX_USD_STABLES[a.coin]) set[a.coin + 'USDT'] = 1; });
+    });
+    return Object.keys(set).sort();
+}
+function lpUpdateSymSelects() {
+    var opts = lpSymOptions();
+    ['lpPosSym', 'lpOrdSym'].forEach(function (id) {
+        var sel = document.getElementById(id);
+        if (!sel) return;
+        var cur = sel.value;
+        var html = opts.map(function (s) { return '<option value="' + s + '"' + (s === cur ? ' selected' : '') + '>' + s.replace(/USDT$/, '') + '</option>'; }).join('');
+        sel.innerHTML = html;
+        if (cur && opts.indexOf(cur) >= 0) sel.value = cur;
+    });
+}
+
+// ── open/close ──
+function lpOpen() {
+    ensureLpCss();
+    if (LP.root) { lpClose(); return; }   // toggle
+    lpBuild();
+    LP.root.classList.add('open');
+    LP.open = true;
+    lpRender();
+    lpUpdateSymSelects();
+    // V355b: prefill BOTH form symbols from the chart (like the V352 ⚡ modal
+    //   did) — otherwise the select falls to the first alphabetical symbol
+    //   (ADAUSDT) which usually has no live price yet.
+    var pref = _chartFutsSymbol();
+    if (pref) {
+        ['lpPosSym', 'lpOrdSym'].forEach(function (id) {
+            var sel = document.getElementById(id);
+            if (!sel) return;
+            var has = false;
+            for (var i = 0; i < sel.options.length; i++) if (sel.options[i].value === pref) has = true;
+            if (has) sel.value = pref;
+            else {
+                var o = document.createElement('option');
+                o.value = pref; o.textContent = pref.replace(/USDT$/, '');
+                sel.insertBefore(o, sel.firstChild);
+                sel.value = pref;
+            }
+        });
+        lpSyncOrdPrice();
+    }
+    if (!PORT.rows || (Date.now() - (PORT.ts || 0) > 60000)) lpRefresh(true);
+    else { lpPushPoint(); lpRender(); }
+    lpAutoStart();
+}
+function lpClose() {
+    lpHideConfirm();
+    lpCloseCoinModal();
+    lpCloseSet();
+    if (LP.autoTimer) { clearInterval(LP.autoTimer); LP.autoTimer = null; }
+    if (LP.root) { try { LP.root.remove(); } catch (_) {} LP.root = null; }
+    LP.open = false;
+}
+function lpRefresh(silent) {
+    if (PORT.busy) return Promise.resolve(PORT);
+    return refreshPortfolio().then(function () {
+        lpPushPoint();
+        lpRender();
+        lpUpdateSymSelects();
+    }, function (e) {
+        lpRender();
+        if (!silent) showToastSafe('Refresh failed: ' + e.message);
+    });
+}
+function lpAutoStart() {
+    if (LP.autoTimer) clearInterval(LP.autoTimer);
+    LP.autoTimer = null;
+    if (!lpSet().auto) return;
+    LP.autoTimer = setInterval(function () { if (LP.open) lpRefresh(true); }, 30000);
+}
+
+// ── modal shell: ПОБАЙТОВАЯ КОПИЯ buildShell Сим-модалки (id → lp*) ──
+function lpBuild() {
+    var root = document.createElement('div');
+    root.className = 'pf-backdrop';
+    var opts = lpSymOptions().map(function (s) { return '<option value="' + s + '">' + s.replace(/USDT$/, '') + '</option>'; }).join('');
+    if (!opts) opts = '<option value="BTCUSDT">BTC</option>';
+    root.innerHTML =
+        '<div class="pf-sheet">' +
+          '<div class="pf-head"><div class="pf-title">💼 Portfolio<span class="pf-sub" id="lpSub">live</span></div>' +
+          '<div style="display:flex;gap:6px;align-items:center;flex:0 0 auto;">' +
+          '<button type="button" class="pf-x" id="lpGear" title="Live portfolio settings">⚙</button>' +
+          '<button type="button" class="pf-x" id="lpRefresh" title="Refresh — balances, positions & orders">↻</button>' +
+          '<button type="button" class="pf-x" id="lpCloseX">✕</button></div></div>' +
+          '<div class="pf-body">' +
+            '<div id="lpSummary"></div>' +
+            '<div class="pf-chart-wrap"><canvas id="lpPnl"></canvas><div class="pf-chart-cap" id="lpPnlCap"></div></div>' +
+            '<div class="pf-sec"><div class="pf-sec-h">Allocation — tokens ⇄ USDT</div>' +
+              '<div class="pf-slider-row"><span class="pf-sl-lab">USDT<b id="lpSlUsdt"></b></span>' +
+              '<input type="range" id="lpSlider" min="0" max="100" step="1" value="0">' +
+              '<span class="pf-sl-lab">Tokens<b id="lpSlTok"></b></span></div>' +
+              '<div class="pf-sl-hint" id="lpSlHint"></div>' +
+              '<div class="pf-btnrow"><button type="button" id="lpPause" class="pf-btn warn">⏸ Pause → all USDT</button></div>' +
+              '<label class="pf-check"><input type="checkbox" id="lpPausePos">' +
+              '<span>Also <b>close longs &amp; shorts</b> at market (Bitunix positions &amp; pending orders are closed/cancelled).</span></label>' +
+            '</div>' +
+            '<div class="pf-sec"><div class="pf-sec-h">Positions <button type="button" id="lpPosNew" class="pf-mini">＋ New</button></div>' +
+              '<div id="lpPosForm" class="pf-form" style="display:none">' +
+                '<div class="pf-grid"><label>Coin</label><select id="lpPosSym">' + opts + '</select>' +
+                '<label>Side</label><div class="pf-toggle" id="lpPosSide"><button type="button" data-v="long" class="active">Long</button><button type="button" data-v="short">Short</button></div>' +
+                '<label>Margin, USDT</label><input id="lpPosMargin" type="number" min="10" step="10" value="200">' +
+                '<label>Leverage</label><select id="lpPosLev"><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option><option value="5" selected>5×</option><option value="10">10×</option><option value="20">20×</option></select>' +
+                '<label>Take profit %</label><input id="lpPosTp" type="number" step="0.5" min="0" value="10">' +
+                '<label>Stop loss %</label><input id="lpPosSl" type="number" step="0.5" min="0" value="5"></div>' +
+                '<button type="button" id="lpPosGo" class="pf-btn ok wide">Open position</button>' +
+              '</div>' +
+              '<div id="lpPosList"></div>' +
+            '</div>' +
+            '<div class="pf-sec"><div class="pf-sec-h">Limit orders <button type="button" id="lpOrdNew" class="pf-mini">＋ New</button></div>' +
+              '<div id="lpOrdForm" class="pf-form" style="display:none">' +
+                '<div class="pf-grid"><label>Coin</label><select id="lpOrdSym">' + opts + '</select>' +
+                '<label>Side</label><div class="pf-toggle" id="lpOrdSide"><button type="button" data-v="buy" class="active">Buy</button><button type="button" data-v="sell">Sell</button></div>' +
+                '<label>Amount, USDT</label><input id="lpOrdAmount" type="number" min="10" step="10" value="150">' +
+                '<label>Limit price</label><input id="lpOrdPrice" type="number" step="0.00000001"></div>' +
+                '<button type="button" id="lpOrdGo" class="pf-btn ok wide">Place limit order</button>' +
+              '</div>' +
+              '<div id="lpOrdList"></div>' +
+            '</div>' +
+            '<div class="pf-sec"><div class="pf-sec-h">Allocations</div>' +
+              '<div class="pf-table-scroll"><table class="pf-table"><thead id="lpThead"></thead><tbody id="lpTbody"></tbody></table></div>' +
+              '<div class="pf-sl-hint" style="margin-top:6px">Tap — fill the order forms · <b>long-press</b> — coin card · ✕ — sell all (SPOT market).</div>' +
+            '</div>' +
+            '<div id="lpNotes"></div>' +
+          '</div>' +
+          '<div class="pf-foot"><span class="pf-note" id="lpFootNote">Live portfolio — real exchange account</span>' +
+          '<button type="button" id="lpReset" class="pf-mini">Reset</button></div>' +
+        '</div>';
+    document.body.appendChild(root);
+    LP.root = root;
+
+    root.querySelector('#lpCloseX').addEventListener('click', lpClose);
+    root.addEventListener('pointerdown', function (e) { if (e.target === root) lpClose(); });
+    document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        if (LP.confirmEl) { lpHideConfirm(); return; }
+        if (LP.cm) { lpCloseCoinModal(); return; }
+        if (LP.setOpen) { lpCloseSet(); return; }
+        if (LP.open) lpClose();
+    });
+
+    // allocation slider — как в Симе: input двигает лейблы, change → подтверждение
+    var sl = document.getElementById('lpSlider');
+    sl.addEventListener('input', function () {
+        LP.sliding = true;
+        var pct = +sl.value;
+        var v = lpView();
+        var total = v.cash + v.tokens;
+        document.getElementById('lpSlTok').textContent = lpfMoney(total * pct / 100) + ' (' + pct + '%)';
+        document.getElementById('lpSlUsdt').textContent = lpfMoney(total - total * pct / 100);
+    });
+    sl.addEventListener('change', function () { LP.sliding = false; lpSliderCommit(+sl.value); });
+
+    var chk = document.getElementById('lpPausePos');
+    chk.addEventListener('change', function () { var s = lpSet(); s.pauseClosePos = !!chk.checked; lpSaveSet(s); });
+    document.getElementById('lpGear').addEventListener('click', lpOpenSet);
+    document.getElementById('lpRefresh').addEventListener('click', function () { lpRefresh(false); });
+    document.getElementById('lpReset').addEventListener('click', lpResetFlow);
+    document.getElementById('lpPause').addEventListener('click', lpPauseFlow);
+
+    document.getElementById('lpPosNew').addEventListener('click', function () {
+        var f = document.getElementById('lpPosForm');
+        f.style.display = (f.style.display === 'none') ? 'block' : 'none';
+    });
+    document.getElementById('lpOrdNew').addEventListener('click', function () {
+        var f = document.getElementById('lpOrdForm');
+        f.style.display = (f.style.display === 'none') ? 'block' : 'none';
+        if (f.style.display === 'block') lpSyncOrdPrice();
+    });
+    lpWireToggle('lpPosSide', 'posSide');
+    lpWireToggle('lpOrdSide', 'ordSide');
+    document.getElementById('lpOrdSym').addEventListener('change', lpSyncOrdPrice);
+    document.getElementById('lpPosGo').addEventListener('click', lpOpenPositionFlow);
+    document.getElementById('lpOrdGo').addEventListener('click', lpLimitOrderFlow);
+}
+function lpWireToggle(id, key) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.querySelectorAll('button').forEach(function (b) {
+        b.addEventListener('click', function () {
+            LP[key] = b.getAttribute('data-v');
+            el.querySelectorAll('button').forEach(function (x) { x.classList.toggle('active', x === b); });
+        });
+    });
+}
+function lpSyncOrdPrice() {
+    var sym = (document.getElementById('lpOrdSym') || {}).value || '';
+    var px = lpPxFor(sym);
+    var inp = document.getElementById('lpOrdPrice');
+    if (inp && isFinite(px) && px > 0 && !inp.value) inp.value = +(px.toFixed(6));
+}
+
+// ── dynamic render (копия renderDynamic Сим-модалки) ──
+function lpRender() {
+    if (!LP.open) return;
+    lpRenderSummary();
+    lpDrawPnl();
+    lpRenderPositions();
+    lpRenderOrders();
+    lpRenderTable();
+    lpSyncSlider();
+    var v = lpView();
+    var sub = document.getElementById('lpSub');
+    if (sub) sub.textContent = 'live' + (v.labels.length ? ' · ' + v.labels.join(' + ') : '');
+    var fn = document.getElementById('lpFootNote');
+    if (fn) fn.textContent = 'Live portfolio — REAL orders' +
+        (v.labels.length ? ' (' + v.labels.join(' + ') + ')' : '') +
+        ' · upd ' + (PORT.ts ? new Date(PORT.ts).toLocaleTimeString() : '—');
+    var nt = document.getElementById('lpNotes');
+    if (nt && v.notes.length) {
+        nt.innerHTML = '<div class="pf-sec"><div class="pf-sec-h">Notes</div>' +
+            v.notes.map(function (n) { return '<div class="pf-sub2">· ' + esc(n) + '</div>'; }).join('') + '</div>';
+    } else if (nt) nt.innerHTML = '';
+}
+
+function lpRenderSummary() {
+    var el = document.getElementById('lpSummary');
+    if (!el) return;
+    var v = lpView();
+    var un = 0, re = 0, hasRe = false;
+    v.positions.forEach(function (p) {
+        if (isFinite(p.uPnl)) un += p.uPnl;
+        if (p.realized != null && isFinite(p.realized)) { re += p.realized; hasRe = true; }
+    });
+    var tokV = v.tokens, cash = Math.max(0, v.cash);
+    var tot = tokV + cash;
+    var share = tot > 0 ? tokV / tot * 100 : 0;
+    el.innerHTML =
+        '<div class="pf-sum-grid">' +
+          '<div class="pf-sum-left">' +
+            '<div class="pf-eq">' + lpfMoney(v.total) + '</div>' +
+            '<div class="pf-chips">' +
+              '<span class="pf-chip ' + lpcSign(un) + '">uPnL ' + lpfMoneySign(un) + '</span>' +
+              '<span class="pf-chip ' + lpcSign(re) + '">realized ' + (hasRe ? lpfMoneySign(re) : '—') + '</span>' +
+            '</div>' +
+            '<div class="pf-sub2">cash ' + lpfMoney(v.cash) + ' · tokens ' + lpfMoney(tokV) + ' (' + share.toFixed(0) + '%) · frozen ' + lpfMoney(v.locked) + '</div>' +
+          '</div>' +
+          '<div class="pf-sum-right"><canvas id="lpPie"></canvas></div>' +
+        '</div>';
+    lpDrawPie(document.getElementById('lpPie'));
+}
+
+var LP_PIE_COLS = ['#f0b429', '#3fb950', '#58a6ff', '#bc8cff', '#ff7b72', '#39c5cf', '#d2a8ff', '#7ee787', '#ffa657', '#79c0ff'];
+function lpDrawPie(cv) {
+    if (!cv) return;
+    var SZ = 108;
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var w2 = Math.round(SZ * dpr);
+    if (cv.width !== w2) { cv.width = w2; cv.height = w2; }
+    cv.style.width = SZ + 'px'; cv.style.height = SZ + 'px';
+    var g = cv.getContext('2d');
+    if (!g) return;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, SZ, SZ);
+    var v = lpView();
+    var usdt = Math.max(0, v.cash);
+    var total = usdt + v.tokens;
+    if (!(total > 0)) return;
+    var cx = SZ / 2, cy = SZ / 2, r1 = SZ / 2 - 3, r0 = r1 - 15;
+    var a0 = -Math.PI / 2;
+    function seg(frac, color, label) {
+        var a1 = a0 + frac * Math.PI * 2;
+        g.beginPath();
+        g.moveTo(cx + Math.cos(a0) * r0, cy + Math.sin(a0) * r0);
+        g.arc(cx, cy, r0, a0, a1);
+        g.arc(cx, cy, r1, a1, a0, true);
+        g.closePath();
+        g.fillStyle = color; g.fill();
+        g.strokeStyle = 'rgba(13,17,23,0.9)'; g.lineWidth = 1; g.stroke();
+        if (frac >= 0.09) {
+            var am = (a0 + a1) / 2, rm = (r0 + r1) / 2;
+            g.fillStyle = '#0d1117';
+            g.font = '700 8.5px -apple-system, system-ui, sans-serif';
+            g.textAlign = 'center'; g.textBaseline = 'middle';
+            g.fillText(label, cx + Math.cos(am) * rm, cy + Math.sin(am) * rm);
+        }
+        a0 = a1;
+    }
+    for (var i = 0; i < v.coins.length; i++) seg(v.coins[i].usd / total, LP_PIE_COLS[i % LP_PIE_COLS.length], v.coins[i].coin);
+    if (usdt > 0) seg(usdt / total, '#6e7681', 'USDT');
+    g.fillStyle = '#e6edf3';
+    g.font = '700 10.5px -apple-system, system-ui, sans-serif';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('Σ ' + lpfMoney(total).replace('.00', ''), cx, cy);
+}
+
+// PnL-кривая: equity-снапшоты (localStorage), значение = total − базовая точка
+function lpDrawPnl() {
+    var cv = document.getElementById('lpPnl'), cap = document.getElementById('lpPnlCap');
+    if (!cv) return;
+    var W = cv.clientWidth || 320, H = cv.clientHeight || 118;
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var w2 = Math.round(W * dpr), h2 = Math.round(H * dpr);
+    if (cv.width !== w2 || cv.height !== h2) { cv.width = w2; cv.height = h2; }
+    var g = cv.getContext('2d');
+    if (!g) return;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, W, H);
+    var raw = lpLoadHist();
+    var h = raw.map(function (p) { return { t: p.t, v: p.v - raw[0].v }; });
+    if (cap) cap.textContent = 'PnL since first snapshot — ' + raw.length + ' pt' + (raw.length === 1 ? '' : 's') + ' (this device · every open/refresh appends)';
+    if (!h || h.length < 2) {
+        g.fillStyle = '#6e7681';
+        g.font = '500 10.5px -apple-system, system-ui, sans-serif';
+        g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText('PnL history builds from your refresh snapshots', W / 2, H / 2);
+        return;
+    }
+    var lo = Infinity, hi = -Infinity, i;
+    for (i = 0; i < h.length; i++) { if (h[i].v < lo) lo = h[i].v; if (h[i].v > hi) hi = h[i].v; }
+    var span = hi - lo;
+    if (lo > 0 && lo <= span * 1.2) lo = 0;
+    if (hi < 0 && -hi <= span * 1.2) hi = 0;
+    var pad = (hi - lo) * 0.12 || Math.abs(hi) * 0.01 || 1;
+    lo -= pad; hi += pad;
+    var x0 = 6, x1 = W - 6, y0 = 8, y1 = H - 14;
+    var t0 = h[0].t, t1 = h[h.length - 1].t;
+    function X(t) { return x0 + (t - t0) / Math.max(1, t1 - t0) * (x1 - x0); }
+    function Y(v) { return y1 - (v - lo) / Math.max(1e-9, hi - lo) * (y1 - y0); }
+    var up = h[h.length - 1].v >= 0;
+    var col = up ? '#3fb950' : '#f85149';
+    var yZero = Math.max(y0, Math.min(y1, Y(0)));
+    g.beginPath();
+    for (i = 0; i < h.length; i++) { var x = X(h[i].t), y = Y(h[i].v); if (i === 0) g.moveTo(x, y); else g.lineTo(x, y); }
+    var lastX = X(t1), lastY = Y(h[h.length - 1].v);
+    g.lineTo(lastX, yZero); g.lineTo(X(h[0].t), yZero); g.closePath();
+    var topY = Math.min(yZero, Y(h[0].v));
+    for (i = 0; i < h.length; i++) { var yt = Y(h[i].v); if (yt < topY) topY = yt; }
+    var grd = g.createLinearGradient(0, topY, 0, yZero);
+    grd.addColorStop(0, up ? 'rgba(63,185,80,0.30)' : 'rgba(248,81,73,0.30)');
+    grd.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = grd; g.fill();
+    if (Y(0) >= y0 - 1 && Y(0) <= y1 + 1) {
+        g.setLineDash([3, 3]);
+        g.strokeStyle = 'rgba(139,148,158,0.55)'; g.lineWidth = 1;
+        g.beginPath(); g.moveTo(x0, Math.round(Y(0)) + 0.5); g.lineTo(x1, Math.round(Y(0)) + 0.5); g.stroke();
+        g.setLineDash([]);
+    }
+    g.beginPath();
+    for (i = 0; i < h.length; i++) { var x3 = X(h[i].t), y3 = Y(h[i].v); if (i === 0) g.moveTo(x3, y3); else g.lineTo(x3, y3); }
+    g.strokeStyle = col; g.lineWidth = 1.6; g.stroke();
+    g.fillStyle = col;
+    g.beginPath(); g.arc(lastX, lastY, 2.6, 0, 7); g.fill();
+    g.font = '600 10px -apple-system, system-ui, sans-serif';
+    g.fillStyle = '#8b949e'; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+    g.fillText(lpDtm(t0), x0 + 1, H - 3);
+    g.textAlign = 'right';
+    g.fillText(lpDtm(t1), x1 - 1, H - 3);
+    g.textAlign = 'left';
+    g.fillStyle = col;
+    g.fillText(lpfMoneySign(h[h.length - 1].v), x0 + 1, y0 + 4);
+    g.textAlign = 'right';
+    g.fillStyle = '#8b949e';
+    g.fillText('min ' + lpfMoney(Math.min.apply(null, h.map(function (p) { return p.v; }))), x1 - 1, y0 + 4);
+}
+
+// ── позиции (копия renderPositions Сим-модалки, данные реальные) ──
+function lpRenderPositions() {
+    var el = document.getElementById('lpPosList');
+    if (!el) return;
+    var v = lpView();
+    if (!v.positions.length) { el.innerHTML = '<div class="pf-empty">No open positions</div>'; return; }
+    var h = '';
+    for (var i = 0; i < v.positions.length; i++) {
+        var p = v.positions[i];
+        var pnl = isFinite(p.uPnl) ? p.uPnl : 0;
+        var pct = p.margin ? pnl / p.margin * 100 : 0;
+        var levN = parseInt(p.lev, 10) || 1;
+        var levTxt = levN > 1 ? ' ' + levN + '×' : '';
+        var mark = (isFinite(p.mark) && p.mark > 0) ? p.mark : p.entry;
+        var liq = isFinite(p.liq) ? p.liq : 0;
+        var liqD = (liq > 0 && p.entry > 0) ? Math.abs(p.entry - liq) / p.entry * 100 : NaN;
+        var dist = (liq > 0 && mark > 0) ? (p.side === 'long' ? (mark - liq) : (liq - mark)) / mark * 100 : NaN;
+        var lv = !isFinite(dist) ? 0 : (dist >= 50 ? 0 : dist >= 25 ? 1 : dist >= 12 ? 2 : 3);
+        var liqBadge = isFinite(dist) ? '<span class="pf-liqb lv' + lv + '">LIQ ' + Math.max(0, dist).toFixed(1) + '%</span>' : '';
+        var liqTxt = liq > 0
+            ? 'Liq ≈ ' + lpfPx(liq) + ' (' + (p.side === 'long' ? '−' : '+') + (isFinite(liqD) ? liqD.toFixed(1) : '—') + '% entry) ' + liqBadge
+            : 'Liq — (no liquidation price · low risk)';
+        var riskTxt = 'risk ' + lpfMoneyC(p.margin || 0);
+        h += '<div class="pf-pos" data-sym="' + esc(p.symbol) + '" data-i="' + i + '">' +
+            '<div class="pf-pos-main">' +
+              '<div><b>' + esc(p.symbol) + '</b> <span class="pf-badge ' + (p.side === 'long' ? 'up' : 'down') + '">' + esc(String(p.side || '').toUpperCase()) + levTxt + '</span><span class="lp-extag">' + esc(p.ex) + '</span></div>' +
+              '<div class="pf-sub2">' + lpfQty(p.size) + ' @ ' + lpfPx(p.entry) + ' · margin ' + lpfMoney(p.margin || 0) + '</div>' +
+              '<div class="pf-sub2">TP ' + (isFinite(p.tp) && p.tp > 0 ? lpfPx(p.tp) : '—') + ' · SL ' + (isFinite(p.sl) && p.sl > 0 ? lpfPx(p.sl) : '—') + '</div>' +
+              '<div class="pf-liq">' + liqTxt + ' · ' + riskTxt + '</div>' +
+            '</div>' +
+            '<div class="pf-pos-side">' +
+              '<div class="pf-pnl ' + lpcSign(pnl) + '">' + lpfMoneySign(pnl) + '</div>' +
+              '<div class="pf-sub2 ' + lpcSign(pnl) + '">' + lpfPct(pct) + '</div>' +
+              '<div class="pf-rowbtns">' +
+                '<button type="button" class="pf-mini" data-pact="tp" data-i="' + i + '">TP</button>' +
+                '<button type="button" class="pf-mini" data-pact="sl" data-i="' + i + '">SL</button>' +
+                '<button type="button" class="pf-mini danger" data-pact="x" data-i="' + i + '">✕</button>' +
+              '</div>' +
+            '</div>' +
+        '</div>';
+    }
+    el.innerHTML = h;
+    var rowsP = el.querySelectorAll('.pf-pos[data-sym]');
+    for (var rp = 0; rp < rowsP.length; rp++) {
+        (function (rowEl) {
+            lpLongPress(rowEl, function () { lpOpenCoinModal(rowEl.getAttribute('data-sym')); });
+        })(rowsP[rp]);
+    }
+    var bs = el.querySelectorAll('button[data-pact]');
+    for (var j = 0; j < bs.length; j++) {
+        (function (b) {
+            b.addEventListener('click', function () {
+                var i2 = +b.getAttribute('data-i'), act = b.getAttribute('data-pact');
+                if (act === 'x') lpClosePosFlow(i2);
+                else lpTpslPrompt(i2, act === 'tp' ? 'tp' : 'sl');
+            });
+        })(bs[j]);
+    }
+}
+
+// ── ордера (копия renderOrders) ──
+function lpRenderOrders() {
+    var el = document.getElementById('lpOrdList');
+    if (!el) return;
+    var v = lpView();
+    if (!v.orders.length) { el.innerHTML = '<div class="pf-empty">No orders</div>'; return; }
+    var h = '';
+    for (var i = 0; i < v.orders.length; i++) {
+        var o = v.orders[i];
+        var px = lpPxFor(o.symbol);
+        var dist = (isFinite(px) && px > 0 && isFinite(o.price) && o.price > 0) ? (o.price / px - 1) * 100 : NaN;
+        h += '<div class="pf-ord">' +
+            '<span class="pf-badge ' + (o.side === 'buy' || o.side === 'Buy' ? 'up' : 'down') + '">' + esc(String(o.side || '').toUpperCase()) + '</span>' +
+            '<b>' + esc(o.symbol) + '</b><span class="lp-extag">' + esc(o.ex) + '</span>' +
+            '<span class="pf-sub2">' + lpfQty(o.qty) + ' @ ' + lpfPx(o.price) + (o.type === 'LIMIT' ? ' · LIMIT' : ' · MARKET') + (isFinite(dist) ? ' · ' + lpfPct(dist) : '') + '</span>' +
+            '<button type="button" class="pf-mini danger" data-oact="x" data-i="' + i + '">✕</button>' +
+        '</div>';
+    }
+    el.innerHTML = h;
+    var bs = el.querySelectorAll('button[data-oact]');
+    for (var j = 0; j < bs.length; j++) {
+        (function (b) {
+            b.addEventListener('click', function () { lpCancelOrderFlow(+b.getAttribute('data-i')); });
+        })(bs[j]);
+    }
+}
+
+// ── allocations (копия renderTable: те же колонки) ──
+var LP_COLS = [
+    { k: 'sym', t: 'Coin' },
+    { k: 'price', t: 'Price' },
+    { k: 'chg', t: '24h' },
+    { k: 'qty', t: 'Qty' },
+    { k: 'value', t: 'Value' },
+    { k: 'share', t: 'Share' },
+    { k: 'pnl', t: 'PnL' },
+];
+function lpRenderTable() {
+    var th = document.getElementById('lpThead'), tb = document.getElementById('lpTbody');
+    if (!th || !tb) return;
+    var h = '<tr>', i;
+    for (i = 0; i < LP_COLS.length; i++) {
+        var c = LP_COLS[i];
+        var arrow = (LP.sortKey === c.k) ? (LP.sortDir < 0 ? ' ↓' : ' ↑') : '';
+        h += '<th data-k="' + c.k + '"' + (c.k === 'chg' || c.k === 'value' || c.k === 'share' || c.k === 'pnl' ? ' class="num"' : '') + '>' + c.t + arrow + '</th>';
+    }
+    h += '<th class="pf-xcell"></th></tr>';
+    th.innerHTML = h;
+    var ths = th.querySelectorAll('th');
+    for (i = 0; i < ths.length; i++) {
+        (function (cell) {
+            if (!cell.getAttribute('data-k')) return;
+            cell.addEventListener('click', function () {
+                var k = cell.getAttribute('data-k');
+                if (LP.sortKey === k) LP.sortDir = -LP.sortDir;
+                else { LP.sortKey = k; LP.sortDir = -1; }
+                lpRenderTable();
+            });
+        })(ths[i]);
+    }
+    var v = lpView();
+    var dust = lpSet().hideDust;
+    var tot = v.cash + v.tokens;
+    var rows = [{ sym: 'USDT', name: '', price: NaN, chg: NaN, qty: Math.max(0, v.cash), value: Math.max(0, v.cash), pnl: NaN, cash: true }];
+    v.coins.forEach(function (c) {
+        if (dust && c.usd < 1) return;
+        rows.push({ sym: c.coin, name: '', price: c.px, chg: NaN, qty: c.qty, value: c.usd, pnl: NaN, ex: c.ex });
+    });
+    var k = LP.sortKey, mul = LP.sortDir;
+    rows.sort(function (a, b) {
+        var av = a[k], bv = b[k];
+        if (k === 'sym') return mul * String(a.sym).localeCompare(String(b.sym));
+        var an = isFinite(av) ? av : -Infinity, bn = isFinite(bv) ? bv : -Infinity;
+        if (an === bn) return (b.value || 0) - (a.value || 0);
+        return mul < 0 ? bn - an : an - bn;
+    });
+    var bh = '';
+    for (var r = 0; r < rows.length; r++) {
+        var rr = rows[r];
+        var share = tot > 0 ? rr.value / tot * 100 : 0;
+        if (rr.cash) {
+            bh += '<tr class="pf-cash"><td><b>USDT</b></td><td class="num">—</td><td class="num">—</td><td class="num">' + lpfQty(rr.qty) + '</td><td class="num">' + lpfMoneyC(rr.value) + '</td><td class="num">' + share.toFixed(1) + '%</td><td class="num">—</td><td class="pf-xcell"></td></tr>';
+        } else {
+            bh += '<tr class="pf-nav" data-coin="' + esc(rr.sym) + '">' +
+                '<td><b>' + esc(rr.sym) + '</b></td>' +
+                '<td class="num">' + lpfPx(rr.price) + '</td>' +
+                '<td class="num">' + (isFinite(rr.chg) ? lpfPct(rr.chg) : '—') + '</td>' +
+                '<td class="num">' + lpfQty(rr.qty) + '</td>' +
+                '<td class="num">' + lpfMoneyC(rr.value) + '</td>' +
+                '<td class="num">' + share.toFixed(1) + '%</td>' +
+                '<td class="num">—</td>' +
+                '<td class="pf-xcell"><button type="button" class="pf-mini danger" data-xsell="' + esc(rr.sym) + '" title="Sell all ' + esc(rr.sym) + '">✕</button></td>' +
+            '</tr>';
+        }
+    }
+    if (rows.length <= 1) bh = '<tr><td colspan="8"><div class="pf-empty">No spot tokens on the saved exchanges</div></td></tr>';
+    tb.innerHTML = bh;
+    var navs = tb.querySelectorAll('tr.pf-nav');
+    for (var n = 0; n < navs.length; n++) {
+        (function (rowEl) {
+            rowEl.addEventListener('click', function (e) {
+                if (e.target.closest('button')) return;
+                var coin = rowEl.getAttribute('data-coin');
+                lpFillForms(coin + 'USDT');
+            });
+            lpLongPress(rowEl, function () { lpOpenCoinModal(rowEl.getAttribute('data-coin')); });
+        })(navs[n]);
+    }
+    var xs = tb.querySelectorAll('button[data-xsell]');
+    for (var q = 0; q < xs.length; q++) {
+        (function (b) {
+            b.addEventListener('click', function () { lpSellCoinFlow(b.getAttribute('data-xsell')); });
+        })(xs[q]);
+    }
+}
+function lpFillForms(sym) {
+    ['lpPosSym', 'lpOrdSym'].forEach(function (id) {
+        var sel = document.getElementById(id);
+        if (sel) {
+            var found = false;
+            for (var i = 0; i < sel.options.length; i++) if (sel.options[i].value === sym) { sel.value = sym; found = true; break; }
+            if (!found) { var o = document.createElement('option'); o.value = sym; o.textContent = sym.replace(/USDT$/, ''); sel.appendChild(o); sel.value = sym; }
+        }
+    });
+    lpSyncOrdPrice();
+    showToastSafe(sym + ' → forms');
+}
+
+// ── slider labels (копия syncSliderLabels) ──
+function lpSyncSlider() {
+    var v = lpView();
+    var tv = v.tokens, cash = Math.max(0, v.cash);
+    var tot = tv + cash;
+    var pct = tot > 0 ? tv / tot * 100 : 0;
+    var sl = document.getElementById('lpSlider');
+    var a = document.getElementById('lpSlUsdt'), b = document.getElementById('lpSlTok'), hint = document.getElementById('lpSlHint');
+    if (sl && !LP.sliding) sl.value = Math.round(pct);
+    if (a) a.textContent = lpfMoney(cash);
+    if (b) b.textContent = lpfMoney(tv) + ' (' + Math.round(pct) + '%)';
+    if (hint) hint.textContent = 'Drag to reallocate — SPOT market orders on the saved exchanges; token ratios preserved. ' + (tot > 0 ? 'Min leg $' + LP_MIN_NOTIONAL + '.' : '');
+}
+
+// ── биржевые WRITE-клиенты (Bitunix futures/spot + Bybit) — по официальным докам ──
+async function lpCred(ex) {
+    var map = await loadKeys();
+    map = map || {};
+    var c = map[ex];
+    if (!c || !c.key || !c.secret) throw new Error((ex === 'bybit' ? 'Bybit' : 'Bitunix') + ': API keys not configured');
+    return c;
+}
+// Bitunix POST /api/v1/futures/trade/cancel_orders {symbol, orderList:[{orderId}]}
+async function cancelFutOrders(orderIds, symbol) {
+    var cred = await lpCred('bitunix');
+    var body = { symbol: String(symbol || '').toUpperCase(), orderList: (orderIds || []).map(function (id) { return { orderId: String(id) }; }) };
+    return bitunixPost('/api/v1/futures/trade/cancel_orders', body, cred);
+}
+// Bitunix POST /api/v1/futures/trade/cancel_all_orders {}
+async function cancelAllFutOrders() {
+    var cred = await lpCred('bitunix');
+    return bitunixPost('/api/v1/futures/trade/cancel_all_orders', {}, cred);
+}
+// Bitunix POST /api/v1/futures/trade/close_all_position {symbol?}
+async function closeAllPositions(symbol) {
+    var cred = await lpCred('bitunix');
+    return bitunixPost('/api/v1/futures/trade/close_all_position', symbol ? { symbol: String(symbol).toUpperCase() } : {}, cred);
+}
+// Bitunix POST /api/v1/futures/tpsl/position/place_order {symbol, positionId, tpPrice?, tpStopType?, slPrice?, slStopType?}
+async function placePosTpsl(symbol, positionId, fields) {
+    var cred = await lpCred('bitunix');
+    var body = { symbol: String(symbol || '').toUpperCase(), positionId: String(positionId) };
+    if (fields.tp != null) { body.tpPrice = String(fields.tp); body.tpStopType = 'MARK_PRICE'; }
+    if (fields.sl != null) { body.slPrice = String(fields.sl); body.slStopType = 'MARK_PRICE'; }
+    return bitunixPost('/api/v1/futures/tpsl/position/place_order', body, cred);
+}
+// Bitunix SPOT POST /api/spot/v1/order/place_order {symbol, side:'2'buy|'1'sell, type:'2'market|'1'limit, volume, price}
+async function spotPlaceOrder(coin, side, volume, type, price) {
+    var cred = await lpCred('bitunix');
+    var body = {
+        symbol: String(coin || '').toUpperCase() + 'USDT',
+        side: side === 'buy' ? '2' : '1',
+        type: type === 'limit' ? '1' : '2',
+        volume: lpNormQty(volume),
+        price: String(type === 'limit' ? price : '0')
+    };
+    return bitunixPost('/api/spot/v1/order/place_order', body, cred, BITUNIX_SPOT_BASE);
+}
+// Bybit POST /v5/order/cancel {category, symbol, orderId}
+async function bybitCancelOrder(symbol, orderId) {
+    var cred = await lpCred('bybit');
+    return bybitPost('/v5/order/cancel', { category: 'linear', symbol: String(symbol).toUpperCase(), orderId: String(orderId) }, cred);
+}
+// Bybit POST /v5/position/trading-stop {category, symbol, takeProfit?, stopLoss?, positionIdx}
+async function bybitTradingStop(symbol, takeProfit, stopLoss, side) {
+    var cred = await lpCred('bybit');
+    var body = { category: 'linear', symbol: String(symbol).toUpperCase() };
+    if (takeProfit != null) body.takeProfit = String(takeProfit);
+    if (stopLoss != null) body.stopLoss = String(stopLoss);
+    body.positionIdx = loadHedge() ? (side === 'short' || side === 'Sell' ? 2 : 1) : 0;
+    return bybitPost('/v5/position/trading-stop', body, cred);
+}
+// Bybit SPOT market POST /v5/order/create {category:'spot', symbol, side, orderType:'Market', qty}
+async function bybitSpotMarket(coin, side, qty) {
+    var cred = await lpCred('bybit');
+    var body = { category: 'spot', symbol: String(coin).toUpperCase() + 'USDT',
+                 side: side === 'buy' ? 'Buy' : 'Sell', orderType: 'Market', qty: lpNormQty(qty) };
+    return bybitPost('/v5/order/create', body, cred);
+}
+function lpNormQty(v) {
+    var n = Number(v);
+    if (!isFinite(n) || n <= 0) throw new Error('qty must be > 0');
+    var s = n >= 1 ? n.toFixed(6) : n.toPrecision(6);
+    s = String(+s);
+    if (!(Number(s) > 0)) throw new Error('qty too small after rounding');
+    return s;
+}
+
+// ── long-press (копия механики Сим-модалки) ──
+function lpLongPress(el, cb) {
+    var t = 0, moved = false, lp = false;
+    function clear() { if (t) { clearTimeout(t); t = 0; } }
+    el.addEventListener('pointerdown', function (e) {
+        moved = false; lp = false;
+        clear();
+        t = setTimeout(function () { lp = true; try { if (navigator.vibrate) navigator.vibrate(15); } catch (_) {} cb(); }, 520);
+        var sx = e.clientX, sy = e.clientY;
+        var up = function () { clear(); el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); };
+        var mv = function (ev) { if (Math.abs(ev.clientX - sx) > 9 || Math.abs(ev.clientY - sy) > 9) { moved = true; clear(); } };
+        el.addEventListener('pointermove', mv);
+        el.addEventListener('pointerup', up);
+        el.addEventListener('pointercancel', up);
+    });
+    el.addEventListener('click', function (e) { if (lp || moved) { e.stopPropagation(); e.preventDefault(); } }, true);
+    el.addEventListener('contextmenu', function (e) { e.preventDefault(); cb(); return false; });
+}
+
+// ── TP/SL на позиции (кнопки TP/SL — биржевой tpsl, слайдер-подтверждение) ──
+function lpTpslPrompt(i, which) {
+    var p = lpView().positions[i];
+    if (!p) return;
+    var mark = (isFinite(p.mark) && p.mark > 0) ? p.mark : p.entry;
+    var cur = which === 'tp' ? p.tp : p.sl;
+    lpConfirm(which === 'tp' ? 'Set Take Profit' : 'Set Stop Loss',
+        '<div>' + esc(p.symbol) + ' ' + esc(String(p.side || '').toUpperCase()) + ' · entry ' + lpfPx(p.entry) + ' · mark ' + lpfPx(mark) + ' · ' + esc(p.ex) + '</div>' +
+        '<div>Current: ' + (isFinite(cur) && cur > 0 ? lpfPx(cur) : 'off') + '</div>' +
+        '<div class="pf-inline"><input id="lpLvlVal" type="number" step="0.00000001" min="0" placeholder="trigger price · blank = off"></div>' +
+        '<div class="pf-cf-note">Bitunix: position TP/SL (market on trigger). Bybit: trading-stop. Real request.</div>',
+        'Slide to apply',
+        function (el) {
+            var raw = (el.querySelector('#lpLvlVal') || {}).value;
+            var val = parseFloat(raw);
+            lpApplyTpsl(p, which, isFinite(val) && val > 0 ? val : 0);
+        }, { color: which === 'tp' ? '#3fb950' : '#f0b429', mkt: 'PERP' });
+}
+function lpApplyTpsl(p, which, val) {
+    var job = (p.ex === 'Bybit')
+        ? bybitTradingStop(p.symbol, which === 'tp' ? val || undefined : (p.tp || undefined), which === 'sl' ? val || undefined : (p.sl || undefined), p.side)
+        : placePosTpsl(p.symbol, p.positionId, which === 'tp' ? { tp: val || undefined } : { sl: val || undefined });
+    job.then(function (r) {
+        showToastSafe((which === 'tp' ? 'TP' : 'SL') + ' set: ' + p.symbol + (val ? ' @ ' + lpfPx(val) : ' — off') + ' (' + p.ex + (r && r.orderId ? ' · tpslId ' + r.orderId : '') + ')');
+        lpRefresh(true);
+    }, function (e) { showToastSafe((which === 'tp' ? 'TP' : 'SL') + ' failed: ' + e.message); });
+}
+
+// ── закрытие позиции (✕) — market reduce-only (placeOrder V352), слайдер ──
+function lpClosePosFlow(i) {
+    var p = lpView().positions[i];
+    if (!p) return;
+    var pnl = isFinite(p.uPnl) ? p.uPnl : 0;
+    var body = '<div class="pf-cf-grid">' +
+        lpCF(p.symbol + ' ' + String(p.side || '').toUpperCase(), lpfQty(p.size) + ' @ ' + lpfPx(p.entry)) +
+        lpCF('PnL now', '<b class="' + lpcSign(pnl) + '">' + lpfMoneySign(pnl) + '</b>') +
+        lpCF('Margin returns', lpfMoney(p.margin || 0)) +
+        lpCF('Exchange', esc(p.ex)) +
+    '</div>' +
+    '<div class="pf-cf-note">MARKET reduce-only order — real close on the exchange.</div>';
+    lpConfirm('Close position?', body, 'Slide to close', function () {
+        var opp = (p.side === 'long') ? 'SELL' : 'BUY';
+        placeOrder({ ex: (p.ex === 'Bybit' ? 'bybit' : 'bitunix'), symbol: p.symbol, side: opp,
+                    type: 'MARKET', qty: p.size, hedge: loadHedge(), reduceOnly: true })
+        .then(function (r) {
+            showToastSafe('Close sent: ' + opp + ' ' + lpfQty(p.size) + ' ' + p.symbol + ' · orderId ' + (r.orderId || '(none)'));
+            lpRefresh(true);
+        }, function (e) { showToastSafe('Close failed: ' + e.message); });
+    }, { color: '#f85149', mkt: 'PERP' });
+}
+
+// ── отмена ордера (✕) — как в Симе, без конфирма ──
+function lpCancelOrderFlow(i) {
+    var o = lpView().orders[i];
+    if (!o) return;
+    var job = (o.ex === 'Bybit') ? bybitCancelOrder(o.symbol, o.orderId) : cancelFutOrders([o.orderId], o.symbol);
+    job.then(function () {
+        showToastSafe('Order cancelled: ' + o.symbol + ' ' + (o.orderId || ''));
+        lpRefresh(true);
+    }, function (e) { showToastSafe('Cancel failed: ' + e.message); });
+}
+
+// ── sell all монеты (✕ в таблице) — спот market, слайдер ──
+function lpSellCoinFlow(coin) {
+    var v = lpView();
+    var legs = [];
+    (PORT.rows || []).forEach(function (r) {
+        if (!r.ok) return;
+        (r.d.assets || []).forEach(function (a) {
+            if (a.coin !== coin || !(a.avail > 0)) return;
+            legs.push({ ex: r.exchange, qty: a.avail, usd: isFinite(a.usd) ? a.usd * (a.avail / Math.max(1e-9, (a.avail + a.locked || 1))) : NaN });
+        });
+    });
+    if (!legs.length) { showToastSafe('No available ' + coin + ' to sell'); return; }
+    var lines = legs.map(function (l) { return lpCF('Sell ' + l.ex, lpfQty(l.qty) + ' ' + esc(coin) + (isFinite(l.usd) ? ' ≈ ' + lpfMoney(l.usd) : '')); }).join('');
+    lpConfirm('Sell all ' + coin + '?', '<div class="pf-cf-grid">' + lines + '</div>' +
+        '<div class="pf-cf-note">SPOT MARKET sell — real orders on the exchanges.</div>',
+        'Slide to sell', function () {
+            var jobs = legs.map(function (l) {
+                return (l.ex === 'Bybit') ? bybitSpotMarket(coin, 'sell', l.qty) : spotPlaceOrder(coin, 'sell', l.qty, 'market');
+            });
+            Promise.all(jobs.map(function (j) { return j.then(function () { return { ok: true }; }, function (e) { return { ok: false, err: e.message }; }); }))
+            .then(function (res) {
+                var ok = res.filter(function (x) { return x.ok; }).length;
+                var bad = res.filter(function (x) { return !x.ok; });
+                showToastSafe('Sold ' + coin + ': ' + ok + ' leg(s)' + (bad.length ? ' · failed: ' + bad[0].err : ''));
+                lpRefresh(true);
+            });
+        }, { color: '#f85149', mkt: 'SPOT' });
+}
+
+// ── Allocation слайдер → реальный ребаланс спотом ──
+function lpSliderCommit(pct) {
+    var v = lpView();
+    var tot = v.cash + v.tokens;
+    if (!(tot > 0)) { showToastSafe('Nothing to reallocate — empty account'); lpSyncSlider(); return; }
+    var legs = [];
+    v.coins.forEach(function (c) {
+        if (!(c.usd > 0)) return;
+        var want = tot * pct / 100 * (c.usd / Math.max(1e-9, v.tokens));
+        var delta = want - c.usd;
+        if (Math.abs(delta) < LP_MIN_NOTIONAL) return;
+        if (delta > 0) legs.push({ side: 'buy', coin: c.coin, usd: delta, px: c.px, ex: c.ex[0] });
+        else legs.push({ side: 'sell', coin: c.coin, usd: -delta, px: c.px, ex: c.ex[0] });
+    });
+    if (!legs.length) {
+        showToastSafe('Nothing to reallocate (all parts below the $' + LP_MIN_NOTIONAL + ' minimum)');
+        lpSyncSlider(); return;
+    }
+    var buys = 0, sells = 0;
+    legs.forEach(function (l) { if (l.side === 'buy') buys += l.usd; else sells += l.usd; });
+    var lines = legs.slice(0, 6).map(function (l) {
+        var vol = l.side === 'buy' ? l.usd / (l.px || 1) : (function (c) { return c.qty * (l.usd / Math.max(1e-9, c.usd)); })(v.coins.filter(function (c) { return c.coin === l.coin; })[0] || {});
+        return '<div>' + (l.side === 'buy' ? 'Buy' : 'Sell') + ' <b>' + lpfQty(vol) + ' ' + esc(l.coin) + '</b> ≈ ' + lpfMoney(l.usd) + ' <span class="pf-sub2">' + esc(l.ex) + '</span></div>';
+    }).join('');
+    if (legs.length > 6) lines += '<div class="pf-sub2">…+' + (legs.length - 6) + ' more</div>';
+    lines += '<div class="pf-cf-note">Buys ' + lpfMoney(buys) + ' · sells ' + lpfMoney(sells) + ' · token ratios preserved.</div>' +
+        '<div class="pf-cf-note warn">SPOT MARKET orders — real, sent now.</div>';
+    lpConfirm('Reallocate to ' + pct + '% tokens?', lines, 'Slide to apply', function () {
+        var jobs = legs.map(function (l) {
+            var vol = l.side === 'buy' ? l.usd / (l.px || 1) : (function (c) { return c.qty * (l.usd / Math.max(1e-9, c.usd)); })(v.coins.filter(function (c) { return c.coin === l.coin; })[0] || {});
+            var j = (l.ex === 'Bybit') ? bybitSpotMarket(l.coin, l.side, vol) : spotPlaceOrder(l.coin, l.side, vol, 'market');
+            return j.then(function () { return { ok: true }; }, function (e) { return { ok: false, err: e.message }; });
+        });
+        Promise.all(jobs).then(function (res) {
+            var ok = res.filter(function (x) { return x.ok; }).length;
+            var bad = res.filter(function (x) { return !x.ok; });
+            showToastSafe('Rebalanced: ' + ok + '/' + res.length + ' leg(s)' + (bad.length ? ' · first fail: ' + bad[0].err : ''));
+            lpRefresh(true);
+        });
+    }, { color: buys > sells ? '#3fb950' : (sells > buys ? '#f85149' : '#58a6ff'), mkt: 'SPOT' });
+    lpSyncSlider();
+}
+
+// ── Pause (Flatten) — продать спот + (опц.) закрыть фьючерсы/отменить ордера ──
+function lpPauseFlow() {
+    var v = lpView();
+    var closePos = !!lpSet().pauseClosePos;
+    var hasTok = v.tokens > 0;
+    if (!hasTok && !(closePos && v.positions.length)) { showToastSafe('Nothing to pause — no spot tokens'); return; }
+    var syms = v.coins.map(function (c) { return esc(c.coin) + ' ' + lpfMoneyC(c.usd); }).join(' · ');
+    var body = '<div class="pf-cf-grid">' +
+        lpCF('Spot → USDT', syms || 'no spot tokens') +
+        (hasTok ? lpCF('Cash after ≈', lpfMoney(v.cash + v.tokens)) : '') +
+    '</div>';
+    if (closePos && v.positions.length) {
+        body += '<div class="pf-cf-sep"></div><div class="pf-sub2" style="margin-bottom:4px">Positions to close now (margin returns to USDT):</div>';
+        v.positions.forEach(function (p) {
+            body += '<div class="pf-sub2"><b style="color:#e6edf3">' + esc(p.symbol) + '</b> ' + esc(String(p.side || '').toUpperCase()) + ' · ' + lpfQty(p.size) + ' @ ' + lpfPx(p.entry) +
+                ' → PnL <b class="' + lpcSign(p.uPnl) + '">' + lpfMoneySign(isFinite(p.uPnl) ? p.uPnl : 0) + '</b> (' + esc(p.ex) + ')</div>';
+        });
+        body += '<div class="pf-cf-note">Bitunix: close_all_position + cancel_all_orders. Bybit positions are NOT auto-closed — close them with ✕.</div>';
+    } else if (v.positions.length) {
+        body += '<div class="pf-cf-note">Open positions are kept (»close on pause« is off).</div>';
+    }
+    body += '<div class="pf-cf-note warn">REAL market actions — sent immediately after the slide.</div>';
+    lpConfirm('Pause — sell everything to USDT?', body, 'Slide to pause', function () {
+        var jobs = [];
+        v.coins.forEach(function (c) {
+            c.ex.forEach(function (ex) {
+                (PORT.rows || []).forEach(function (r) {
+                    if (!r.ok || r.exchange !== ex) return;
+                    (r.d.assets || []).forEach(function (a) {
+                        if (a.coin !== c.coin || !(a.avail > 0)) return;
+                        jobs.push((ex === 'Bybit') ? bybitSpotMarket(c.coin, 'sell', a.avail) : spotPlaceOrder(c.coin, 'sell', a.avail, 'market'));
+                    });
+                });
+            });
+        });
+        var bitPos = closePos && v.positions.some(function (p) { return p.ex === 'Bitunix'; });
+        var bitOrd = closePos && v.orders.some(function (o) { return o.ex === 'Bitunix'; });
+        if (bitPos) jobs.push(closeAllPositions());
+        if (bitOrd) jobs.push(cancelAllFutOrders());
+        if (!jobs.length) { showToastSafe('Nothing to pause'); return; }
+        Promise.all(jobs.map(function (j) { return j.then(function () { return { ok: true }; }, function (e) { return { ok: false, err: e.message }; }); }))
+        .then(function (res) {
+            var ok = res.filter(function (x) { return x.ok; }).length;
+            var bad = res.filter(function (x) { return !x.ok; });
+            showToastSafe('Paused: ' + ok + '/' + res.length + ' action(s)' + (bad.length ? ' · first fail: ' + bad[0].err : ''));
+            lpRefresh(true);
+        });
+    }, { color: '#f0b429', mkt: 'SPOT+PERP' });
+}
+
+// ── Reset (foot) — сброс PnL-базовой точки (биржевой аналог бумажного Reset) ──
+function lpResetFlow() {
+    lpConfirm('Reset PnL baseline?',
+        '<div>The equity curve restarts from the CURRENT total — the account itself is never touched.</div>' +
+        '<div class="pf-cf-note">Бумажный Reset сбрасывал мок-портфель; здесь он только обнуляет локальную историю графика.</div>',
+        'Slide to reset', function () {
+            var v = lpTotal();
+            lpSaveHist(v > 0 ? [{ t: Date.now(), v: v }] : []);
+            lpDrawPnl();
+            showToastSafe('PnL baseline reset');
+        }, { color: '#58a6ff', mkt: 'LOCAL' });
+}
+
+// ── форма «Open position» — фьючерсный market-ордер, слайдер ──
+function lpOpenPositionFlow() {
+    var sym = (document.getElementById('lpPosSym') || {}).value || 'BTCUSDT';
+    var side = LP.posSide || 'long';
+    var margin = parseFloat((document.getElementById('lpPosMargin') || {}).value);
+    var lev = parseInt((document.getElementById('lpPosLev') || {}).value, 10) || 1;
+    var tp = parseFloat((document.getElementById('lpPosTp') || {}).value) || 0;
+    var sl = parseFloat((document.getElementById('lpPosSl') || {}).value) || 0;
+    var v = lpView();
+    var px = lpPxFor(sym);
+    if (!isFinite(margin) || margin <= 0) { showToastSafe('Check the form values'); return; }
+    if (!isFinite(px) || px <= 0) { showToastSafe('No live price for ' + sym + ' yet — refresh once'); return; }
+    var d = side === 'long' ? 1 : -1;
+    var usdN = margin * lev;
+    var qtyF = usdN / px;
+    var tpPx = tp > 0 ? px * (1 + d * tp / 100) : 0;
+    var slPx = sl > 0 ? px * (1 - d * sl / 100) : 0;
+    var ex = v.bitunix ? 'bitunix' : (v.bybit ? 'bybit' : 'bitunix');
+    var lines = '<div class="pf-cf-grid">' +
+        lpCF(side === 'long' ? 'Long' : 'Short', lpfQty(qtyF) + ' ' + esc(sym) + ' @ ≈' + lpfPx(px) + ' (' + lev + '×)') +
+        lpCF('Margin / notional', lpfMoney(margin) + ' / ' + lpfMoney(usdN)) +
+        (tp > 0 ? lpCF('Take profit', lpfPx(tpPx) + ' (+' + tp + '%)') : '') +
+        (sl > 0 ? lpCF('Stop loss', lpfPx(slPx) + ' (−' + sl + '%)') : '') +
+        lpCF('Exchange', ex === 'bybit' ? 'Bybit' : 'Bitunix') +
+        lpCF('Order', 'MARKET — real') +
+    '</div>' +
+    '<div class="pf-cf-note">TP/SL — position TP/SL ставится отдельным запросом сразу после открытия (Bitunix tpsl / Bybit trading-stop).</div>';
+    lpConfirm('Open position?', lines, side === 'long' ? 'Slide to open long' : 'Slide to open short', function () {
+        placeOrder({ ex: ex, symbol: sym, side: side === 'long' ? 'BUY' : 'SELL', type: 'MARKET',
+                     qty: qtyF, hedge: loadHedge(), reduceOnly: false })
+        .then(function (r) {
+            showToastSafe('Order placed: ' + (side === 'long' ? 'BUY' : 'SELL') + ' ' + lpfQty(qtyF) + ' ' + sym + ' · orderId ' + (r.orderId || '(none)'));
+            if (!(tp > 0 || sl > 0)) { lpRefresh(true); return; }
+            setTimeout(function () {
+                lpRefresh(true).then(function () {
+                    var vv = lpView();
+                    var p = null;
+                    for (var k = 0; k < vv.positions.length; k++) {
+                        if (vv.positions[k].symbol === sym && vv.positions[k].side === side) p = vv.positions[k];
+                    }
+                    if (!p) { showToastSafe('TP/SL not set — position not visible yet, use the TP/SL buttons'); return; }
+                    var flds = {};
+                    if (tp > 0) flds.tp = tpPx;
+                    if (sl > 0) flds.sl = slPx;
+                    if (p.ex === 'Bybit') bybitTradingStop(p.symbol, tp > 0 ? tpPx : undefined, sl > 0 ? slPx : undefined, p.side)
+                        .then(function () { showToastSafe('TP/SL armed (' + p.ex + ')'); }, function (e) { showToastSafe('TP/SL failed: ' + e.message); });
+                    else placePosTpsl(p.symbol, p.positionId, flds)
+                        .then(function (rr) { showToastSafe('TP/SL armed' + (rr && rr.orderId ? ' · tpslId ' + rr.orderId : '') + ' (' + p.ex + ')'); }, function (e) { showToastSafe('TP/SL failed: ' + e.message); });
+                });
+            }, 900);
+            lpRefresh(true);
+        }, function (e) { showToastSafe('Order failed: ' + e.message); });
+    }, { color: side === 'long' ? '#3fb950' : '#f85149', mkt: 'PERP' });
+}
+
+// ── форма «Place limit order» — фьючерсный LIMIT-ордер, слайдер ──
+function lpLimitOrderFlow() {
+    var sym = (document.getElementById('lpOrdSym') || {}).value || 'BTCUSDT';
+    var side = LP.ordSide || 'buy';
+    var amount = parseFloat((document.getElementById('lpOrdAmount') || {}).value);
+    var price = parseFloat((document.getElementById('lpOrdPrice') || {}).value);
+    if (!isFinite(amount) || amount <= 0) { showToastSafe('Check the amount'); return; }
+    if (!isFinite(price) || price <= 0) { showToastSafe('Set the limit price'); return; }
+    var qtyF = amount / price;
+    var px = lpPxFor(sym);
+    var dist = isFinite(px) && px > 0 ? (price / px - 1) * 100 : NaN;
+    var v = lpView();
+    var ex = v.bitunix ? 'bitunix' : (v.bybit ? 'bybit' : 'bitunix');
+    var lines = '<div class="pf-cf-grid">' +
+        lpCF(side === 'buy' ? 'Buy' : 'Sell', lpfQty(qtyF) + ' ' + esc(sym) + ' LIMIT @ ' + lpfPx(price)) +
+        lpCF('Amount', lpfMoney(amount)) +
+        (isFinite(dist) ? lpCF('Distance to market', lpfPct(dist)) : '') +
+        lpCF('Exchange', ex === 'bybit' ? 'Bybit' : 'Bitunix') +
+    '</div>' +
+    '<div class="pf-cf-note">REAL limit order on the exchange (GTC).</div>';
+    lpConfirm('Place limit order?', lines, side === 'buy' ? 'Slide to buy' : 'Slide to sell', function () {
+        placeOrder({ ex: ex, symbol: sym, side: side === 'buy' ? 'BUY' : 'SELL', type: 'LIMIT',
+                     qty: qtyF, price: price, hedge: loadHedge(), reduceOnly: false })
+        .then(function (r) {
+            showToastSafe('Order placed: ' + (side === 'buy' ? 'BUY' : 'SELL') + ' ' + lpfQty(qtyF) + ' ' + sym + ' LIMIT @ ' + lpfPx(price) + ' · orderId ' + (r.orderId || '(none)'));
+            lpRefresh(true);
+        }, function (e) { showToastSafe('Order failed: ' + e.message); });
+    }, { color: side === 'buy' ? '#3fb950' : '#f85149', mkt: 'PERP' });
+}
+
+// ── coin card (long-press) — данные + Close ──
+function lpCloseCoinModal() {
+    if (LP.cm) { try { LP.cm.remove(); } catch (_) {} LP.cm = null; }
+}
+function lpOpenCoinModal(symOrCoin) {
+    var base = String(symOrCoin || '').toUpperCase().replace(/USDT$/, '');
+    var v = lpView();
+    var coin = null;
+    v.coins.forEach(function (c) { if (c.coin === base) coin = c; });
+    var pos = v.positions.filter(function (p) { return p.symbol === base + 'USDT' || p.symbol === symOrCoin; });
+    var px = lpPxFor(base + 'USDT');
+    var el = document.createElement('div');
+    el.className = 'pf-cm-backdrop';
+    var h = '<div class="pf-cm">';
+    h += '<div class="pf-cm-h"><div class="pf-cm-title">' + esc(base) + '<small>live</small></div>' +
+        '<div class="pf-cm-pxbox"><div class="pf-cm-price">' + lpfPx(px) + '</div></div></div>';
+    h += '<div class="pf-cm-sec"><div class="pf-cm-h2">Spot</div><div class="pf-cm-grid">';
+    if (coin) {
+        h += lpCF('Value', lpfMoney(coin.usd)) + lpCF('Qty', lpfQty(coin.qty)) + lpCF('Exchanges', coin.ex.join(' + '));
+    } else h += lpCF('Balance', '—');
+    h += '</div>';
+    if (coin) h += '<div class="pf-btnrow"><button type="button" class="pf-mini danger" id="lpCmSell">Sell all — SPOT market</button></div>';
+    h += '</div>';
+    if (pos.length) {
+        h += '<div class="pf-cm-sec"><div class="pf-cm-h2">Futures</div>';
+        pos.forEach(function (p) {
+            var pnl = isFinite(p.uPnl) ? p.uPnl : 0;
+            h += '<div class="pf-cm-grid">' +
+                lpCF('Position', esc(String(p.side || '').toUpperCase()) + (parseInt(p.lev, 10) > 1 ? ' ' + parseInt(p.lev, 10) + '×' : '') + ' · ' + esc(p.ex)) +
+                lpCF('Qty / Entry', lpfQty(p.size) + ' @ ' + lpfPx(p.entry)) +
+                lpCF('Mark / Liq', lpfPx(p.mark) + ' / ' + (isFinite(p.liq) && p.liq > 0 ? lpfPx(p.liq) : '—')) +
+                lpCF('Margin', lpfMoney(p.margin || 0)) +
+                lpCF('uPnL', '<b class="' + lpcSign(pnl) + '">' + lpfMoneySign(pnl) + '</b>') +
+            '</div>';
+        });
+        h += '</div>';
+    }
+    h += '<div class="pf-btnrow" style="margin-top:10px"><button type="button" class="pf-btn ghost" id="lpCmX">Close</button></div>';
+    h += '</div>';
+    el.innerHTML = h;
+    document.body.appendChild(el);
+    LP.cm = el;
+    el.addEventListener('pointerdown', function (e) { if (e.target === el) lpCloseCoinModal(); });
+    el.querySelector('#lpCmX').addEventListener('click', lpCloseCoinModal);
+    var sb = el.querySelector('#lpCmSell');
+    if (sb) sb.addEventListener('click', function () { lpCloseCoinModal(); lpSellCoinFlow(base); });
+}
+
+// ── ⚙ Live portfolio settings (вёрстка pf-set из Сим-модалки) ──
+function lpCloseSet() {
+    if (LP.setRoot) { try { LP.setRoot.remove(); } catch (_) {} LP.setRoot = null; }
+    LP.setOpen = false;
+}
+function lpOpenSet() {
+    if (LP.setOpen) { lpCloseSet(); return; }
+    ensureLpCss();
+    var root = document.createElement('div');
+    root.className = 'pf-backdrop pf-set';
+    var s = lpSet();
+    root.innerHTML =
+        '<div class="pf-sheet" style="width:min(400px,100%);">' +
+          '<div class="pf-head"><div class="pf-title">⚙ Live portfolio settings<span class="pf-sub">behavior</span></div>' +
+          '<button type="button" class="pf-x" id="lpSetX">✕</button></div>' +
+          '<div class="pf-body">' +
+            '<div class="pf-sec"><div class="pf-sec-h">Behavior</div>' +
+              '<label class="pf-check"><input type="checkbox" id="lpSetAuto"' + (s.auto ? ' checked' : '') + '>' +
+              '<span><b>Auto-refresh</b> every 30 s while the sheet is open.</span></label>' +
+              '<label class="pf-check"><input type="checkbox" id="lpSetDust"' + (s.hideDust ? ' checked' : '') + '>' +
+              '<span><b>Hide dust</b> — allocation rows under $1.</span></label>' +
+              '<label class="pf-check"><input type="checkbox" id="lpSetClosePos"' + (s.pauseClosePos ? ' checked' : '') + '>' +
+              '<span>Pause also <b>closes longs &amp; shorts</b> at market (default off).</span></label>' +
+              '<div class="pf-sub3" style="margin-top:6px">Hedge-mode (tradeSide/positionIdx) задаётся глобально и используется всеми ордерами (localStorage ce_ak_hedge_v1).</div>' +
+            '</div>' +
+            '<div class="pf-sec"><div class="pf-sec-h">Risk</div>' +
+              '<div class="pf-sub2">Every button sends REAL requests: orders, cancels, TP/SL, spot rebalance. Confirmations are slide-to-confirm — exactly as in the Sim modal.</div>' +
+              '<div class="pf-btnrow" style="margin-top:8px"><button type="button" id="lpSetReset" class="pf-btn warn">Reset PnL baseline</button></div>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+    document.body.appendChild(root);
+    LP.setRoot = root; LP.setOpen = true;
+    root.classList.add('open');
+    root.querySelector('#lpSetX').addEventListener('click', lpCloseSet);
+    root.addEventListener('pointerdown', function (e) { if (e.target === root) lpCloseSet(); });
+    root.querySelector('#lpSetAuto').addEventListener('change', function (e) {
+        var st = lpSet(); st.auto = e.target.checked; lpSaveSet(st); lpAutoStart();
+    });
+    root.querySelector('#lpSetDust').addEventListener('change', function (e) {
+        var st = lpSet(); st.hideDust = e.target.checked; lpSaveSet(st); lpRenderTable();
+    });
+    root.querySelector('#lpSetClosePos').addEventListener('change', function (e) {
+        var st = lpSet(); st.pauseClosePos = e.target.checked; lpSaveSet(st);
+        var chk = document.getElementById('lpPausePos'); if (chk) chk.checked = st.pauseClosePos;
+    });
+    root.querySelector('#lpSetReset').addEventListener('click', lpResetFlow);
+}
 // ── public surface (+ test hooks for the probes) ──
 window.ExchKeys = {
     open: open,
@@ -113794,8 +115043,24 @@ window.ExchKeys = {
         bybitPost: bybitPost,
         placeOrder: placeOrder,
         orderPayload: orderPayload,
+        lp: function () { return LP; },
+        lpView: lpView,
+        lpRender: lpRender,
+        lpOpenCoinModal: lpOpenCoinModal,
+        lpConfirm: lpConfirm,
+        lpPushPoint: lpPushPoint,
+        cancelFutOrders: cancelFutOrders,
+        cancelAllFutOrders: cancelAllFutOrders,
+        closeAllPositions: closeAllPositions,
+        placePosTpsl: placePosTpsl,
+        spotPlaceOrder: spotPlaceOrder,
+        bybitCancelOrder: bybitCancelOrder,
+        bybitTradingStop: bybitTradingStop,
+        bybitSpotMarket: bybitSpotMarket,
+        loadHedge: loadHedge,
+        saveHedge: saveHedge,
         fireKeysChanged: fireKeysChanged,
-        trd: function () { return TRD; },
+        trd: function () { return LP; },
         chartFutsSymbol: _chartFutsSymbol,
         bitunixSpotRows: bitunixSpotRows,
         bitunixPriceMap: bitunixPriceMap,
