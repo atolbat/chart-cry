@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <!-- V354 UNIFIED LIVE PORTFOLIO MODAL («одна модалка», юзер: «Я тебе изначально говорил, когда мы делали ту модалку, что мы делаем, чтобы с ней работать на биржах, но пока проверим на моках. Теперь моки не нужны, нужно ее полностью перевести на биржевую механику. То есть это должна быть одна модалка для портфолио, та что была в Симе» + «Погоди, там одна кнопка ст стрелками вверх и вниз. Кнопки чемодана нет, хоть есть ключи… где модалка, что была»): ① ОДНА МОДАЛКА — форма реального ордера (V352 ⚡ Live Order: биржа из настроенных, символ префиллерится с графика, qty, цена только для LIMIT, BUY·Long/SELL·Short, Market/Limit, hedge tradeSide/positionIdx, reduce-only, двухтапное подтверждение, статус orderId/ошибки) переехала ВНУТРЬ модалки «💼 Exchange Portfolio» (V340/V350/V351: тотал, активы coin/available/locked/≈USD, позиции, notes, ↻ Refresh, авто-рефетч при открытии >60 с) — теперь это ОДИН лист: балансы + позиции + «⚡ Place order — REAL …futures» + hint; после успешного ордера автоматически запускается refreshPortfolio (балансы/позиции обновляются сами); отдельная модалка ⚡ и её кнопка в футере «💼 Portfolio» удалены, openTrade() оставлен как alias→openPortfolio для API/проб. ② ХЭДЕР — ОДНА кнопка: чемодан btn-portfolio теперь виден ТОЛЬКО при наличии ключей (та же V353-схема: _pfKeyWire поллит window.ExchKeys до 15 с, подписка onKeysChanged, sync НА вайринг-тике — иначе кнопка не появится при ключах из прошлой сессии), клик → openPortfolio; Sim-гейт V326 и бумажное long-press quick-меню V313 с кнопки СНЯТЫ (Sim-тоггл остался в Settings — он управляет только бумажным движком на графике; pfSyncSimButtons и _pfSimSyncAll больше НЕ трогают btn-portfolio); кнопка ⚡ btn-live-trade удалена из хэдера (тултип тоже), ICONS.trade остался в палитре. ③ Тексты: empty-state и hint теперь честно говорят про ордера (двухтапное подтверждение, реальные счета), тултип чемодана «Portfolio — live balances, positions & orders (needs API keys)». Бумажный движок PaperPortfolio НЕ тронут (график/Sim работают как раньше) — модалка просто больше не показывает моки. ④ РЕГРЕСС: probe_v354_unified (A без ключей чемодан скрыт; B UI-Save → чемодан виден; C клик → ОДНА модалка: заголовок Exchange Portfolio, таблицы активов/позиций И форма ордера с префиллом BTCUSDT; D market BUY через мок-релей → подпись бит-в-бит, orderId, авто-рефетч после ордера; E LIMIT без цены → валидация; F wipe → чемодан скрылся), probe_v352b_prekeys (пре-сейв: fresh boot моб/десктоп, reload — btn-portfolio виден сам), probe_v351_pfbtn (меню «💼 Live portfolio» → та же единая модалка, авто-рефетч fresh/stale), probe_v350_spot, probe_v352_trade A–J переписаны на unified-модалку, boot-check BOOT-OK, pageerror 0 -->
     <!-- V353 FIX «Кнопки нет» (юзер: «Нифига там нет» в fixed (17) + «Кнопки нет»): подтверждено расследованием — в fixed (17) живой кнопки ордеров и НЕ БЫЛО (grep placeOrder/bitunixPost/TRD = 0, там только бумажная 💼-кнопка V313, скрытая при Sim OFF с V326), кнопка ордеров собрана заново в V352 — но она НЕ ПОЯВЛЯЛАСЬ у юзера, потому что его ключи сохранены в ПРОШЛОЙ сессии: воспроизведено probe_v352b_prekeys (P2 свежая загрузка моб 420px, P3 десктоп 1366px: hasKeys()===true, а кнопка display:none навсегда). Причина: _ltWire() на первом же тике полла (как только window.ExchKeys появился) подписывался на onKeysChanged и СРАЗУ clearInterval — _ltSync() на этом тике НЕ вызывался, а fireKeysChanged при загрузке страницы не происходит (он только после Save/Remove/Wipe в менеджере) — probe B (сейв в той же сессии) эту дыру маскировал. Фикс: _ltWire() сам вызывает _ltSync() сразу после подписки — первая проверка hasKeys() выполняется в момент появления модуля, кнопка ⚡ btn-live-trade появляется сама через ~миллисекунды после загрузки. Проба probe_v352b_prekeys.js ПОСЛЕ фикса: P1 сейв в сессии → видна, P2 свежая загрузка с пре-сейвом → видна сама (16 мс), P2 reload → видна (15 мс), P3 десктоп → видна, на экране (x=280,w=26), клик → модалка «⚡ Live Order» с префиллом BTCUSDT; РЕГРЕСС probe_v352_trade A–J, probe_v351_pfbtn A–D, probe_v350_spot (UNIT/SPOT-UI/DICT/UNREC/FALLBACK/LIVE), boot-check BOOT-OK — все true, pageerror 0 -->
     <!-- V352 LIVE ORDER BUTTON IN THE HEADER + WRITE CLIENTS (юзер: «Я не про exchange balances, я про кнопку что была в хэдере основной странице. Она должна была пропадать, если нет ключей, но щас они есть. Там еще можно было ордера открывать» + «Это было в фиксед 17»): расследование — в (17) из биржевого была ТОЛЬКО бумажная кнопка-кошелёк с long-press меню бумажных ордеров (V313); подписи/ключи/nonce в (17) НЕТ ВООБЩЕ (grep apiKey/secret/nonce = 0), а живой read-only появился только в V340, и только GET. Кнопка «пропала» потому что с V326 кошелёк скрыт при Sim OFF. Сделано то, что юзер реально хочет: ① КНОПКА В ХЭДЕРЕ (btn-live-trade, иконка trade — стрелки sell-down/buy-up, сразу после кошелька): видна ТОЛЬКО когда настроен хотя бы один ключ — hasKeys() (расшифровка vault) + подписка onKeysChanged (fireKeysChanged после Save/Remove/Wipe в менеджере) + отложенный re-check (setTimeout 800 мс — страховка порядка script-блоков); клик → модалка. ② WRITE-КЛИЕНТЫ bitunixPost/bybitPost — та же V349-цепочка попыток direct → relay(формат по хвосту) → relay(альт), nonce/ts/sign ПЕРЕгенерируются на попытку; Bitunix POST-подпись покрывает ТЕЛО: sign = sha256(sha256(nonce+ts+apiKey+''+bodyStr)+secret), bodyStr сериализуется ОДИН раз и этим же стрингом подписывается и отправляется; Bybit POST: HMAC(secret, ts+key+recvWindow+bodyStr) (для POST queryString = сырой JSON-body), Content-Type application/json; релей безопасен — v2-сниппет форвардит body и headers, content-length пересчитывается. ③ МОДАЛКА «⚡ Live Order» (USDT-M futures, РЕАЛЬНЫЙ счёт): биржа из настроенных, символ префиллерится с графика (btn-symbol 'BTC / USDT' → BTCUSDT, редактируемый), qty, цена только для LIMIT, тогглы BUY·Long/SELL·Short и Market/Limit, чекбоксы hedge-режим (localStorage ce_ak_hedge_v1; Bitunix tradeSide OPEN/CLOSE — в доке place_order «Only required in hedge-mode», Bybit positionIdx 1/2; one-way не шлёт ничего) и reduce-only; ОТПРАВКА ДВУХТАПНАЯ (armed «Confirm: BUY 0.01 BTCUSDT MARKET» — как Remove/Wipe), валидация qty/цены ДО сети, статус orderId / человеческая ошибка (Bitunix code/msg, Bybit retCode). ④ PAYLOAD по докам: Bitunix POST /api/v1/futures/trade/place_order {symbol, side BUY|SELL, orderType MARKET|LIMIT, qty, price+effect GTC для LIMIT, reduceOnly?} — БЕЗ marginCoin (в доке поля нет); Bybit POST /v5/order/create {category linear, side Buy|Sell, orderType Market|Limit, qty, price+timeInForce GTC, reduceOnly?, positionIdx}. ⑤ РЕГРЕСС probe_v352_trade: кнопка скрыта без ключей → реальный UI-Save в менеджере → кнопка появилась (fireKeysChanged), клик → модалка с префиллом BTCUSDT; market BUY через мок-релей → Node-проверка ПОДПИСИ бит-в-бит (sha256(sha256(nonce+ts+key+''+body)+secret)) + тела (symbol/side/orderType/qty), orderId показан; LIMIT без цены → валидация без сети; hedge → tradeSide OPEN; Bybit → HMAC-подпись бит-в-бит, positionIdx 0, hedge-sell → positionIdx 2; API-ошибка (Bitunix 4001) показана как есть; wipe → кнопка скрылась; boot-check BOOT-OK, pageerror 0 -->
     <!-- V351 LIVE-PORTFOLIO DISCOVERABILITY + STALE AUTO-REFRESH (юзер после V350: «Заработало. А учитывая что теперь есть ключ, где та кнопка в меню с отдельной модалкой портфолио?»): модалка живого портфолио СУЩЕСТВУЕТ с V340 (openPortfolio → PFV-backdrop: grand total, активы coin/available/locked/≈USD, позиции, notes, ↻ Refresh), но пункт меню назывался «💼 Exchange balances» — юзер искал слово «портфолио» и не нашёл. ① ПЕРЕИМЕНОВАНИЕ пункта меню ⚙ Settings → Portfolio: «💼 Exchange balances» → «💼 Live portfolio» (data-role btn-exch-pf и вся обвязка не тронуты, тултип теперь «Live portfolio — exchange balances & positions»); в footer'е менеджера ключей кнопка «💼 Open portfolio» как была, так и осталась — второй путь открытия. ② STALE AUTO-REFRESH: openPortfolio рефетчит баланс не только когда данных нет вообще (первое открытие), но и когда снапшот СТАРЕЕ 60 с (PORT.ts) — повторное открытие модалки через час больше не показывает протухший тотал; свежие данные (или идущий уже рефетч PORT.busy) — лишнего запроса нет, ↻ Refresh остаётся ручным. Транспорт/парсинг/безопасность не тронуты. ③ РЕГРЕСС probe_v351_pfbtn: в живом UI открыт ⚙-меню → кнопка называется «💼 Live portfolio», клик → дропдаун закрылся, модалка «💼 Exchange Portfolio» открылась, auto-refresh сам дотянул данные через мок-релей (строка ETH в таблице активов, total в шапке), путь «🔑 API Keys → 💼 Open portfolio» открывает ту же модалку, повторное открытие со СВЕЖИМ ts — БЕЗ повторного фетча, с протухшим ts (2 мин) — фетч есть (счётчик хитов мок-релея); boot-check BOOT-OK, pageerror 0 -->
@@ -83693,11 +83694,10 @@ const TOOLBAR_ARIA_LABELS = {
     'btn-populate-1d':  'Pre-fetch 2 years of daily candles for top-200 coins',
     'btn-populate-4h':  'Pre-fetch 2 years of 4-hour candles for top-200 coins',
     'btn-cache-stats':  'Show cache statistics',
-    'btn-portfolio':    'Open paper portfolio',
+    'btn-portfolio':    'Portfolio — live balances, positions & orders (needs API keys)',
     'btn-pf-sim':       'Toggle portfolio simulation (default OFF)',
     'btn-api-keys':     'Exchange API keys manager (Bybit / Bitunix)',
     'btn-exch-pf':      'Live portfolio — exchange balances & positions',
-    'btn-live-trade':   'Live order entry — place a real exchange futures order (needs API keys)',
     'btn-cache-clear':  'Clear all cached candles',
     'btn-vol-mode':     'Cycle volume display mode (coins / dollars)',
     'btn-trend-line':   'Draw trend line',
@@ -84136,123 +84136,60 @@ class ChartFactory {
         // V310: SPOT/PERP switcher creation block moved ABOVE (before srcGrp)
         //   — the button mounts into the source group next to the TF dropdown.
 
-        // V301: 💼 Portfolio button — replaces the removed «📡 Scan»
-        //   (ScanStats) slot; opens the paper-portfolio modal.
+        // V354: 💼 Portfolio button — THE single portfolio entry (the user:
+        //   «это должна быть одна модалка для портфолио, та что была в Симе» +
+        //   «теперь моки не нужны, полностью перевести на биржевую механику»):
+        //   opens the unified LIVE modal (balances + positions + real order
+        //   form in one sheet). Visible ONLY while an exchange API key exists
+        //   — the condition the user remembered («пропадать, если нет
+        //   ключей»). The paper quick-menu and the Sim:OFF gate are GONE:
+        //   Sim keeps driving the paper chart engine only, never this button.
         const pfBtn = _mkBtn(['btn-portfolio', '', { icon: ICONS.wallet }]);
         pfBtn.type = 'button';
-        pfBtn.title = 'Portfolio (paper trading) — hold: quick trade menu';
-        // V313: click = open the portfolio sheet; LONG-PRESS (480 ms) = the
-        //   quick-trade menu (add a limit-order line on the chart / market
-        //   buy). The click that trails a fired long-press is suppressed so
-        //   the sheet never opens underneath the menu.
-        // V316 TOUCH HARDENING: the long-press was flaky on real phones
-        //   («меню работает через раз»): .controls keeps touch-action:pan-y,
-        //   so ANY 1px vertical jitter during the hold let the browser claim
-        //   the touch for scrolling and fire pointercancel — which killed
-        //   the 480 ms timer mid-hold. Fixes: (a) touch-action:none on the
-        //   button itself — the browser never claims THIS touch; (b) a
-        //   phantom pointercancel with NO prior drift keeps the timer (the
-        //   hold intent is intact); (c) pointerleave cancels only for MOUSE
-        //   pointers — touch leaves arrive phantom mid-hold; (d) the native
-        //   long-press contextmenu / SVG dragstart are suppressed. A real
-        //   slide-away (>12px) still cancels, as does a clean pointerup.
-        let _pfLpT = null, _pfLpFired = false, _pfLpX = 0, _pfLpY = 0, _pfLpDrift = false;
-        const _pfLpCancel = () => { if (_pfLpT) { clearTimeout(_pfLpT); _pfLpT = null; } };
-        pfBtn.addEventListener('pointerdown', (e) => {
-            if (e.button && e.button !== 0) return;
-            _pfLpFired = false; _pfLpDrift = false; _pfLpX = e.clientX; _pfLpY = e.clientY;
-            _pfLpCancel();
-            _pfLpT = setTimeout(() => {
-                _pfLpT = null; _pfLpFired = true;
-                try { window.PaperPortfolio && window.PaperPortfolio.quickMenu(pfBtn); } catch (_) {}
-            }, 480);
-        });
-        pfBtn.addEventListener('pointermove', (e) => {
-            if (_pfLpT && (Math.abs(e.clientX - _pfLpX) > 12 || Math.abs(e.clientY - _pfLpY) > 12)) { _pfLpDrift = true; _pfLpCancel(); }
-        });
-        pfBtn.addEventListener('pointerup', () => _pfLpCancel());
-        pfBtn.addEventListener('pointercancel', () => { if (_pfLpDrift) _pfLpCancel(); });
-        pfBtn.addEventListener('pointerleave', (e) => { if (e && e.pointerType === 'mouse') _pfLpCancel(); });
-        pfBtn.addEventListener('contextmenu', (e) => { e.preventDefault(); });
-        pfBtn.addEventListener('dragstart', (e) => { e.preventDefault(); });
-        pfBtn.style.touchAction = 'none';
-        pfBtn.style.userSelect = 'none';
-        pfBtn.style.webkitTouchCallout = 'none';
-        // V326: the simulation ships OFF — the 💼 button stays hidden until
-        //   ⚙ Settings → Portfolio → Sim: ON (the toggle syncs every
-        //   instance). Fail-closed: a localStorage error means OFF.
-        try { if (localStorage.getItem('ce_pf_sim_enabled_v1') !== '1') pfBtn.style.display = 'none'; }
-        catch (_) { pfBtn.style.display = 'none'; }
+        pfBtn.title = 'Portfolio — live exchange balances, positions & orders (needs API keys)';
+        pfBtn.style.display = 'none';
         pfBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            // V319: a click arriving while the long-press timer is STILL
-            //   armed is a completed TAP whose pointerup/pointercancel was
-            //   swallowed (the V316 drift-less-cancel tolerance kept the
-            //   timer alive). Sequence the user hit: down → drift-less
-            //   cancel → the synthesized click opened the sheet, then the
-            //   orphaned timer opened the quick menu ON TOP of it
-            //   («вылезает и портфолио, и вспл меню»). A click can only
-            //   follow a released gesture — kill the timer here.
-            if (_pfLpT) _pfLpCancel();
-            if (_pfLpFired) { _pfLpFired = false; e.preventDefault(); return; }
-            try { window.PaperPortfolio && window.PaperPortfolio.open(); } catch (_) {}
+            try { window.ExchKeys && window.ExchKeys.openPortfolio(); }
+            catch (err) { try { showToast('Portfolio failed: ' + err.message); } catch (_) {} }
         });
-        toolbarInner.appendChild(pfBtn);
-        toolbarInner.appendChild(_mkSep());
-
-        // V352: LIVE order button — the header shortcut the user asked for.
-        //   Hidden until at least one exchange API key exists (encrypted vault):
-        //   hasKeys() re-checks on every manager save/remove/wipe via
-        //   onKeysChanged, plus a delayed re-check as a script-order safety.
-        const _ltBtn = _mkBtn(['btn-live-trade', '', { icon: ICONS.trade }]);
-        _ltBtn.type = 'button';
-        _ltBtn.title = 'Live order — real exchange futures order (needs API keys)';
-        _ltBtn.style.display = 'none';
-        _ltBtn.addEventListener('click', () => {
-            try { window.ExchKeys && window.ExchKeys.openTrade(); }
-            catch (err) { try { showToast('Live trade failed: ' + err.message); } catch (_) {} }
-        });
-        const _ltSync = () => {
+        // Key-sync wiring (moved from the removed ⚡ button): the ExchKeys
+        //   script block sits near the end of the document and may execute
+        //   AFTER this toolbar builds (boot runs early) — poll until the
+        //   module shows up, subscribe once, then rely on fireKeysChanged
+        //   (manager Save/Remove/Wipe). V353 lesson: the wiring tick ITSELF
+        //   must sync — a page opened with keys ALREADY saved in a previous
+        //   session never fires fireKeysChanged at boot (live user bug
+        //   «Кнопки нет», probe_v352b_prekeys P2/P3).
+        const _pfKeySync = () => {
             try {
                 if (window.ExchKeys && typeof window.ExchKeys.hasKeys === 'function') {
                     window.ExchKeys.hasKeys().then(function (has) {
-                        _ltBtn.style.display = has ? '' : 'none';
+                        pfBtn.style.display = has ? '' : 'none';
                     }).catch(function () {});
                 }
             } catch (_) {}
         };
-        // The ExchKeys script block sits near the end of the document and may
-        // execute AFTER this toolbar builds (boot runs early) — a one-shot
-        // window.ExchKeys check at build time is a silent no-op then, and the
-        // button never appears when the user saves keys later (live V352 probe
-        // bug B). Poll briefly until the module shows up, subscribe once, then
-        // rely on fireKeysChanged (manager Save/Remove/Wipe) alone.
-        // V353: …PLUS an immediate sync at wiring time itself — a page opened
-        //   with keys ALREADY saved in a previous session never fires
-        //   fireKeysChanged at boot, and the wiring tick used to clearInterval
-        //   WITHOUT syncing once, so the button stayed display:none forever
-        //   even though hasKeys() === true (live user bug «Кнопки нет»,
-        //   probe_v352b_prekeys P2/P3 reproduce, P1 same-session save masked it).
-        let _ltWired = false;
-        const _ltWire = () => {
-            if (_ltWired) return;
+        let _pfKeyWired = false;
+        const _pfKeyWire = () => {
+            if (_pfKeyWired) return;
             try {
                 if (window.ExchKeys && typeof window.ExchKeys.onKeysChanged === 'function') {
-                    window.ExchKeys.onKeysChanged(_ltSync);
-                    _ltWired = true;
-                    _ltSync();   // V353: first hasKeys() check happens HERE too
+                    window.ExchKeys.onKeysChanged(_pfKeySync);
+                    _pfKeyWired = true;
+                    _pfKeySync();   // V353: first hasKeys() check happens HERE too
                 }
             } catch (_) {}
         };
-        _ltWire();
-        _ltSync();
-        let _ltTries = 0;
-        const _ltPoll = setInterval(() => {
-            _ltWire();
-            if (_ltWired || ++_ltTries > 30) clearInterval(_ltPoll);
-            else _ltSync();
+        _pfKeyWire();
+        _pfKeySync();
+        let _pfKeyTries = 0;
+        const _pfKeyPoll = setInterval(() => {
+            _pfKeyWire();
+            if (_pfKeyWired || ++_pfKeyTries > 30) clearInterval(_pfKeyPoll);
+            else _pfKeySync();
         }, 500);
-        toolbarInner.appendChild(_ltBtn);
+        toolbarInner.appendChild(pfBtn);
         toolbarInner.appendChild(_mkSep());
 
         // ── Settings dropdown ── (includes ALL toggles)
@@ -84544,7 +84481,10 @@ class ChartFactory {
                     b.classList.toggle('active', on);
                     b.setAttribute('aria-pressed', on ? 'true' : 'false');
                 });
-                document.querySelectorAll('[data-role="btn-portfolio"]').forEach(b => { b.style.display = on ? '' : 'none'; });
+                // V354: btn-portfolio is NO LONGER sim-gated here — the 💼
+                //   button is key-gated (ExchKeys.hasKeys) and opens the
+                //   unified LIVE portfolio modal; the Sim toggle only drives
+                //   the paper chart engine.
             };
             pfSimBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -108236,8 +108176,8 @@ function pfSyncSimButtons() {
             sims[i].classList.toggle('active', on);
             sims[i].setAttribute('aria-pressed', on ? 'true' : 'false');
         }
-        var pbs = document.querySelectorAll('[data-role="btn-portfolio"]');
-        for (var j = 0; j < pbs.length; j++) pbs[j].style.display = on ? '' : 'none';
+        // V354: btn-portfolio is NO LONGER sim-gated here — the 💼 button is
+        //   key-gated (ExchKeys.hasKeys) and opens the unified LIVE modal.
     } catch (_) {}
 }
 
@@ -113554,6 +113494,20 @@ function openPortfolio() {
     backdrop.appendChild(sheet);
     renderPf();
     backdrop.classList.add('open');
+    // V354: the sheet is now ALSO the order-entry surface («одна модалка»):
+    //   refresh the configured-exchange list for the form and prefill the
+    //   symbol from the chart exactly like the removed ⚡ modal did.
+    loadKeys().then(function (map) {
+        if (!PFV) return;
+        map = map || {};
+        var exs = [];
+        if (map.bitunix && map.bitunix.key && map.bitunix.secret) exs.push(['bitunix', 'Bitunix']);
+        if (map.bybit && map.bybit.key && map.bybit.secret) exs.push(['bybit', 'Bybit']);
+        TRD.exs = exs; TRD.err = null;
+        if ((!TRD.ex || !exs.some(function (e) { return e[0] === TRD.ex; })) && exs.length) TRD.ex = exs[0][0];
+        if (!TRD.sym) TRD.sym = _chartFutsSymbol();
+        renderPf();
+    }).catch(function () {});
     // V351: refetch on open not only when there is NO data at all (first open)
     //   but also when the snapshot is STALE (>60 s) — reopening the modal an
     //   hour later no longer shows a dead total. A fresh snapshot (or an
@@ -113577,7 +113531,9 @@ function renderPf() {
         h += '<div class="ak-empty">Loading…</div>';
     } else if (!rows.length) {
         h += '<div class="ak-empty">No exchange keys configured yet.<br>' +
-             'Open <b>⚙ Settings → Portfolio → 🔑 API Keys</b>, add a read-only key for Bybit or Bitunix, then come back.</div>';
+             'Open <b>⚙ Settings → Portfolio → 🔑 API Keys</b> and add a key for Bybit or Bitunix.<br>' +
+             'The 💼 header button appears automatically once a key is saved — ' +
+             'this sheet then holds your live balances, positions and the real order form.</div>';
     } else {
         var grand = 0;
         rows.forEach(function (r) { if (r.ok) grand += r.d.total; });
@@ -113615,13 +113571,18 @@ function renderPf() {
                     });
                     h += '</table>';
                 }
-                (d.notes || []).forEach(function (n) { h += '<div class="ak-note">· ' + esc(n) + '</div>'; });
+                (d.notes || []).forEach(function (n) { h += '<div class="ak-note">· ' + esc(n) + '</div>';
+                });
                 if (!assets.length && !d.positions.length) h += '<div class="ak-empty">Empty account (no assets, no open positions).</div>';
             }
             h += '</div>';
         });
-        h += '<div class="ak-hint" style="margin-top:8px">USD values are as reported by the exchanges (Bybit equity in USD; Bitunix USDT≈USD). ' +
-             'Read-only access: this app only calls account-balance endpoints.</div>';
+        // V354: the REAL order form lives INSIDE this sheet — «одна модалка
+        //   для портфолио… там еще можно было ордера открывать». Rendered
+        //   only when at least one exchange key is configured.
+        if ((TRD.exs || []).length) h += _trFormHtml();
+        h += '<div class="ak-hint" style="margin-top:8px">Balances & positions are live from the exchanges; the order form sends REAL orders — the send button arms first (two-tap confirm). ' +
+             'USD values are as reported by the exchanges (Bybit equity in USD; Bitunix USDT≈USD).</div>';
     }
     h += '</div>';
     h += '<div class="ak-foot"><button class="ak-btn" data-ak="keys">🔑 API Keys</button>' +
@@ -113636,15 +113597,88 @@ function renderPf() {
         b.classList.add('off');
         refreshPortfolio().then(renderPf, function (e) { renderPf(); showToastSafe('Refresh failed: ' + e.message); });
     });
+    if ((TRD.exs || []).length) _trWireForm(sheet, renderPf);
 }
 
-// ── V352: LIVE ORDER MODAL (USDT-M futures, REAL account) ──
-// Opened by the header trade button (visible only while a key exists).
-// Market/Limit BUY/SELL on the current chart symbol; the send button is
-// ARMED on the first tap (two-tap confirm, same pattern as Remove/Wipe) and
-// shows the full order summary before the second tap fires the real request.
+// ── V354: ORDER FORM, embedded in the unified portfolio sheet ──
+// Extracted from the removed standalone ⚡ Live Order modal (V352). Same
+// state (TRD), same payloads (orderPayload), same two-tap arming; the form
+// is a SECTION of the portfolio sheet now.
+function _trFormHtml() {
+    var exs = TRD.exs || [];
+    var sym = TRD.sym || _chartFutsSymbol() || 'BTCUSDT';
+    var h = '';
+    h += '<div class="ak-secname" style="margin-top:12px">⚡ Place order — REAL ' +
+         (TRD.ex === 'bybit' ? 'Bybit' : 'Bitunix') + ' futures</div>';
+    h += '<div class="ak-note" style="margin:4px 0 6px">Symbol is prefilled from the chart and stays editable.</div>';
+    h += '<div class="ak-grid">' +
+         '<label>Exchange</label><select data-tr="exsel">' +
+         exs.map(function (e) { return '<option value="' + e[0] + '"' + (e[0] === TRD.ex ? ' selected' : '') + '>' + e[1] + '</option>'; }).join('') +
+         '</select>' +
+         '<label>Symbol</label><input type="text" spellcheck="false" autocapitalize="off" autocomplete="off" data-tr="sym" value="' + esc(sym) + '">' +
+         '<label>Qty (coin)</label><input type="text" inputmode="decimal" spellcheck="false" autocomplete="off" data-tr="qty" placeholder="0.01" value="' + esc(TRD.qty || '') + '">' +
+         '<label>Limit price</label><input type="text" inputmode="decimal" spellcheck="false" autocomplete="off" data-tr="price" placeholder="only for LIMIT" value="' + esc(TRD.price || '') + '"' + (TRD.type === 'LIMIT' ? '' : ' disabled') + '>' +
+         '</div>';
+    h += '<div class="ak-secname" style="margin-top:8px">Side</div>' + _trToggleRow('side', [{ v: 'BUY', t: 'BUY · Long' }, { v: 'SELL', t: 'SELL · Short' }], TRD.side || 'BUY');
+    h += '<div class="ak-secname" style="margin-top:8px">Type</div>' + _trToggleRow('type', [{ v: 'MARKET', t: 'Market' }, { v: 'LIMIT', t: 'Limit' }], TRD.type || 'MARKET');
+    h += '<div style="margin-top:8px;display:flex;flex-direction:column;gap:4px">' +
+         '<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-tr="hedge"' + (loadHedge() ? ' checked' : '') + '> hedge-mode account (Bitunix tradeSide / Bybit positionIdx)</label>' +
+         '<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-tr="reduce"' + (TRD.reduceOnly ? ' checked' : '') + '> reduce-only (close / shrink a position)</label></div>';
+    h += '<div class="ak-status" data-tr-status>' + esc(TRD.status || '') + '</div>';
+    h += '<div style="margin-top:8px"><button class="ak-btn ok" data-tr="send"' + (TRD.busy ? ' disabled' : '') + '>' +
+         (TRD.armed ? 'Confirm: ' + esc(tradeSummary()) : 'Send order') + '</button></div>';
+    return h;
+}
+function _trWireForm(sheet, rerender) {
+    var q = function (sel) { return sheet.querySelector(sel); };
+    q('[data-tr="exsel"]').addEventListener('change', function (e) { TRD.ex = e.target.value; TRD.armed = false; TRD.status = ''; rerender(); });
+    q('[data-tr="sym"]').addEventListener('input', function (e) { TRD.sym = e.target.value.trim(); TRD.armed = false; });
+    q('[data-tr="qty"]').addEventListener('input', function (e) { TRD.qty = e.target.value.trim(); TRD.armed = false; });
+    q('[data-tr="price"]').addEventListener('input', function (e) { TRD.price = e.target.value.trim(); TRD.armed = false; });
+    sheet.querySelectorAll('[data-tr-tgl="side"]').forEach(function (b) {
+        b.addEventListener('click', function () { TRD.side = b.dataset.trV; TRD.armed = false; TRD.status = ''; rerender(); });
+    });
+    sheet.querySelectorAll('[data-tr-tgl="type"]').forEach(function (b) {
+        b.addEventListener('click', function () { TRD.type = b.dataset.trV; TRD.armed = false; TRD.status = ''; rerender(); });
+    });
+    var hx = q('[data-tr="hedge"]');
+    if (hx) hx.addEventListener('change', function () { saveHedge(hx.checked); TRD.armed = false; });
+    var rx = q('[data-tr="reduce"]');
+    if (rx) rx.addEventListener('change', function () { TRD.reduceOnly = rx.checked; TRD.armed = false; rerender(); });
+    q('[data-tr="send"]').addEventListener('click', function () {
+        if (TRD.busy) return;
+        // read straight from the DOM inputs at send time
+        TRD.sym = (q('[data-tr="sym"]').value || '').trim().toUpperCase();
+        TRD.qty = (q('[data-tr="qty"]').value || '').trim();
+        TRD.price = (q('[data-tr="price"]').value || '').trim();
+        var qty = Number(TRD.qty);
+        var price = Number(TRD.price);
+        var fail = function (msg) { TRD.armed = false; TRD.busy = false; TRD.status = msg; rerender(); };
+        if (!TRD.sym) return fail('Symbol is empty');
+        if (!isFinite(qty) || qty <= 0) return fail('Qty must be > 0');
+        if (TRD.type === 'LIMIT' && (!isFinite(price) || price <= 0)) return fail('Limit price must be > 0');
+        if (!TRD.armed) { TRD.armed = true; rerender(); return; }   // first tap → arm
+        TRD.armed = false; TRD.busy = true; TRD.status = 'Sending…'; rerender();
+        placeOrder({ ex: TRD.ex, symbol: TRD.sym, side: TRD.side, type: TRD.type,
+                     qty: qty, price: price, hedge: loadHedge(), reduceOnly: TRD.reduceOnly })
+        .then(function (r) {
+            TRD.busy = false;
+            TRD.status = 'OK — orderId ' + (r.orderId || '(none)');
+            rerender();   // re-enables the send button, shows the orderId
+            showToastSafe('Order placed: ' + tradeSummary());
+            // the account just changed — pull fresh balances/positions
+            refreshPortfolio().then(rerender, function () {});
+        }, function (e) {
+            fail(e.message);
+        });
+    });
+}
+
+// ── V352→V354: LIVE ORDER STATE + WRITE CLIENTS (USDT-M futures, REAL account)
+// V352 had a standalone ⚡ Live Order modal; V354 folded it INTO the unified
+// portfolio sheet («одна модалка») — the state, payloads and two-tap arming
+// below now drive the embedded form (_trFormHtml/_trWireForm).
 var TRD = { ex: null, exs: [], side: 'BUY', type: 'MARKET', sym: '', qty: '', price: '', hedge: false, reduceOnly: false, armed: false, busy: false, status: '', err: null };
-var TRDV = null;
 var KEYS_CB = [];
 function fireKeysChanged() { KEYS_CB.forEach(function (cb) { try { cb(); } catch (_) {} }); }
 function onKeysChanged(cb) { if (typeof cb === 'function') KEYS_CB.push(cb); }
@@ -113720,33 +113754,9 @@ function tradeSummary() {
     return (TRD.side === 'SELL' ? 'SELL' : 'BUY') + ' ' + (TRD.qty || '?') + ' ' + (TRD.sym || '?') + ' ' +
         (TRD.type === 'LIMIT' ? 'LIMIT' : 'MARKET') + (TRD.reduceOnly ? ' · reduce-only' : '');
 }
-function openTrade() {
-    ensureAkCss();
-    if (TRDV) { TRDV.backdrop.remove(); TRDV = null; return; }   // toggle
-    var backdrop = document.createElement('div');
-    backdrop.className = 'ak-backdrop';
-    document.body.appendChild(backdrop);
-    TRDV = { backdrop: backdrop };
-    var sheet = document.createElement('div');
-    sheet.className = 'ak-sheet';
-    backdrop.appendChild(sheet);
-    loadKeys().then(function (map) {
-        map = map || {};
-        var exs = [];
-        if (map.bitunix && map.bitunix.key && map.bitunix.secret) exs.push(['bitunix', 'Bitunix']);
-        if (map.bybit && map.bybit.key && map.bybit.secret) exs.push(['bybit', 'Bybit']);
-        TRD.exs = exs; TRD.err = null;
-        if ((!TRD.ex || !exs.some(function (e) { return e[0] === TRD.ex; })) && exs.length) TRD.ex = exs[0][0];
-        if (!TRD.sym) TRD.sym = _chartFutsSymbol();
-        renderTrade();
-        backdrop.classList.add('open');
-    }).catch(function (e) {
-        TRD.exs = []; TRD.err = e.message;
-        renderTrade();
-        backdrop.classList.add('open');
-    });
-}
-function closeTrade() { if (TRDV) { TRDV.backdrop.remove(); TRDV = null; } }
+// V354: the standalone ⚡ modal is gone — openTrade kept as an alias for the
+// public API/probes, it now opens the unified portfolio sheet.
+function openTrade() { openPortfolio(); }
 function _trToggleRow(id, opts, cur) {
     var h = '<div class="ak-btnrow" data-tr-row="' + id + '">';
     opts.forEach(function (o) {
@@ -113754,94 +113764,9 @@ function _trToggleRow(id, opts, cur) {
     });
     return h + '</div>';
 }
-function renderTrade() {
-    if (!TRDV) return;
-    var sheet = TRDV.backdrop.querySelector('.ak-sheet');
-    if (!sheet) return;
-    var exs = TRD.exs || [];
-    var h = '';
-    h += '<div class="ak-head"><div><span class="ak-title">⚡ Live Order</span><span class="ak-sub">USDT-M futures · REAL account</span></div>' +
-         '<button class="ak-x" data-ak="close">✕</button></div>';
-    if (TRD.err) {
-        h += '<div class="ak-body"><div class="ak-errline">' + esc(TRD.err) + '</div></div>' +
-             '<div class="ak-foot"><button class="ak-btn" data-ak="keys">🔑 API Keys</button></div>';
-    } else if (!exs.length) {
-        h += '<div class="ak-body"><div class="ak-empty">No exchange keys configured.<br>' +
-             'Open <b>⚙ Settings → Portfolio → 🔑 API Keys</b> first — the header ' +
-             '⚡ button appears automatically once a key is saved.</div></div>' +
-             '<div class="ak-foot"><button class="ak-btn" data-ak="keys">🔑 API Keys</button></div>';
-    } else {
-        var sym = TRD.sym || _chartFutsSymbol() || 'BTCUSDT';
-        h += '<div class="ak-body">';
-        h += '<div class="ak-note" style="margin-bottom:6px">This hits your <b>REAL</b> ' +
-             (TRD.ex === 'bybit' ? 'Bybit' : 'Bitunix') + ' futures account — check the size before sending.</div>';
-        h += '<div class="ak-grid">' +
-             '<label>Exchange</label><select data-tr="exsel">' +
-             exs.map(function (e) { return '<option value="' + e[0] + '"' + (e[0] === TRD.ex ? ' selected' : '') + '>' + e[1] + '</option>'; }).join('') +
-             '</select>' +
-             '<label>Symbol</label><input type="text" spellcheck="false" autocapitalize="off" autocomplete="off" data-tr="sym" value="' + esc(sym) + '">' +
-             '<label>Qty (coin)</label><input type="text" inputmode="decimal" spellcheck="false" autocomplete="off" data-tr="qty" placeholder="0.01" value="' + esc(TRD.qty || '') + '">' +
-             '<label>Limit price</label><input type="text" inputmode="decimal" spellcheck="false" autocomplete="off" data-tr="price" placeholder="only for LIMIT" value="' + esc(TRD.price || '') + '"' + (TRD.type === 'LIMIT' ? '' : ' disabled') + '>' +
-             '</div>';
-        h += '<div class="ak-secname" style="margin-top:8px">Side</div>' + _trToggleRow('side', [{ v: 'BUY', t: 'BUY · Long' }, { v: 'SELL', t: 'SELL · Short' }], TRD.side || 'BUY');
-        h += '<div class="ak-secname" style="margin-top:8px">Type</div>' + _trToggleRow('type', [{ v: 'MARKET', t: 'Market' }, { v: 'LIMIT', t: 'Limit' }], TRD.type || 'MARKET');
-        h += '<div style="margin-top:8px;display:flex;flex-direction:column;gap:4px">' +
-             '<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-tr="hedge"' + (loadHedge() ? ' checked' : '') + '> hedge-mode account (Bitunix tradeSide / Bybit positionIdx)</label>' +
-             '<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-tr="reduce"' + (TRD.reduceOnly ? ' checked' : '') + '> reduce-only (close / shrink a position)</label></div>';
-        h += '<div class="ak-status" data-tr-status>' + esc(TRD.status || '') + '</div>';
-        h += '</div>';
-        h += '<div class="ak-foot"><button class="ak-btn ok" data-tr="send"' + (TRD.busy ? ' disabled' : '') + '>' +
-             (TRD.armed ? 'Confirm: ' + esc(tradeSummary()) : 'Send order') + '</button>' +
-             '<button class="ak-btn" data-ak="openpf">💼 Portfolio</button></div>';
-    }
-    sheet.innerHTML = h;
-    var q = function (sel) { return sheet.querySelector(sel); };
-    q('[data-ak="close"]').addEventListener('click', closeTrade);
-    var keysBtn = q('[data-ak="keys"]');
-    if (keysBtn) keysBtn.addEventListener('click', function () { closeTrade(); open(); });
-    var pfBtnM = q('[data-ak="openpf"]');
-    if (pfBtnM) pfBtnM.addEventListener('click', function () { closeTrade(); openPortfolio(); });
-    if (TRD.err || !exs.length) return;
-    q('[data-tr="exsel"]').addEventListener('change', function (e) { TRD.ex = e.target.value; TRD.armed = false; TRD.status = ''; renderTrade(); });
-    q('[data-tr="sym"]').addEventListener('input', function (e) { TRD.sym = e.target.value.trim(); TRD.armed = false; });
-    q('[data-tr="qty"]').addEventListener('input', function (e) { TRD.qty = e.target.value.trim(); TRD.armed = false; });
-    q('[data-tr="price"]').addEventListener('input', function (e) { TRD.price = e.target.value.trim(); TRD.armed = false; });
-    sheet.querySelectorAll('[data-tr-tgl="side"]').forEach(function (b) {
-        b.addEventListener('click', function () { TRD.side = b.dataset.trV; TRD.armed = false; TRD.status = ''; renderTrade(); });
-    });
-    sheet.querySelectorAll('[data-tr-tgl="type"]').forEach(function (b) {
-        b.addEventListener('click', function () { TRD.type = b.dataset.trV; TRD.armed = false; TRD.status = ''; renderTrade(); });
-    });
-    var hx = q('[data-tr="hedge"]');
-    if (hx) hx.addEventListener('change', function () { saveHedge(hx.checked); TRD.armed = false; });
-    var rx = q('[data-tr="reduce"]');
-    if (rx) rx.addEventListener('change', function () { TRD.reduceOnly = rx.checked; TRD.armed = false; renderTrade(); });
-    q('[data-tr="send"]').addEventListener('click', function () {
-        if (TRD.busy) return;
-        // read straight from the DOM inputs at send time
-        TRD.sym = (q('[data-tr="sym"]').value || '').trim().toUpperCase();
-        TRD.qty = (q('[data-tr="qty"]').value || '').trim();
-        TRD.price = (q('[data-tr="price"]').value || '').trim();
-        var qty = Number(TRD.qty);
-        var price = Number(TRD.price);
-        var fail = function (msg) { TRD.armed = false; TRD.busy = false; TRD.status = msg; renderTrade(); };
-        if (!TRD.sym) return fail('Symbol is empty');
-        if (!isFinite(qty) || qty <= 0) return fail('Qty must be > 0');
-        if (TRD.type === 'LIMIT' && (!isFinite(price) || price <= 0)) return fail('Limit price must be > 0');
-        if (!TRD.armed) { TRD.armed = true; renderTrade(); return; }   // first tap → arm
-        TRD.armed = false; TRD.busy = true; TRD.status = 'Sending…'; renderTrade();
-        placeOrder({ ex: TRD.ex, symbol: TRD.sym, side: TRD.side, type: TRD.type,
-                     qty: qty, price: price, hedge: loadHedge(), reduceOnly: TRD.reduceOnly })
-        .then(function (r) {
-            TRD.busy = false;
-            TRD.status = 'OK — orderId ' + (r.orderId || '(none)');
-            renderTrade();   // re-enables the send button, shows the orderId
-            showToastSafe('Order placed: ' + tradeSummary());
-        }, function (e) {
-            fail(e.message);
-        });
-    });
-}
+// V354: renderTrade() removed — the form renders inside the unified
+// portfolio sheet via _trFormHtml/_trWireForm above.
+
 
 // ── public surface (+ test hooks for the probes) ──
 window.ExchKeys = {
@@ -113850,7 +113775,7 @@ window.ExchKeys = {
     openTrade: openTrade,
     hasKeys: hasKeys,
     onKeysChanged: onKeysChanged,
-    closeAll: function () { closeMgr(); closePf(); closeTrade(); },
+    closeAll: function () { closeMgr(); closePf(); },
     _test: {
         sha256Hex: sha256Hex,
         hmacSha256Hex: hmacSha256Hex,
