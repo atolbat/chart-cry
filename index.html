@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <!-- V366 PICKER TABS ASSEMBLY (юзер: «Немного табы не ясно как собирают. То есть оверлей имеет всего два индикатор, хотя по логике там больше. Индикатор так то к нему табам может принадлежать. И еще, отсортируй их в табах по имени.»): ① ТАБЫ = ГРУППЫ С МНОЖЕСТВЕННЫМ ЧЛЕНСТВОМ (BrickRegistry.listByCategory переписан): кирпич попадает в НЕСКОЛЬКО табов сразу — (а) первичная категория META.category всегда; (б) таб 'overlay' теперь ТАБ РАЗМЕЩЕНИЯ: все кирпичи с panelMode 'overlay' (рисуются на главном графике) — вся MA-семья (17), Bands, Donchian, Chandelier, Supertrend, PSAR, VWAP/TWAP, ZigZag, S/R, Order Blocks, event-маркеры… → 40 карточек вместо 2; (в) кросс-членство по тегам ('volume'→Volume, 'volatility'→Volatility, 'trend'/'moving average'→Trend, 'momentum'/'oscillator'→Momentum) — MFI (primary momentum) видна и в Volume, ATR (primary trend) и в Volatility, MACD и в Trend; дедуп по type внутри группы. Счётчики на пилюлях = размер группы членства (Overlay 40, Trend 33, Momentum 27, Volume 12, Volatility 8, Composite 20). ② 'OVERLAY' БОЛЬШЕ НЕ ПЕРВИЧНАЯ КАТЕГОРИЯ: TimeMarker → composite (сиблинг Econ Events/Token Unlocks), TWAP → volume (сиблинг VWAP); дескриптор list() нормализует легаси category:'overlay' → 'composite' на всякий случай — таб Overlay собирается ТОЛЬКО по panelMode. ③ СОРТИРОВКА ПО ИМЕНИ (юзер: «отсортируй их в табах по имени»): каждая группа/секция сортируется label.localeCompare(base-sensitive, numeric-aware) — в All-секциях и в каждом табе алфавит. ④ ПИКЕР: канонический порядок табов All → Trend → Momentum → Volatility → Volume → Composite → Overlay (неизвестные категории — в конце по алфавиту), тот же порядок ведёт секции All; во view 'All' секции = ПЕРВИЧНЫЕ категории (каждый кирпич ровно один раз, таб Overlay секцией не является); в конкретном табе — вся группа членства; ИКОНКА/АКЦЕНТ карточки теперь от ПЕРВИЧНОЙ категории (тематическая идентичность — Supertrend в Overlay табе остаётся зелёным трендовым глифом, а не розовым слоя-глифом); ЧИП ПЕРВИЧНОЙ КАТЕГОРИИ на карточках, чья primary ≠ активный таб (мини-бейдж в цвете категории: «trend» на Supertrend внутри Overlay) — глаз видит, ПОЧЕМУ кирпич в этом табе; ПОИСК: ищет внутри активного таба, но если в табе 0 совпадений, а в реестре есть — автоматический глобальный фолбэк, сгруппированный по первичным секциям (пикер не заходит в тупик на «не том табе»). CSS: .ind-pick-badge.cat (lowercase-чип, цвета инлайном из палитры категорий). РЕГРЕСС probe_v366: группировка (overlay=40, trend=33, momentum=27, volume=12, volatility=8, composite=20, суммы All-секций = 78, дублей нет), сортировка по label во всех группах, All = primary-секции без overlay-секции, чипы cross-членства в табах (Supertrend в Overlay несёт «trend»-чип), глобальный фолбэк поиска (в Overlay «rsi» → секция momentum с RSI), клики/поиск/Esc-контракты прежние, boot 0 pageerror. -->
+    <!-- V365 PICKER UI ROUND 2 (юзер: «Добавление индикаторов юай и стили какие-то жидкие, как будто что-то забыло примениться. Переделай. Сейчас это просто список, что выглядит кашей. Нужно больше визуальных особенностей и удобства для поиска и зацепления глазом»): ① КАРТОЧКИ ВМЕСТО ТЕКСТОВОГО СПИСКА: пикер «Add Indicator» переведён с голых строк на СЕТКУ КАРТОЧЕК (.ind-pick-grid, auto-fill minmax(250px,1fr), 2 колонки на десктопе/1 на мобиле) — каждая карточка: ИКОНКА-ПЛИТКА 30×30 с SVG-глифом категории, покрашенная в СОБСТВЕННЫЙ цвет индикатора (BrickRegistry.list() теперь отдаёт META.color — раньше поле существовало в META, но не выходило из реестра; fallback — цвет категории), name 12px + короткое однострочное описание 9.5px (V364-контракт _PICKER_SHORT сохранён), hover — фон/борд/тень светятся тем же акцентом (rgba(var(--argb),a), триплет из _pickRgb), active — scale(.985); тултип с outputs и клик→onPick(type) без изменений. ② ИДЕНТИЧНОСТЬ КАТЕГОРИЙ: _PICKER_CAT_META — цвет + глиф на категорию (all голубой · trend зелёный ↗ · momentum оранжевый пульс · volatility фиолетовые ленты · volume голубые бары · composite золотой гексагон · overlay розовые слои · other серый); ТАБЫ — пилюли «глиф · имя · число» с буквами (All/Trend/Momentum…), активный залит своим цветом (+glow), скролл-строка без скроллбара; таб ALL группирует карточки под ЦВЕТНЫМИ СЕКЦИОННЫМИ ЗАГОЛОВКАМИ (.ind-pick-sechead: иконка в плитке + имя + счётчик + волосяная линия градиентом в цвет категории); конкретный таб — плоская сетка без заголовков. ③ ПОИСК-СТРОКА: лупа-SVG + инпут 16px (анти-iOS-зум, БЕЗ autofocus при открытии — контракт V364) + кнопка ✕ (видна при наборе), счётчик-чип в шапке живой «N / 78» при фильтрации и просто «78» без неё; шапка модалки «Add Indicator» + чип; футер — слева подсказка «/ search · Esc close», справа Back. ④ УМНЫЕ БЕЙДЖИ: у каждой карточки справа колонка бейджей — «overlay»/«pane» (panelMode, голубой/фиолетовый) и зелёный «✓N», если тип уже на графике (подсчёт через api.getIndicator() → constructor.META.type, безопасный try) — глаз мгновенно отделяет уже добавленное от нового. ⑤ КЛАВИАТУРА: Esc → backToMgr и «/» → фокус в поиск — ОДИН document-level keydown (window._pickDocKeys, ставится один раз), который действует ТОЛЬКО пока в DOM есть .ind-cat-list (менеджер/настройки заменяют innerHTML бэкдропа и список исчезает → хэндлер инертен), поэтому ловит «/» даже когда фокус ещё на <body> (программные клики не двигают фокус) и не конфликтует с инпутом (activeElement-проверка); модалка шире — 660px (.ind-pick-modal), мобайл — fullscreen (существующее правило) + 1 колонка. Старые .ind-cat-label/.ind-cat-group/.ind-brick-outs удалены (не использовались больше нигде — проверено rg). РЕГРЕСС probe_v365: boot 0 pageerror, пикер открывается, 78 карточек + 7 табов (All + 6 категорий с числами), поиск НЕ в фокусе при открытии, фильтрация «rsi» → чип «N / 78» + совпадающие карточки, ✕ очищает, таб Momentum → 24 карточки без секционных заголовков, бейджи overlay/pane на местах, клик по RSI → открылась модалка настроек, CE.runTests паритет с прематчем, скриншоты десктоп/мобайл. -->
+    <!-- V364 CAPS COVERAGE ROUND 3 (INSTANT CHASE) + OPACITY + 12 INDICATORS + PICKER REDESIGN (юзер: «Шапки рисуются все ещё частично на последних свечах только. Типа на 50 последних, 70 и тд сначала. Потом, внезапно, я Ждал очень много времени и шапки загрузились дальше... Еще, ты забыл добавить прозрачность линии смуза вольюм барам. Так же прозрачность добавь и шапкам (они должны рисоваться поверх баров, чтобы те просвечивали когда прозрачность была. Ещё в индикаторы добавь ROC, Tillson T3, RSI, chopness, ultimate oscillator, Schaff Trend Cycle, Relative Vigor, coppock, cci, adx, donchain, aroon, chandelier, Vortex, Efficiency Ratio, relative volume. И улучши окно со списком индикаторов, там где мы выбираем какой добавить. Сейчас там квша с огромными описаниями. Описания должны быть маленькие, должен быть поиск (текстбокс без фокуса при открытии окна), и возможно каждый раздел надо сделать в виде табов там, с табом all в том числе»): ① ПОКРЫТИЕ ШАПОК — МГНОВЕННАЯ ЦЕПОЧКА ВМЕСТО 20-СЕКУНДНОГО РУЧЕЙКА: V363 уже покрывал широкую историю холодным фетчем и цепным чейзом, НО чейз ограничивался CHAIN_LIMIT=3 и KICK_SPACING_MS=20 s — на историм глубже одного ответа CoinGlass шапки ползли ~20 баров за шаг с паузами (живая картина юзера: «50 → 70 → ... → ждал очень много времени»). V364: (a) КАЖДЫЙ РАСШИРЯЮЩИЙ ответ немедленно стреляет следующим левым киком chaseLeft() (setTimeout 0 — после .finally сбросил inflight; ре-резолв curSrc + гард совпадения ключа — свитч монеты/ТФ молча останавливает цепь, никаких чужих фетчей); burst-лимит MAX_CHAIN=12 подряд, дальше каденция CHASE_SPACING_MS=1.5 s (вместо 20 s) — покрытие дефолтного ≈1000-барного фрейминга (1-3 ответа ≤4320 строк) завершается за секунды; (b) ХОЛОДНЫЙ ФЕТЧ СРАЗУ ПРОСИТ ВСЮ ЗАГРУЖЕННУЮ ИСТОРИЮ (dataFrom − normMs − 1h .. now) — эндпоинт всегда отвечает НОВЕЙШИМИ ≤4320 строками окна, поэтому ЭКРАН покрыт первым же ответом в любом случае, а старую половину добирает мгновенная цепь (старая visible-first логика с проверкой «влезает ли в 4300 строк» удалена — она и была источником «сначала 50-70 свечей» при dataFrom, выросшем между кадрами); (c) ПУСТОЙ ЛЕВЫЙ ОТВЕТ ПРИ ЖИВОЙ СЕССИИ = СТЕНА РЕТЕНШНА, а не мёртвая монета: мягкая пауза exhaustedLeft (90 s ре-чек) вместо счёта emptyRuns → 3 пустых → deadUntil 10 мин (старый код мог заморозить покрытие И хвостовое обновление на монете, у которой просто нет старого OI); (d) force-флаг у kick() обходит ТОЛЬКО спейсинг-гейт — inflight/dead/fail/скрытый таб/дедуп с кирпичом (_brickFetching/_warmInflight) остаются, «если этот индикатор уже есть на панели, не делаем повторные запросы» не тронуто; extChain/CHAIN_LIMIT заменены на chainRuns/chaseGate (+_debug). ② ПРОЗРАЧНОСТЬ (юзер: «прозрачность добавь и шапкам (они должны рисоваться поверх баров, чтобы те просвечивали когда прозрачность была», «ты забыл добавить прозрачность линии смуза вольюм барам»): новые хаб-поля capAlpha/maAlpha (0.05…1, дефолт 1; sanitize-клампы, restore/round-trip бесплатно; applyVolOiToConfig кладёт oiCapAlpha/volMaAlpha на общий конфиг серии 'vol'); drawCaps красит ctx.globalAlpha = capAlpha (шапки и так поверх баров — при α<1 бары просвечивают), drawVolMa — ctx.globalAlpha = volMaAlpha; в ⚙ Volume Bars две строки «Caps opacity %» (секция OI cap) и «Line opacity %» (секция Volume MA), живой ввод 5…100 % → /100 в хаб. ③ 12 НОВЫХ ИНДИКАТОРОВ (юзеров список; T3/RSI/CCI/ADX уже были): а) в OSCILLATOR_SPECS 6 декларативных осцилляторов (авто-регистрация через createOscillatorBrick, панель separate): ROC — % изменения за N баров (zero-уровень); Choppiness Index — 100·log10(ΣTR/(maxH−minL))/log10(n), уровни 61.8/38.2 + опциональные зоны; Ultimate Oscillator — взвешенные 3 окна BP/TR (7/14/28), уровни 70/50/30 (prefix-sums окна); Schaff Trend Cycle — двойной стохастик MACD(23,50) с EMA(3)-сглаживанием, уровни 75/50/25 (flat-окно стохастика несёт предыдущее значение, EMA seeded SMA); Coppock Curve — WMA(10) от ROC(11)+ROC(14), zero-уровень; Kaufman Efficiency Ratio — |net|/path ×100, опциональная 50. б) 6 полных кирпичей ПЕРЕД бэкфиллом INDICATOR_TYPES (addIndicator резолвит типы через него): RVIBrick (RVI по Элерсу — циклические веса 4/3/2/1 на (c−o)/(h−l), SMMA(10), signal SMA(4), zero-уровень); AroonBrick (Up/Down = 100·(n−barsSinceExtreme)/n, самые свежие экстремумы побеждают тай-брейк, уровни 70/30); VortexBrick (VI+/VI− = Σ|h−l_prev|/ΣTR, Σ|l−h_prev|/ΣTR); DonchianBrick (оверлей: upper/lower/middle + band-fill, middle по умолчанию скрыт); ChandelierBrick (оверлей: longStop = HH(n) − ATR(n)·mult, shortStop = LL(n) + ATR·mult, Wilder-ATR, дефолты 22/3); RvolBrick (отдельная панель, гистограмма vol/SMA(vol,20) через базовый _drawHistogram, уровни 1.0/2.0). Все — needsOHLC где нужно, декларативные params/outputs/levels → модалка настроек и пикер подхватывают без изменений рендера. ④ ПИКЕР ИНДИКАТОРОВ (юзер: «каша с огромными описаниями... маленькие, поиск без фокуса, разделы в виде табов с табом all»): _renderPicker переписан — строка ТАБОВ «All» + категория реестра (с числом кирпичей, горизонтальный скролл), ТАБ фильтрует список (All — с мелкими секционными заголовками), ТЕКСТБОКС ПОИСКА (16 px = без iOS-зума; autocomplete/spellcheck off; БЕЗ autofocus — клавиатура не выскакивает при открытии) живо фильтрует по label/type/tags/описанию с пустым состоянием «Nothing matches»; ОПИСАНИЯ КОРОТКИЕ — _PICKER_SHORT (type → одна короткая строка, ~70 известных типов) с fallback на первое предложение META.description, обрезанное до 64 символов с «…»; список outputs переехал в title-тултип кирпича; клик/Back/×/клик по бэкдропу — контракты прежние. CSS: .ind-cat-search/.ind-cat-tabs/.ind-cat-tab (+active) рядом с прежними правилами пикера. РЕГРЕСС probe_v364: юниты чейза (расширяющий ответ → немедленный follow-up, 4 фетча < 1.5 с на 1000-барном фрейминге с мок-ответами по 300 строк; burst-кап MAX_CHAIN → chaseGate 1.5 s; пустой left-ответ при живой сессии → exhaustedLeft и НЕ dead; дедуп с кирпичом при force; юниты α (drawCaps/drawVolMa globalAlpha == хаб-значения, sanitize round-trip), математика 12 новых индикаторов против эталонных значений (ROC/CHOP/UO/STC/Coppock/ER на синтетике + RVI/Aroon/Vortex/Donchian/Chandelier/RVOL через brickRegistry.create+_computeRaw), DOM пикера (табы All+категории с числами, поиск НЕ в фокусе при открытии, фильтрация, короткие описания ≤ 64+3 символов), boot 0 code-ошибок, self-test паритет; e2e живой график: полный фрейминг покрыт шапками за ≤ 3 запроса и ≤ 10 с. -->
     <!-- V363 CAPS COVERAGE ROUND 2 + VOLUME MA (юзер: «Все ещё не все свечи с шапками. Скорее проблема в истории и лэзи на oi. Кст. Если этот индикатор уже есть на панели, надеюсь, мы не делаем повторные запросы. И еще, добавь в настройку вольюм баров возможность отображения линии смузнотой по объему с настройками и самой линии, и периода и тд»): ① ПОКРЫТИЕ ШАПОК — ЖИВАЯ ДИАГНОСТИКА (probe_v363_diag) показала: холодный фетч покрывал ТОЛЬКО видимое окно (~120 из 1000 загруженных баров), гап-чейз догонял по одному кику за 20 с (331 → 853 точки за 27 с), а у CoinGlass OI-свечей КОНЕЧНАЯ РЕТЕНШН-ГЛУБИНА на интервал (живой замер probe_v363_cgwin/cg3: m1 ≈ 3 дня — окно [12д..сейчас] отвечает ровно 4320 строк новейших, окно целиком в прошлом [12д..10д] — 0 строк; h1 ≈ 12 дней — 288 строк; h4 ≈ 180 дней — 1080 строк от 2026-05-24; endTime ПОЧИТАЕТСЯ на суженных окнах — h4 [30д..10д] → 120 строк ровно окна). Фиксы в VolOiCap.ensure/kick: (a) ХОЛОДНЫЙ ФЕТЧ ПОКРЫВАЕТ ВСЮ ЗАГРУЖЕННУЮ ИСТОРИЮ (dataFrom из api.getDataRange(), синхронный dataPort-запрос) когда окно влезает в ОДИН ответ CoinGlass (≤4300 строк × tf) — дефолтный ≈1000-барный фрейминг покрывается шапками за ОДИН RTT, пан/зум внутри загруженной истории красится мгновенно; широкая история остаётся visible-first (ответ обязан покрыть ЭКРАН), старая половина добирается чейзом; (b) ЦЕПОЧНЫЙ ЛЕВЫЙ ЧЕЙЗ: расширяющий 'left'-кик очищает kicks[key] → следующий кадр ensure() немедленно догоняет остаток (лимит CHAIN_LIMIT=3 подряд, дальше обычные 20 с — паритет _vnCvdKicks без шторма: каждое расширение двигает firstX влево максимум на один ответ ≤4320 строк, цепь короткая); (c) МЯГКАЯ СТЕНА ВЛЕВО exhaustedLeft[key] (TTL EXHAUSTED_RETRY_MS=90 s): ответ 'left'-кика, не принёсший НИЧЕГО старше удерживаемого firstX (порог tf·0.6 — строки НА кромке = endTime-дубли), и первый фетч, начавшийся позже запрошенного старта+tf, ставят флаг — чейз молчит 90 s, потом ОДИН повтор (без вечных 20-секундных холостых киков, сжигавших квоту CoinGlass). ПРИЧИНА МЯГКОСТИ: бэки CoinGlass отвечают НЕСТАБИЛЬНО — одно и то же окно [06-01..09-26] Binance#BTC#oi_um_kline h4 за минуту ответило 523/700 non-null, потом 700/700 (живой замер cgchase) — жёсткий флаг навсегда замораживал покрытие на том, что дал первый сухой ответ; у сингл-серии Binance close'ы до ≈07-01 реально нулевые (chase2: 178 строк, nonNull=1) — фактическая стена сингл-серии ≈142 дня, agg-ребилд достаёт ≈171 день (per-venue суммы всех 5 бирж пресета с 2026-06-02); (d) COLD-ЛЭНД ФОЛЛОУ-АП: холодное окно — предварительное (dataFrom в момент первого кадра ≈ малый первый батч свечей; boot-трейс: первый кип [09-26..сейчас] по ~300-барному батчу, полный 1000-барный батч долетел через секунду) — после успешного cold-лэнда kicks[key] очищается (extChain=1) → следующий кадр немедленно догоняет РЕАЛЬНЫЙ dataFrom (без 20 s паузы); (e) DEAD-КОЙН: 3 пустых ответа подряд → deadUntil[key] = +10 мин (кип ранно-возвращает) — монета без OI нигде не спамит ребилд каждый fail-cooldown; (f) ДЕДУП СО ККИРПИЧОМ: kick пропускается, пока OI-панель (CVDBrick) fetchит ТОТ ЖЕ сессионный ключ (_brickFetching/_warmInflight) — её результат кладётся в общий кэш _auxSessionPut и снапшот переапплайится по идентичности (V362) — «если этот индикатор уже есть на панели, не делаем повторные запросы»; на тёплой сессии, покрывающей видимое окно, ensure() не делает НОЛЬ запросов. В описании источника OI в модалке теперь честно написана ретеншн-глубина CoinGlass. ② ЛИНИЯ ОБЪЁМА (SMA) — новая секция «Volume MA ( smoothed line)» в ⚙ Volume Bars: хаб-поля maOn/maPeriod/maColor/maWidth/maStyle (sanitize: bool/2..500/hex/0.5..6/solid|dash; restore/round-trip бесплатно), applyVolOiToConfig копирует volMa* на общий конфиг серии 'vol' каждый кадр; BarRenderer между барами и шапками зовёт window.VolOiCap.drawVolMa (try/catch — линия не может уронить volume): SMA с включающим окном [i−P+1..i] (тот же конвеншн, что rolling-mean ссылка шапок), полилиния одним stroke, рисуется после баров и ДО шапок (шапки — верхние сигнальные маркеры), globalAlpha=1 (крисп поверх баров α≈0.6, как шапки), solid/dashed ([4,3]); ВИДИМЫЙ СЛАЙС (ss.data) держит ТОЛЬКО экран — окно lookback ПЕРЕД левым краем читается из ОБЩЕГО DataStore (тот же ring, base = бинпоиск xData[iMin] по ds.getX, каждый индекс слайса = base+idx 1:1) — линия начинается ровно от левого края вью; без стора — деградация к видимому окну (старт на P-1 бар вглубь); полное окно обязательно (winCnt ≥ P — конвеншн TradingView), NaN-бары сжимают окно, не рвут линию; период/цвет/ширина/стиль живые (applyOi = saveVolOiCfg + bump + markAllDirtyAndRender). Дефолты: OFF, период 20, цвет #4dd0e1 (циан — не путается с зелёно/красными барами, фиолетовыми/янтарными шапками и синей линией CVD), ширина 1.5, solid. РЕГРЕСС probe_v363_caps PASS (юниты МА: SMA бит-в-бит против наивного пересчёта полной серии, линия от левого края за счёт pre-window из стора, dash/solid setLineDash, деградация на короткой серии N−(P−1) точек, гейт volMaOn=false; coverage-юниты: B1 wide-cold = 1 запрос полного окна + сессия ≥990 точек, B2 цепь 1→2→3→4 с обрывом по CHAIN_LIMIT, B3 мягкая стена без переогня, B4 dead-пауза, B5 дедуп при _brickFetching), e2e ЖИВОЙ график: сессия 1032 точки с 2026-06-01 (= весь загруженный фрейминг 06-06..11-20 + маржа) за 2-3 запроса, maPxOn=1012/maPxOff=1, idle 35 с с тёплой OI-панелью = 1 запрос; probe_v361_caps PASS, probe_v362_caps PASS (адаптирован: getDataRange-стабы + B3/B4 под цепь), boot-трейс: cold→chase→топ-ап за ~2 с, self-test 981/989 == прематч (8 исторических Frame/SeriesJS/MFI), синтакс 7/7, pageerror 0 -->
     <!-- V362 OI-CAP COVERAGE + BASE-TICK VISIBILITY (юзер: «Капы на вольюм барах снизу не видны, видимо закрыты осевым пространством. И еще главнее, капы только на посление свечи распространяются там»): ① ДОННЫЕ ТИКИ БЫЛИ 100% ЗА КЛИПОМ — ГЕОМЕТРИЯ, НЕ ОСЬ: MainRenderer._series клипует каждый ряд по зоне оверлей-оси [clipTop, clipBottom]; у Volume-оси alignZeroToBottom даёт yScale.min = 0 ровно и pyBase = yToPix(0) = pixelBottom зоны (нижняя кромка панели, над лентой времени), а тик рисовался rect(pyBase, thick) — ПОД базлайном, целиком в вырезанной области (юнит-проба V361 не поймала: мок-ctx без клипа). Фикс: донный тик = rect(pyBase − thick) — над базлайном, поверх нижней кромки бара, зеркально топ-капу (тот — над верхней кромкой). ② «КАПЫ ТОЛЬКО НА ПОСЛЕДНИЕ СВЕЧИ» — ДВЕ ПОЛОВИНЫ, ОБЕ В ensure(): (a) снапшот applySess применялся ОДИН раз на ключ (условие d.key !== key) — каждый следующий (возможно более широкий) фетч ложился в сессию, но НИКОГДА не долетал до отрисовки: шапки навсегда сидели в окне ПЕРВОГО фетча (первый kick = видимое окно на момент первого кадра; tail-рефреш и бридж-мержи не переапплаились); фикс — фингерпринт sess.savedAt (тот же контракт, что fp кирпича): ЛЮБОЙ put в сессию (tail/gap/бридж-мерж) → re-apply + recomputeU; фингерпринт пишется ДО парса — неудачный bucketing не превращает apply в ретрай каждый кадр; (b) НЕ БЫЛО гап-чейза старой истории: пан/зум влево от sess.firstX оставлял старые бары без шапок навсегда — теперь kick старого окна [visFrom − (normWin+10)·tf − 1h .. sess.firstX + tf]. ③ kick() теперь МЕРЖИТ в сессию (новее побеждает — форма _vnMergePts кирпича): старый put ЗАМЕНЯЛ снапшот — узкий tail-рефреш мог СЖАТЬ широкую сессию, гап-филлы не копились; + KICK_SPACING_MS 20 s на ключ (паритет _vnCvdKicks): ответ CoinGlass с клампом (история начинается позже запрошенного) больше не перефайрит каждый кадр; tail-рефреш сужен до кирпичного окна (sess.lastX − 2·tf − 60 s .. max(sess.lastX + 120 s, visTo + tf + 120 s)) — старую сторону добивает гап-чейз, мерж сохраняет покрытие. Регресс: probe_v362_caps (юниты: донный тик y = pyBase − thick бит-в-бит; re-apply по savedAt; merge kick’а — покрытие растёт, не сжимается; гап-чейз кик по окну; спейсинг киков; клип-санити: тик над базлайном ≤ clipBottom), e2e: донные тики ВИДНЫ на живом графике (пиксели тиков в полосе волюма), 0 code-ошибок -->
     <!-- V361 OI-CAP VOLUME OVERLAY + FORMING-CANDLE FILL (юзер: «Сделай новый индикатор, или точнее дополни старый, с объемами бары, который сверху будет как бы шапку делать ровно наверху бара в виде линии-отрезка цветной, которая будет сигнализировать, произошло движение на снижении oi, или на повышении. То есть надо два цвета настраиваемых и градиент между ними, который будет сигнализировать о силе движения oi. Естественно шапка отключаема. Так же мож, где не шапка, а дно, наоборот, - там такие отрезки на барах небольшие. Еще сделай настройку где-нибудь в настройках вообще, которая будет последнюю свечу на графике основном делать полой. И филлиться внутри цветом она начинает только ближе к окончанию ее закрытия на тф, где-то с 30% закрытия начинаем градиентно ее с прозрачностью заполнять, делая все более непрозрачно, но нелинейно. Все в настройки вынеси»): ① OI-ШАПКИ НА БАРАХ ОБЪЁМА (дополнение Volume Bars, не новый кирпич): хаб CE_VOL_OI (localStorage ce-vol-oi-v1, sanitize/save/reset/restore — один паттерн с CE_MAIN_CANDLES) → applyVolOiToConfig копирует поля на SHARED конфиг серии 'vol' в ОБОИХ buildRenderSlice (DataStore + SeriesAdapter DataContext) каждый кадр; BarRenderer в конце draw зовёт window.VolOiCap.drawCaps (try/catch — шапки не могут уронить volume). Провайдер VolOiCap: источник графика тем же цепочкой, что heatmap curSrc (getSourceInfo + adapter isPerp + chartEngine_state фолбэк); спека OI = семантика CVD-кирпича (metric 'oi', market 'fut' всегда; sourceMode auto/single/agg с теми же пресетами top3/top5/top8/binby), КЛЮЧ сессионного кэша БИТ-В-БИТ ключ CVDBrick ('cvd:SYM:tf:oi|fut|mode|exch|agg|cumulative|none') → тёплая OI-панель греет шапки бесплатно и наоборот; фетч klineRowsRebuilt (V358-реконструкция дыр агрегата досталась бесплатно) → flowPoints('oi') → aggFlowPoints бакетинг на сетку бара графика (anchor из intervalFor — 0/4d для 3d/2w); ΔOI бара = level[i] − level[i−1]; сила = sign(Δ)·min(1, |Δ|/rollingMean|Δ|, окно normWin)^pow (самоскейл по монете/ТФ); цвет = квантованный градиент 24 ступени mix(downColor, upColor, (u+1)/2) — сильный рост OI тянет к up-цвету, сильное падение к down-цвету, слабое движение — середина. Рисование: шапка = отрезок ТОЧНО наверху бара (pyTop − thick, длина topLen% ширины бара), режим bottom = короткие тики у основания (pyBase, botLen% — «небольшие»), both = оба; батчинг по цветовым вёдрам как у самих баров (буферы кэшируются на провайдере — ноль аллокаций на кадр); lookup времени бара — бинпоиск по ts + допуск полбара (дрейф сеток CG/графика). Дисциплина фетча: inflight-дедуп + 20 s fail-cooldown + document.hidden + TTL-хвост (60 s, AUX_CACHE_TTL) + repaintSoon (dirty.setAll + requestRender) — прилёт данных красится сам, без пана/зума. Дефолтные цвета — НЕ зелёный/красный баров (шапка сидит НА барах, те же оттенки нечитаемы): рост OI = фирменный OI-фиолетовый #bc8cff (цвет линии OI в CVD-кирпиче), падение = янтарный #e3b341; оба настраиваются. ФАЗА ΔOI проверена ЖИВЫМ замером CoinGlass (probe_v361_cg_oi_phase/2): строки oi_um_kline ШТАМПУЮТСЯ временем ОТКРЫТИЯ бара, close строки = OI НА КОНЕЦ бара (17/17 h4-баров: close == close последнего h1-суббара; формирующийся бар присутствует с живым значением) → Δ бара i = level[i] − level[i−1] ровно движение OI внутри бара i, phaseShift=0. Настройки — в ⚙ Volume Bars (Indicators → Volume Bars ⚙): Cap position (Off/Top/Base ticks/Both — «шапка отключаема»), два цвета, Cap length %, Base tick length %, Thickness px, Strength window (bars), Strength curve, отдельная секция OI data source (Source/Exchange/Aggregate — зеркало CVD-кирпича). ② ПОЛАЯ ФОРМИРУЮЩАЯСЯ СВЕЧА (Main Candles → новая секция «Last candle (forming)»): хаб-поля lastHollow/lastFillStart/lastFillCurve (sanitize принимает, пресет-снапшоты возят автоматически); CandlestickRenderer детектит формирующийся бар по ВРЕМЕННОМУ ВХОЖДЕНИЮ [t, t+intervalMs) ∋ now (работает на любой фазе сетки, включая клиентские 2w Monday-anchored; устаревшие данные деградируют честно — закрытый бар рисуется обычным); тонкий режим (≤1.5px) скипает глиф; бар вынимается ИЗ батчей фитилей/тел, рисуется отдельным глифом после батч-проходов: фитиль clean-hollow клипом (два сегмента вне тела, wickThroughBody возвращает классику), тело = обводка hollowBorderWidth + fillRect направления с globalAlpha = ((e − s)/(1 − s))^curve, e = доля прошедшего окна ТФ, s = lastFillStart/100 (до 30% — полностью прозрачное, дальше нелинейный набор непрозрачности до 1 на закрытии). Регресс: probe_v361_caps (юнит на мок-ctx: полая свеча e=0.15/0.45/0.9 — до старта НОЛЬ fillRect, дальше alpha=((e−s)/(1−s))^curve бит-в-бит (0.0459/0.7347), 11 батч-тел + 1 обводка, off-режим 12 тел без глифа; шапки — сессионный сид на сетке 4h: топ-капы set-равны ожидаемым (y = pyTop−thick, w = barW×len%, оба режима, off=0, noData=0), u[] самоскейл rolling-mean (flat-пара → 0, знаковая разнообразность, |u|≤1), палитра = чистые down/up + нейтральная ступень; санитайзеры обоих хабов round-trip + отсечение мусора), probe_v361_ui (обе модалки: 11 контролов OI-шапок + секция Last candle, изменение normWin 20→45 и тоггл lastHollow пишут хаб+localStorage, 0 code-ошибок), probe_v361_live (ЖИВОЙ CoinGlass без моков: 331 уровень OI по ключу 'cvd:BTCUSDT:4h:oi|fut|auto|Binance|top5|cumulative|none', u-разнообразие, скриншоты шапок на живых данных; полая формирующаяся свеча на живом графике — обводка+просвечивающая заливка, сетка видна СКВОЗЬ тело при alpha≈0.57), probe_v361_cg_oi_phase/2 (фаза ΔOI), self-test 981/989 == прематч (8 исторических фейлов, имена бит-в-бит с V43), probe_v347_invert ALL PASS (свечи не тронуты), синтакс 7/7 блоков, 0 code-ошибок во всех пробах -->
@@ -1224,16 +1227,70 @@
         .ind-presets-swipe-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.04); font-size: 10px; color: #8b949e; }
         .ind-presets-swipe-row label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
 
-        /* Picker list */
-        .ind-cat-list { width: 100%; overflow-y: auto; padding: 4px; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 2px; }
-        .ind-cat-group { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
-        .ind-cat-label { font-size: 8px; text-transform: uppercase; letter-spacing: .5px; color: #8b949e; padding: 6px 6px 2px; font-weight: 600; }
-        .ind-brick-item { display: flex; flex-direction: column; width: 100%; text-align: left; background: transparent; color: #e6edf3; border: none; padding: 6px 8px; border-radius: 4px; cursor: pointer; font-family: inherit; margin-bottom: 1px; transition: background .1s; }
-        .ind-brick-item:hover { background: rgba(255,255,255,.07); }
+        /* Picker list — V365-picker-ui REDESIGN (user: «стили какие-то жидкие,
+         * как будто что-то забыло примениться… просто список, что выглядит
+         * кашей. Нужно больше визуальных особенностей и удобства для поиска
+         * и зацепления глазом»). From a bare text list to a CARD GRID with
+         * per-indicator identity: each card carries the indicator's own plot
+         * color (META.color, now surfaced through BrickRegistry.list()) in an
+         * icon tile, hover border/glow; category sections and tabs get their
+         * own accent color + SVG glyph; search is a proper search ROW (lens
+         * icon, live count chip «N / 78», ✕ clear button); panel-mode badge
+         * (overlay / pane) and a green «✓N» badge mark types already on the
+         * chart. Tab accent is fed from JS as --tc/--trgb, card accent as
+         * --ac/--argb (rgba(var(--argb),a) needs the R,G,B triplet). */
+        .ind-pick-modal { width: 660px; max-width: 94vw; }
+        .ind-modal-ttl { display: flex; align-items: center; gap: 7px; min-width: 0; }
+        .ind-pick-count { font-size: 9px; font-weight: 700; color: #58a6ff; background: rgba(88,166,255,.12); border: 1px solid rgba(88,166,255,.3); padding: 1px 7px; border-radius: 999px; letter-spacing: .4px; flex-shrink: 0; }
+        .ind-pick-searchrow { display: flex; align-items: center; gap: 7px; margin: 8px 8px 0; padding: 0 9px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; flex-shrink: 0; transition: border-color .12s, box-shadow .12s; }
+        .ind-pick-searchrow:focus-within { border-color: rgba(88,166,255,.6); box-shadow: 0 0 0 2px rgba(88,166,255,.12); }
+        .ind-pick-lens { width: 13px; height: 13px; color: #6e7681; flex-shrink: 0; }
+        .ind-cat-search { flex: 1; min-width: 0; background: transparent; border: none; padding: 8px 0; color: #e6edf3; font-size: 16px; line-height: 1.2; font-family: inherit; outline: none; box-sizing: border-box; }
+        .ind-cat-search:focus { border-color: transparent; }
+        .ind-cat-search::placeholder { color: #6e7681; }
+        .ind-pick-clear { flex-shrink: 0; background: none; border: none; color: #8b949e; font-size: 14px; line-height: 1; padding: 4px 2px; cursor: pointer; display: none; font-family: inherit; }
+        .ind-pick-searchrow.has-text .ind-pick-clear { display: block; }
+        .ind-pick-clear:hover { color: #fff; }
+        .ind-cat-tabs { display: flex; gap: 5px; padding: 8px 8px 6px; overflow-x: auto; flex-shrink: 0; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+        .ind-cat-tabs::-webkit-scrollbar { display: none; }
+        .ind-cat-tab { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.09); color: #8b949e; font-size: 10px; font-weight: 600; padding: 4px 9px; border-radius: 999px; cursor: pointer; font-family: inherit; letter-spacing: .3px; transition: background .12s, border-color .12s, color .12s, box-shadow .12s; white-space: nowrap; }
+        .ind-cat-tab svg { width: 11px; height: 11px; flex-shrink: 0; }
+        .ind-cat-tab .t-n { font-weight: 700; opacity: .55; }
+        .ind-cat-tab:hover { background: rgba(255,255,255,.08); color: #c9d1d9; }
+        .ind-cat-tab.active { background: rgba(var(--trgb),.16); border-color: rgba(var(--trgb),.55); color: var(--tc); box-shadow: 0 0 10px rgba(var(--trgb),.14); }
+        .ind-cat-tab.active svg { color: var(--tc); }
+        .ind-cat-list { width: 100%; overflow-y: auto; padding: 2px 8px 8px; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+        .ind-pick-sechead { display: flex; align-items: center; gap: 7px; padding: 5px 2px 0; }
+        .ind-pick-sechead .sc-ico { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 6px; background: rgba(var(--argb),.14); border: 1px solid rgba(var(--argb),.35); color: var(--ac); flex-shrink: 0; }
+        .ind-pick-sechead .sc-ico svg { width: 11px; height: 11px; }
+        .ind-pick-sechead .sc-t { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .9px; color: #c9d1d9; }
+        .ind-pick-sechead .sc-n { font-size: 9px; font-weight: 700; color: var(--ac); background: rgba(var(--argb),.12); padding: 1px 6px; border-radius: 999px; flex-shrink: 0; }
+        .ind-pick-sechead .sc-line { flex: 1; height: 1px; background: linear-gradient(90deg, rgba(var(--argb),.4), transparent); }
+        .ind-pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 6px; }
+        .ind-brick-item { position: relative; display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; background: rgba(255,255,255,.03); color: #e6edf3; border: 1px solid rgba(255,255,255,.07); padding: 7px 9px; border-radius: 9px; cursor: pointer; font-family: inherit; transition: background .12s, border-color .12s, box-shadow .12s, transform .06s; overflow: hidden; }
+        .ind-brick-item:hover { background: rgba(var(--argb),.09); border-color: rgba(var(--argb),.55); box-shadow: 0 2px 10px rgba(var(--argb),.18); }
+        .ind-brick-item:active { transform: scale(.985); }
         .ind-brick-item.active { background: rgba(76,130,255,.2); color: #58a6ff; }
-        .ind-brick-name { font-size: 11px; font-weight: 600; }
-        .ind-brick-desc { font-size: 9px; color: #8b949e; margin-top: 1px; }
-        .ind-brick-outs { font-size: 8px; color: #58a6ff; margin-top: 1px; }
+        .ind-pick-ico { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 8px; background: rgba(var(--argb),.13); border: 1px solid rgba(var(--argb),.32); color: var(--ac); flex-shrink: 0; }
+        .ind-pick-ico svg { width: 15px; height: 15px; }
+        .ind-pick-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+        .ind-brick-name { font-size: 12px; font-weight: 600; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .ind-brick-desc { font-size: 9.5px; color: #7d8590; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .ind-pick-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex-shrink: 0; }
+        .ind-pick-badge { font-size: 7.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; padding: 1.5px 6px; border-radius: 999px; border: 1px solid; line-height: 1.4; }
+        .ind-pick-badge.overlay { color: #79b8ff; background: rgba(88,166,255,.1); border-color: rgba(88,166,255,.28); }
+        .ind-pick-badge.pane { color: #d2a8ff; background: rgba(188,140,255,.1); border-color: rgba(188,140,255,.28); }
+        .ind-pick-badge.onchart { color: #56d364; background: rgba(63,185,80,.1); border-color: rgba(63,185,80,.3); }
+        /* V366-picker-tabs: cross-membership chip — shows a card's PRIMARY
+           category inside a tab it only secondarily belongs to (colors are
+           set inline from the category palette). */
+        .ind-pick-badge.cat { text-transform: lowercase; letter-spacing: .4px; }
+        .ind-pick-empty { display: flex; flex-direction: column; align-items: center; gap: 7px; color: #8b949e; font-size: 11.5px; text-align: center; padding: 32px 12px; }
+        .ind-pick-empty svg { width: 26px; height: 26px; opacity: .45; }
+        .ind-pick-empty b { color: #c9d1d9; font-weight: 600; }
+        .ind-pick-empty .hint2 { font-size: 9.5px; color: #6e7681; }
+        .ind-modal-footer .ind-pick-kbdhint { margin-right: auto; font-size: 8.5px; color: #6e7681; letter-spacing: .3px; }
+        .ind-modal-footer .ind-pick-kbdhint b { color: #8b949e; font-weight: 600; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.12); border-radius: 4px; padding: 0 4px; }
 
         /* Settings area — compact */
         .ind-config-area { flex: 1; padding: 8px 10px; overflow-y: auto; min-width: 0; }
@@ -1276,6 +1333,9 @@
             .ind-modal-backdrop .ind-param, .preset-modal-backdrop .ind-param { flex-direction: column; align-items: stretch; gap: 3px; }
             .ind-modal-backdrop .ind-param span, .preset-modal-backdrop .ind-param span { min-width: 0; font-size: 12px; }
             .ind-modal-backdrop .ind-param input, .ind-modal-backdrop .ind-param select { font-size: 16px; padding: 8px 10px; }
+            .ind-modal-backdrop .ind-pick-grid { grid-template-columns: 1fr; }
+            .ind-modal-backdrop .ind-pick-modal { width: 100vw; max-width: 100vw; }
+            .ind-modal-backdrop .ind-pick-kbdhint { display: none; }  /* keyboard hint is noise on touch */
             .preset-item { flex-direction: column; align-items: stretch; gap: 6px; padding: 10px; }
             .preset-item-actions { justify-content: space-between; gap: 4px; }
             .preset-item-actions button { flex: 1; padding: 8px 4px; font-size: 12px; min-height: 32px; }
@@ -7068,6 +7128,13 @@ const CE_VOL_OI_DEFAULTS = {
     thickPx: 2,
     normWin: 20,
     pow: 1,
+    // V364: user opacity (0.05…1). The caps paint OVER the volume bars and
+    // the MA line paints over them too — an alpha < 1 lets the bars show
+    // through (user: «прозрачность добавь и шапкам (они должны рисоваться
+    // поверх баров, чтобы те просвечивали когда прозрачность была», «ты
+    // забыл добавить прозрачность линии смуза вольюм барам»).
+    capAlpha: 1,
+    maAlpha: 1,
     sourceMode: 'auto',
     exchange: 'Binance',
     aggList: 'top5',
@@ -7102,6 +7169,10 @@ function sanitizeVolOiState(obj) {
     if (typeof obj.maColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(obj.maColor)) out.maColor = obj.maColor;
     if (isFinite(+obj.maWidth) && +obj.maWidth >= 0.5 && +obj.maWidth <= 6) out.maWidth = +obj.maWidth;
     if (obj.maStyle === 'solid' || obj.maStyle === 'dash') out.maStyle = obj.maStyle;
+    // V364: user opacity — clamped 0.05…1 (a 0 would make the feature
+    // invisible and indistinguishable from "off", so it is not offered)
+    if (isFinite(+obj.capAlpha) && +obj.capAlpha >= 0.05 && +obj.capAlpha <= 1) out.capAlpha = +obj.capAlpha;
+    if (isFinite(+obj.maAlpha) && +obj.maAlpha >= 0.05 && +obj.maAlpha <= 1) out.maAlpha = +obj.maAlpha;
     return out;
 }
 function saveVolOiCfg() {
@@ -7136,12 +7207,16 @@ function applyVolOiToConfig(cfg) {
     cfg.oiCapThick   = (isFinite(+v.thickPx) && +v.thickPx >= 1) ? +v.thickPx : 2;
     cfg.oiCapNormWin = (isFinite(+v.normWin) && +v.normWin >= 2) ? Math.round(+v.normWin) : 20;
     cfg.oiCapPow     = (isFinite(+v.pow) && +v.pow >= 0.25) ? +v.pow : 1;
+    // V364: user opacity (drawCaps paints the caps OVER the bars)
+    cfg.oiCapAlpha   = (isFinite(+v.capAlpha) && +v.capAlpha >= 0.05 && +v.capAlpha <= 1) ? +v.capAlpha : 1;
     // V363: volume MA line (SMA over the volume bars)
     cfg.volMaOn     = v.maOn === true;
     cfg.volMaPeriod = (isFinite(+v.maPeriod) && +v.maPeriod >= 2) ? Math.round(+v.maPeriod) : 20;
     cfg.volMaColor  = (typeof v.maColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(v.maColor)) ? v.maColor : '#4dd0e1';
     cfg.volMaWidth  = (isFinite(+v.maWidth) && +v.maWidth >= 0.5) ? +v.maWidth : 1.5;
     cfg.volMaStyle  = (v.maStyle === 'dash') ? 'dash' : 'solid';
+    // V364: user opacity (drawVolMa paints the line over the bars)
+    cfg.volMaAlpha  = (isFinite(+v.maAlpha) && +v.maAlpha >= 0.05 && +v.maAlpha <= 1) ? +v.maAlpha : 1;
 }
 
 // ─── Debug flags ──────────────────────────────────────────────────────────
@@ -25164,7 +25239,17 @@ class BrickRegistry {
                 type,
                 label: meta.label || type,
                 description: meta.description || '',
-                category: meta.category || 'other',
+                // V366-picker-tabs: 'overlay' is a PLACEMENT tab (derived from
+                // panelMode), never a thematic primary — normalize any legacy
+                // META.category:'overlay' into 'composite' so the All-view
+                // sections stay complete (the brick still shows in the Overlay
+                // tab via its panelMode).
+                category: meta.category === 'overlay' ? 'composite' : (meta.category || 'other'),
+                // V365-picker-ui: expose META.color (per-indicator accent) —
+                // the picker card grid tints each card's icon tile / border
+                // / glow with the indicator's own plot color (fallback:
+                // category color). Purely additive — nothing read color before.
+                color: meta.color || null,
                 tags: meta.tags || [],
                 panelMode: meta.panelMode || 'overlay',
                 // V38: include ALL param fields (options, min, max, step) so
@@ -25218,12 +25303,49 @@ class BrickRegistry {
         return result;
     }
 
+    // V366-picker-tabs: the picker tabs are MULTI-MEMBERSHIP groups — one
+    // brick can appear in several tabs (user: «Индикатор так то к нему табам
+    // может принадлежать»; «оверлей имеет всего два индикатора, хотя по
+    // логике там больше» — the old grouping was by the single META.category,
+    // which left the Overlay tab with only the 2 bricks whose *primary* was
+    // 'overlay' while ~40 bricks actually draw on the main chart):
+    //   • primary category (META.category) — always; in the All tab it is
+    //     also the section the brick lives in (each brick exactly once);
+    //   • 'overlay' — a PLACEMENT tab: every brick with panelMode 'overlay'
+    //     (draws on the main chart) lands here, so it holds the whole MA
+    //     family, Bands, Donchian, Chandelier, Supertrend, PSAR, VWAP/TWAP,
+    //     ZigZag, S/R, Order Blocks, event markers…;
+    //   • tag-derived cross-membership ('volume' → Volume, 'volatility' →
+    //     Volatility, 'trend'/'moving average' → Trend, 'momentum'/'oscillator'
+    //     → Momentum) — e.g. MFI (primary momentum) also opens from Volume,
+    //     ATR (primary trend) from Volatility, MACD from Trend.
+    // Every list is SORTED BY NAME (user: «отсортируй их в табах по имени» —
+    // localeCompare, base-sensitive, numeric-aware so MACD2 > MACD10).
     listByCategory() {
         const cats = {};
+        const put = (c, item) => {
+            const arr = cats[c] || (cats[c] = []);
+            if (!arr.some(b => b.type === item.type)) arr.push(item);
+        };
+        // Deliberate tag→tab map. Only EXACT tag matches (no substrings, so
+        // «trend-strength» ≠ «trend»). No 'bands' rule: VWAP/TWAP carry a
+        // 'bands' tag but are execution benchmarks, not volatility tools.
+        const TAG2CAT = [
+            ['volume', 'volume'],
+            ['volatility', 'volatility'],
+            ['trend', 'trend'], ['moving average', 'trend'],
+            ['momentum', 'momentum'], ['oscillator', 'momentum'],
+        ];
         for (const item of this.list()) {
-            if (!cats[item.category]) cats[item.category] = [];
-            cats[item.category].push(item);
+            put(item.category, item);
+            if (item.panelMode === 'overlay') put('overlay', item);
+            const tags = item.tags || [];
+            for (const [tag, cat] of TAG2CAT) {
+                if (tags.includes(tag)) put(cat, item);
+            }
         }
+        const cmp = (a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base', numeric: true });
+        for (const c of Object.keys(cats)) cats[c].sort(cmp);
         return cats;
     }
 
@@ -26083,6 +26205,10 @@ function createMABrick(spec) {
             description: spec.description,
             category: spec.category || 'trend',
             tags: spec.tags,
+            // V365-picker-ui: top-level accent color (same as outputs[0].color)
+            // so the picker card grid tints each card with the indicator's own
+            // plot color instead of the flat category color.
+            color: spec.color,
             params,
             inputs: [new BrickInput({ name: 'source', label: 'Source', default: 'close' })],
             outputs: [new BrickOutput({ name: 'line', label: spec.label, type: 'line', color: spec.color })],
@@ -27395,6 +27521,276 @@ const OSCILLATOR_SPECS = [
             new BrickLevel({ value: 0, label: '0', color: 'rgba(255,255,255,0.25)', lineWidth: 1, dash: [], optional: true, name: 'zero', defaultVisible: true }),
         ],
     },
+    // ── V364: six new oscillators (user request) ──────────────────────────
+    {
+        type: 'roc', label: 'ROC', description: 'Rate of Change — % price change over N bars',
+        tags: ['momentum', 'oscillator', 'roc', 'rate-of-change'], color: '#d29922',
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'period', label: 'Period', default: 9, min: 1, max: 500, step: 1 }),
+            new BrickParam({ name: 'logScale', label: 'Log Scale', type: 'bool', default: false, group: 'Display' }),
+        ],
+        compute: (src, count, params, ctx) => {
+            const n = Math.max(1, Math.floor(params.period || 9));
+            const line = new Float64Array(count).fill(NaN);
+            for (let i = n; i < count; i++) {
+                const prev = src[i - n];
+                if (isFinite(src[i]) && isFinite(prev) && prev !== 0) {
+                    line[i] = (src[i] / prev - 1) * 100;
+                }
+            }
+            return line;
+        },
+        levels: [
+            new BrickLevel({ value: 0, label: '0', color: 'rgba(255,255,255,0.25)', lineWidth: 1, dash: [], optional: true, name: 'zero', defaultVisible: true }),
+        ],
+    },
+    {
+        type: 'chop', label: 'Choppiness Index', shortLabel: 'CHOP', description: 'Choppiness Index — 0-100; high = sideways, low = trending',
+        tags: ['volatility', 'oscillator', 'choppiness', 'trend-strength'], color: '#58a6ff',
+        panelMode: 'separate',
+        needsOHLC: true,
+        params: [
+            new BrickParam({ name: 'period', label: 'Period', default: 14, min: 2, max: 200, step: 1 }),
+            new BrickParam({ name: 'logScale', label: 'Log Scale', type: 'bool', default: false, group: 'Display' }),
+        ],
+        compute: (src, count, params, ctx) => {
+            const n = Math.max(2, Math.floor(params.period || 14));
+            const ohlc = ctx.ohlc;
+            const line = new Float64Array(count).fill(NaN);
+            if (!ohlc || !ohlc.high || !ohlc.low) return line;
+            const H = ohlc.high, L = ohlc.low, C = src;
+            for (let i = n - 1; i < count; i++) {
+                const c = C[i];
+                if (!isFinite(c)) continue;
+                // window [i−n+1 .. i]: ΣTR and the high-low range
+                let sumTR = 0, maxH = -Infinity, minL = Infinity, ok = true;
+                for (let j = i - n + 1; j <= i; j++) {
+                    const hj = H[j], lj = L[j], cj = C[j];
+                    if (!isFinite(hj) || !isFinite(lj) || !isFinite(cj)) { ok = false; break; }
+                    const pc = (j > 0 && isFinite(C[j - 1])) ? C[j - 1] : cj;
+                    sumTR += Math.max(hj - lj, Math.abs(hj - pc), Math.abs(lj - pc));
+                    if (hj > maxH) maxH = hj;
+                    if (lj < minL) minL = lj;
+                }
+                const range = maxH - minL;
+                // chop = 100·log10(ΣTR / range) / log10(n) — 100 = pure chop,
+                // 0 = one-directional trend (Dreiss)
+                if (ok && range > 1e-12 && sumTR > 0) {
+                    line[i] = 100 * Math.log10(sumTR / range) / Math.log10(n);
+                }
+            }
+            return line;
+        },
+        levels: [
+            new BrickLevel({ value: 61.8, label: '61.8', color: 'rgba(244,67,54,0.5)', lineWidth: 1, dash: [4, 4], optional: true, name: 'choppy', defaultVisible: true }),
+            new BrickLevel({ value: 38.2, label: '38.2', color: 'rgba(76,175,80,0.5)', lineWidth: 1, dash: [4, 4], optional: true, name: 'trending', defaultVisible: true }),
+        ],
+        bands: [
+            new BrickBand({ from: 61.8, to: 100, color: 'rgba(244,67,54,0.05)', optional: true, name: 'choppyZone', defaultVisible: false }),
+            new BrickBand({ from: 0, to: 38.2, color: 'rgba(76,175,80,0.05)', optional: true, name: 'trendZone', defaultVisible: false }),
+        ],
+    },
+    {
+        type: 'uo', label: 'Ultimate Oscillator', shortLabel: 'UO', description: 'Ultimate Oscillator — weighted 3-window buying pressure (0-100)',
+        tags: ['momentum', 'oscillator', 'ultimate', 'williams'], color: '#bc8cff',
+        panelMode: 'separate',
+        needsOHLC: true,
+        params: [
+            new BrickParam({ name: 'p1', label: 'Window 1', default: 7, min: 2, max: 100, step: 1 }),
+            new BrickParam({ name: 'p2', label: 'Window 2', default: 14, min: 2, max: 200, step: 1 }),
+            new BrickParam({ name: 'p3', label: 'Window 3', default: 28, min: 2, max: 400, step: 1 }),
+            new BrickParam({ name: 'logScale', label: 'Log Scale', type: 'bool', default: false, group: 'Display' }),
+        ],
+        compute: (src, count, params, ctx) => {
+            const n1 = Math.max(2, Math.floor(params.p1 || 7));
+            const n2 = Math.max(n1, Math.floor(params.p2 || 14));
+            const n3 = Math.max(n2, Math.floor(params.p3 || 28));
+            const ohlc = ctx.ohlc;
+            const line = new Float64Array(count).fill(NaN);
+            if (!ohlc || !ohlc.high || !ohlc.low) return line;
+            const H = ohlc.high, L = ohlc.low, C = src;
+            // buying pressure + true range per bar (cPrev = prev close, first bar → its own close)
+            const bp = new Float64Array(count), tr = new Float64Array(count);
+            const bpOK = new Uint8Array(count), trOK = new Uint8Array(count);
+            for (let i = 0; i < count; i++) {
+                const h = H[i], l = L[i], c = C[i];
+                if (!isFinite(h) || !isFinite(l) || !isFinite(c)) continue;
+                const pc = (i > 0 && isFinite(C[i - 1])) ? C[i - 1] : c;
+                const lowMin = Math.min(l, pc), highMax = Math.max(h, pc);
+                bp[i] = c - lowMin; tr[i] = highMax - lowMin;
+                bpOK[i] = 1; trOK[i] = 1;
+            }
+            // window sums over the LARGEST window via prefix sums, smaller
+            // windows = the same prefix difference
+            const pb = new Float64Array(count + 1), pt = new Float64Array(count + 1);
+            for (let i = 0; i < count; i++) {
+                pb[i + 1] = pb[i] + bp[i];
+                pt[i + 1] = pt[i] + tr[i];
+            }
+            const wAvg = (i, n, pb, pt) => {
+                const s = i - n + 1;
+                if (s < 0) return NaN;
+                const sb = pb[i + 1] - pb[s], st = pt[i + 1] - pt[s];
+                return st > 1e-12 ? sb / st : NaN;
+            };
+            for (let i = n3 - 1; i < count; i++) {
+                if (!bpOK[i]) continue;
+                const a1 = wAvg(i, n1, pb, pt), a2 = wAvg(i, n2, pb, pt), a3 = wAvg(i, n3, pb, pt);
+                if (isFinite(a1) && isFinite(a2) && isFinite(a3)) {
+                    line[i] = 100 * (4 * a1 + 2 * a2 + a3) / 7;
+                }
+            }
+            return line;
+        },
+        levels: [
+            new BrickLevel({ value: 70, label: '70', color: 'rgba(244,67,54,0.5)', lineWidth: 1, dash: [4, 4], optional: true, name: 'overbought', defaultVisible: true }),
+            new BrickLevel({ value: 50, label: '50', color: 'rgba(255,255,255,0.15)', lineWidth: 1, dash: [2, 4], optional: true, name: 'midline', defaultVisible: false }),
+            new BrickLevel({ value: 30, label: '30', color: 'rgba(76,175,80,0.5)', lineWidth: 1, dash: [4, 4], optional: true, name: 'oversold', defaultVisible: true }),
+        ],
+    },
+    {
+        type: 'stc', label: 'Schaff Trend Cycle', shortLabel: 'STC', description: 'Schaff Trend Cycle — double-stochastic MACD (0-100)',
+        tags: ['trend', 'oscillator', 'stochastic', 'macd', 'schaff'], color: '#f0883e',
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'fast', label: 'Fast EMA', default: 23, min: 2, max: 200, step: 1 }),
+            new BrickParam({ name: 'slow', label: 'Slow EMA', default: 50, min: 3, max: 400, step: 1 }),
+            new BrickParam({ name: 'cycle', label: 'Cycle', default: 10, min: 2, max: 100, step: 1 }),
+            new BrickParam({ name: 'smooth', label: 'Smoothing', default: 3, min: 1, max: 50, step: 1 }),
+            new BrickParam({ name: 'logScale', label: 'Log Scale', type: 'bool', default: false, group: 'Display' }),
+        ],
+        compute: (src, count, params, ctx) => {
+            const f = Math.max(2, Math.floor(params.fast || 23));
+            const s = Math.max(f + 1, Math.floor(params.slow || 50));
+            const cyc = Math.max(2, Math.floor(params.cycle || 10));
+            const sm = Math.max(1, Math.floor(params.smooth || 3));
+            const line = new Float64Array(count).fill(NaN);
+            // EMA seeded with the SMA of the first n finite values (the same
+            // convention the MA bricks use)
+            const ema = (arr, n) => {
+                const out = new Float64Array(count).fill(NaN);
+                let sum = 0, seen = 0, seedIdx = -1;
+                for (let i = 0; i < count; i++) {
+                    if (!isFinite(arr[i])) continue;
+                    if (seen < n) { sum += arr[i]; seen++; if (seen === n) { out[i] = sum / n; seedIdx = i; } }
+                    else { out[i] = arr[i] * (2 / (n + 1)) + out[seedIdx] * (1 - 2 / (n + 1)); seedIdx = i; }
+                }
+                return out;
+            };
+            const ef = ema(src, f), es = ema(src, s);
+            const macd = new Float64Array(count).fill(NaN);
+            for (let i = 0; i < count; i++) {
+                if (isFinite(ef[i]) && isFinite(es[i])) macd[i] = ef[i] - es[i];
+            }
+            // %stochastic over a rolling `cyc` window; flat window → carry the
+            // previous value (the TV convention), NaN until the window is full
+            const stochOf = (arr, cyc, prev) => {
+                const out = new Float64Array(count).fill(NaN);
+                for (let i = cyc - 1; i < count; i++) {
+                    const v = arr[i];
+                    if (!isFinite(v)) continue;
+                    let mx = -Infinity, mn = Infinity, ok = true;
+                    for (let j = i - cyc + 1; j <= i; j++) {
+                        const a = arr[j];
+                        if (!isFinite(a)) { ok = false; break; }
+                        if (a > mx) mx = a;
+                        if (a < mn) mn = a;
+                    }
+                    if (!ok) continue;
+                    const d = mx - mn;
+                    if (d <= 1e-12) {
+                        const pv = (i > 0) ? out[i - 1] : NaN;
+                        out[i] = isFinite(pv) ? pv : 50;
+                    } else {
+                        out[i] = 100 * (v - mn) / d;
+                    }
+                }
+                return out;
+            };
+            const st1 = stochOf(macd, cyc);
+            const sm1 = ema(st1, sm);   // ema() skips NaN gaps by construction
+            const st2 = stochOf(sm1, cyc);
+            const stc = ema(st2, sm);
+            return stc;
+        },
+        levels: [
+            new BrickLevel({ value: 75, label: '75', color: 'rgba(244,67,54,0.5)', lineWidth: 1, dash: [4, 4], optional: true, name: 'overbought', defaultVisible: true }),
+            new BrickLevel({ value: 50, label: '50', color: 'rgba(255,255,255,0.15)', lineWidth: 1, dash: [2, 4], optional: true, name: 'midline', defaultVisible: false }),
+            new BrickLevel({ value: 25, label: '25', color: 'rgba(76,175,80,0.5)', lineWidth: 1, dash: [4, 4], optional: true, name: 'oversold', defaultVisible: true }),
+        ],
+    },
+    {
+        type: 'coppock', label: 'Coppock Curve', shortLabel: 'COPOCK', description: 'Coppock Curve — WMA of ROC(11)+ROC(14) long-term momentum',
+        tags: ['momentum', 'oscillator', 'coppock', 'long-term'], color: '#3fb950',
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'roc1', label: 'ROC 1', default: 11, min: 1, max: 200, step: 1 }),
+            new BrickParam({ name: 'roc2', label: 'ROC 2', default: 14, min: 1, max: 200, step: 1 }),
+            new BrickParam({ name: 'wmaLen', label: 'WMA Length', default: 10, min: 2, max: 100, step: 1 }),
+            new BrickParam({ name: 'logScale', label: 'Log Scale', type: 'bool', default: false, group: 'Display' }),
+        ],
+        compute: (src, count, params, ctx) => {
+            const r1 = Math.max(1, Math.floor(params.roc1 || 11));
+            const r2 = Math.max(1, Math.floor(params.roc2 || 14));
+            const w = Math.max(2, Math.floor(params.wmaLen || 10));
+            const line = new Float64Array(count).fill(NaN);
+            const sum = new Float64Array(count).fill(NaN);
+            for (let i = Math.max(r1, r2); i < count; i++) {
+                const p1 = src[i - r1], p2 = src[i - r2];
+                if (isFinite(src[i]) && isFinite(p1) && p1 !== 0 && isFinite(p2) && p2 !== 0) {
+                    sum[i] = ((src[i] / p1 - 1) + (src[i] / p2 - 1)) * 100;
+                }
+            }
+            // WMA(w) over the finite sum series (a NaN roc gap just shifts the
+            // window start — the line never breaks)
+            const denom = w * (w + 1) / 2;
+            for (let i = 0; i < count; i++) {
+                let acc = 0, wsum = 0, k = 1;
+                for (let j = Math.max(0, i - w + 1); j <= i; j++, k++) {
+                    if (isFinite(sum[j])) { acc += sum[j] * k; wsum += k; }
+                }
+                if (wsum === denom) line[i] = acc / denom;
+                else if (wsum > 0 && (i >= w - 1)) line[i] = acc / wsum;   // start of data: shorter window
+            }
+            return line;
+        },
+        levels: [
+            new BrickLevel({ value: 0, label: '0', color: 'rgba(255,255,255,0.25)', lineWidth: 1, dash: [], optional: true, name: 'zero', defaultVisible: true }),
+        ],
+    },
+    {
+        type: 'er', label: 'Efficiency Ratio', shortLabel: 'ER', description: 'Kaufman Efficiency Ratio — net move / path (0-100, high = trend)',
+        tags: ['trend', 'efficiency', 'kaufman', 'noise'], color: '#d2a8ff',
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'period', label: 'Period', default: 10, min: 2, max: 200, step: 1 }),
+            new BrickParam({ name: 'logScale', label: 'Log Scale', type: 'bool', default: false, group: 'Display' }),
+        ],
+        compute: (src, count, params, ctx) => {
+            const n = Math.max(2, Math.floor(params.period || 10));
+            const line = new Float64Array(count).fill(NaN);
+            for (let i = n; i < count; i++) {
+                const c = src[i];
+                if (!isFinite(c) || !isFinite(src[i - n])) continue;
+                let path = 0, ok = true;
+                for (let j = i - n + 1; j <= i; j++) {
+                    const d = src[j] - src[j - 1];
+                    if (!isFinite(d)) { ok = false; break; }
+                    path += Math.abs(d);
+                }
+                if (!ok) continue;
+                // net directional move / total path — 100 = straight trend,
+                // 0 = maximum noise (Kaufman)
+                const net = Math.abs(c - src[i - n]);
+                line[i] = path > 1e-12 ? 100 * net / path : 0;
+            }
+            return line;
+        },
+        levels: [
+            new BrickLevel({ value: 50, label: '50', color: 'rgba(255,255,255,0.15)', lineWidth: 1, dash: [2, 4], optional: true, name: 'midline', defaultVisible: false }),
+        ],
+    },
 ];
 
 /**
@@ -27412,6 +27808,8 @@ function createOscillatorBrick(spec) {
             category: 'momentum',
             tags: spec.tags,
             panelMode: spec.panelMode || 'separate',
+            // V365-picker-ui: top-level accent (see GeneratedMABrick note).
+            color: spec.color,
             params: spec.params,
             inputs: [new BrickInput({ name: 'source', label: 'Source', default: 'close' })],
             outputs: [new BrickOutput({ name: 'line', label: spec.label, type: 'line', color: spec.color })],
@@ -33246,7 +33644,11 @@ class TimeMarkerBrick extends IndicatorBrick {
         label: 'Time Markers',
         shortLabel: 'Time',
         description: 'Vertical line(s) at specific timestamps. Multi-marker support with price-diff % between consecutive markers. Custom date/time picker UI. Persists across assets and presets.',
-        category: 'overlay',
+        // V366-picker-tabs: 'overlay' is now a PLACEMENT tab (panelMode-based),
+        // not a thematic primary category — this brick re-homes to composite
+        // (sibling of Econ Events / Token Unlocks). It still appears in the
+        // Overlay tab via its panelMode.
+        category: 'composite',
         tags: ['vertical', 'line', 'time', 'marker', 'event', 'multi', 'diff'],
         panelMode: 'overlay',
         params: [
@@ -41849,7 +42251,10 @@ class TWAPBrick extends IndicatorBrick {
         label: 'TWAP',
         shortLabel: 'TWAP',
         description: 'Time-Weighted Average Price — equal-time-weighted mean of the source (each bar weighs the same, unlike VWAP). Modes: rolling window, anchored from a fixed date/time, or auto-resetting daily/weekly/monthly cumulative. Optional sigma deviation bands.',
-        category: 'overlay',
+        // V366-picker-tabs: 'overlay' is a PLACEMENT tab now — TWAP re-homes
+        // to volume (sibling of VWAP, same execution-benchmark family) and
+        // still shows in the Overlay tab via panelMode.
+        category: 'volume',
         tags: ['twap', 'average', 'execution', 'algo', 'anchored', 'bands', 'institutional'],
         panelMode: 'overlay',
         params: [
@@ -42081,6 +42486,371 @@ class StochRSIBrick extends IndicatorBrick {
     }
 }
 brickRegistry.register('stochrsi', StochRSIBrick);
+
+// ─── V364: six more user-requested indicators ────────────────────────────────
+// (user: «Ещё в индикаторы добавь ROC, Tillson T3, RSI, chopness, ultimate
+//  oscillator, Schaff Trend Cycle, Relative Vigor, coppock, cci, adx,
+//  donchain, aroon, chandelier, Vortex, Efficiency Ratio, relative volume» —
+//  T3 / RSI / CCI / ADX already existed, ROC/chop/UO/STC/Coppock/ER landed as
+//  OSCILLATOR_SPECS, and these six need multi-output / overlay / histogram
+//  rendering, so they are full bricks.)
+
+// Relative Vigor Index (Ehlers) — cyclic-weighted close-open vigor,
+// Wilder-smoothed, with a 4-bar SMA signal line. Crossovers = vigor shifts.
+class RVIBrick extends IndicatorBrick {
+    static META = {
+        type: 'rvi',
+        label: 'Relative Vigor Index',
+        shortLabel: 'RVI',
+        description: 'Relative Vigor Index (Ehlers) — close-vs-open vigor, smoothed, with a signal line',
+        category: 'momentum',
+        tags: ['momentum', 'oscillator', 'rvi', 'vigor', 'ehlers'],
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'period', label: 'Period', default: 10, min: 2, max: 100, step: 1 }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'rvi', label: 'RVI', type: 'line', color: '#bc8cff', lineWidth: 1.6 }),
+            new BrickOutput({ name: 'signal', label: 'Signal', type: 'line', color: '#d29922', lineWidth: 1.2 }),
+        ],
+        levels: [
+            new BrickLevel({ value: 0, label: '0', color: 'rgba(255,255,255,0.25)', lineWidth: 1, dash: [], optional: true, name: 'zero', defaultVisible: true }),
+        ],
+    };
+
+    constructor(cfg) { super(cfg); this.needsOHLC = true; }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        const rvi = new Float64Array(count).fill(NaN);
+        const signal = new Float64Array(count).fill(NaN);
+        if (!ohlc?.high || !ohlc?.low) {
+            this._computed = { rvi, signal, count, visibleRange };
+            return this._computed;
+        }
+        const n = Math.max(2, Math.floor(this.params.period || 10));
+        const O = ohlc.open, H = ohlc.high, L = ohlc.low, C = sourceData;
+        // cyclic-weighted (close−open) / (high−low) over a 4-bar window
+        // (weights 4,3,2,1 — Ehlers)
+        const W = [4, 3, 2, 1];
+        const raw = new Float64Array(count).fill(NaN);
+        for (let i = 3; i < count; i++) {
+            if (!isFinite(C[i])) continue;
+            let num = 0, den = 0, ok = true;
+            for (let k = 0; k < 4; k++) {
+                const j = i - k;
+                const o = O ? O[j] : NaN, h = H[j], l = L[j], c = C[j];
+                if (!isFinite(o) || !isFinite(h) || !isFinite(l) || !isFinite(c)) { ok = false; break; }
+                num += W[k] * (c - o);
+                den += W[k] * (h - l);
+            }
+            if (ok && den > 1e-12) raw[i] = num / den;
+        }
+        // Wilder-style smoothing (SMMA) of raw, seeded with an SMA(n)
+        let seedSum = 0, seedCnt = 0, prev = NaN;
+        for (let i = 0; i < count; i++) {
+            const v = raw[i];
+            if (!isFinite(v)) continue;
+            if (seedCnt < n) {
+                seedSum += v; seedCnt++;
+                if (seedCnt === n) { prev = seedSum / n; rvi[i] = prev; }
+            } else {
+                prev = (v + prev * (n - 1)) / n;
+                rvi[i] = prev;
+            }
+        }
+        // signal = SMA(4) of rvi (Ehlers' convention)
+        for (let i = 3; i < count; i++) {
+            let s = 0, cnt = 0;
+            for (let j = i - 3; j <= i; j++) {
+                if (isFinite(rvi[j])) { s += rvi[j]; cnt++; }
+            }
+            if (cnt === 4) signal[i] = s / 4;
+        }
+        this._computed = { rvi, signal, count, visibleRange };
+        return this._computed;
+    }
+}
+brickRegistry.register('rvi', RVIBrick);
+
+// Aroon — bars since the highest high / lowest low, scaled 0..100.
+// Up > 70 = fresh uptrend strength; Up < Down = downtrend pull.
+class AroonBrick extends IndicatorBrick {
+    static META = {
+        type: 'aroon',
+        label: 'Aroon',
+        shortLabel: 'AROON',
+        description: 'Aroon Up/Down — bars since the highest high / lowest low (0-100)',
+        category: 'trend',
+        tags: ['trend', 'aroon', 'oscillator'],
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'period', label: 'Period', default: 25, min: 2, max: 200, step: 1 }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'up', label: 'Aroon Up', type: 'line', color: '#3fb950', lineWidth: 1.4 }),
+            new BrickOutput({ name: 'down', label: 'Aroon Down', type: 'line', color: '#f85149', lineWidth: 1.4 }),
+        ],
+        levels: [
+            new BrickLevel({ value: 70, label: '70', color: 'rgba(255,255,255,0.2)', lineWidth: 1, dash: [4, 4], optional: true, name: 'strong', defaultVisible: true }),
+            new BrickLevel({ value: 30, label: '30', color: 'rgba(255,255,255,0.2)', lineWidth: 1, dash: [4, 4], optional: true, name: 'weak', defaultVisible: true }),
+        ],
+    };
+
+    constructor(cfg) { super(cfg); this.needsOHLC = true; }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        const up = new Float64Array(count).fill(NaN);
+        const down = new Float64Array(count).fill(NaN);
+        if (!ohlc?.high || !ohlc?.low) {
+            this._computed = { up, down, count, visibleRange };
+            return this._computed;
+        }
+        const n = Math.max(2, Math.floor(this.params.period || 25));
+        const H = ohlc.high, L = ohlc.low;
+        for (let i = n; i < count; i++) {
+            if (!isFinite(H[i]) || !isFinite(L[i])) continue;
+            let hiIdx = i, loIdx = i;
+            for (let j = i - n; j <= i; j++) {
+                const h = H[j], l = L[j];
+                if (!isFinite(h) || !isFinite(l)) continue;
+                if (h >= H[hiIdx]) hiIdx = j;   // most-recent extreme wins ties
+                if (l <= L[loIdx]) loIdx = j;
+            }
+            up[i] = 100 * (n - (i - hiIdx)) / n;
+            down[i] = 100 * (n - (i - loIdx)) / n;
+        }
+        this._computed = { up, down, count, visibleRange };
+        return this._computed;
+    }
+}
+brickRegistry.register('aroon', AroonBrick);
+
+// Vortex Indicator — two smoothed directional flows against true range.
+// VI+ crossing above VI− = bullish vortex; below = bearish.
+class VortexBrick extends IndicatorBrick {
+    static META = {
+        type: 'vortex',
+        label: 'Vortex',
+        shortLabel: 'VTX',
+        description: 'Vortex Indicator — VI+/VI− directional flow crossovers',
+        category: 'trend',
+        tags: ['trend', 'vortex', 'oscillator', 'direction'],
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'period', label: 'Period', default: 14, min: 2, max: 200, step: 1 }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'vip', label: 'VI+', type: 'line', color: '#3fb950', lineWidth: 1.4 }),
+            new BrickOutput({ name: 'vim', label: 'VI−', type: 'line', color: '#f85149', lineWidth: 1.4 }),
+        ],
+    };
+
+    constructor(cfg) { super(cfg); this.needsOHLC = true; }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        const vip = new Float64Array(count).fill(NaN);
+        const vim = new Float64Array(count).fill(NaN);
+        if (!ohlc?.high || !ohlc?.low) {
+            this._computed = { vip, vim, count, visibleRange };
+            return this._computed;
+        }
+        const n = Math.max(2, Math.floor(this.params.period || 14));
+        const H = ohlc.high, L = ohlc.low, C = sourceData;
+        // rolling sums: Σ|h−l_prev|, Σ|l−h_prev|, ΣTR over the window
+        // (full n-bar windows only — i ≥ n, TradingView convention)
+        for (let i = n; i < count; i++) {
+            if (!isFinite(H[i]) || !isFinite(L[i]) || !isFinite(C[i])) continue;
+            let sP = 0, sM = 0, sTR = 0, ok = true;
+            for (let j = i; j > i - n && j >= 1; j--) {
+                const h = H[j], l = L[j], hp = H[j - 1], lp = L[j - 1], c = C[j], cp = C[j - 1];
+                if (!isFinite(h) || !isFinite(l) || !isFinite(hp) || !isFinite(lp) || !isFinite(cp)) { ok = false; break; }
+                sP += Math.abs(h - lp);
+                sM += Math.abs(l - hp);
+                sTR += Math.max(h - l, Math.abs(h - cp), Math.abs(l - cp));
+            }
+            if (ok && sTR > 1e-12) { vip[i] = sP / sTR; vim[i] = sM / sTR; }
+        }
+        this._computed = { vip, vim, count, visibleRange };
+        return this._computed;
+    }
+}
+brickRegistry.register('vortex', VortexBrick);
+
+// Donchian Channels — highest high / lowest low channel with a midline.
+// Breakouts of the channel = trend continuation signals (Turtle style).
+class DonchianBrick extends IndicatorBrick {
+    static META = {
+        type: 'donchian',
+        label: 'Donchian Channels',
+        shortLabel: 'DONCH',
+        description: 'Donchian Channels — highest-high / lowest-low channel with a midline',
+        category: 'volatility',
+        tags: ['volatility', 'channel', 'donchian', 'breakout'],
+        panelMode: 'overlay',
+        params: [
+            new BrickParam({ name: 'length', label: 'Length', default: 20, min: 2, max: 500, step: 1 }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'upper', label: 'Upper', type: 'line', color: '#f85149', lineWidth: 1.3 }),
+            new BrickOutput({ name: 'middle', label: 'Middle', type: 'line', color: '#58a6ff', lineWidth: 1, optional: true, defaultVisible: false }),
+            new BrickOutput({ name: 'lower', label: 'Lower', type: 'line', color: '#3fb950', lineWidth: 1.3 }),
+            new BrickOutput({ name: 'fill', label: 'Fill', type: 'band', fillBetween: ['upper', 'lower'], color: '#58a6ff', alpha: 0.05, optional: true, defaultVisible: true }),
+        ],
+    };
+
+    constructor(cfg) { super(cfg); this.needsOHLC = true; }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        const upper = new Float64Array(count).fill(NaN);
+        const middle = new Float64Array(count).fill(NaN);
+        const lower = new Float64Array(count).fill(NaN);
+        if (!ohlc?.high || !ohlc?.low) {
+            this._computed = { upper, middle, lower, count, visibleRange };
+            return this._computed;
+        }
+        const n = Math.max(2, Math.floor(this.params.length || 20));
+        const H = ohlc.high, L = ohlc.low;
+        for (let i = n - 1; i < count; i++) {
+            if (!isFinite(H[i]) || !isFinite(L[i])) continue;
+            let mx = -Infinity, mn = Infinity, ok = true;
+            for (let j = i - n + 1; j <= i; j++) {
+                const h = H[j], l = L[j];
+                if (!isFinite(h) || !isFinite(l)) { ok = false; break; }
+                if (h > mx) mx = h;
+                if (l < mn) mn = l;
+            }
+            if (!ok) continue;
+            upper[i] = mx; lower[i] = mn; middle[i] = (mx + mn) / 2;
+        }
+        this._computed = { upper, middle, lower, count, visibleRange };
+        return this._computed;
+    }
+}
+brickRegistry.register('donchian', DonchianBrick);
+
+// Chandelier Exit (LeBeau) — ATR trailing stops hung from the highest high /
+// lowest low: long stop = HH(n) − ATR(n)·mult, short stop = LL(n) + ATR·mult.
+class ChandelierBrick extends IndicatorBrick {
+    static META = {
+        type: 'chandelier',
+        label: 'Chandelier Exit',
+        shortLabel: 'CHANDEL',
+        description: 'Chandelier Exit — ATR trailing stops from the rolling extreme',
+        category: 'trend',
+        tags: ['trend', 'stop', 'atr', 'chandelier', 'exit'],
+        panelMode: 'overlay',
+        params: [
+            new BrickParam({ name: 'length', label: 'Length', default: 22, min: 2, max: 200, step: 1 }),
+            new BrickParam({ name: 'mult', label: 'ATR Mult', default: 3.0, min: 0.5, max: 10, step: 0.25 }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'longStop', label: 'Long stop', type: 'line', color: '#3fb950', lineWidth: 1.4 }),
+            new BrickOutput({ name: 'shortStop', label: 'Short stop', type: 'line', color: '#f85149', lineWidth: 1.4 }),
+        ],
+    };
+
+    constructor(cfg) { super(cfg); this.needsOHLC = true; }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        const longStop = new Float64Array(count).fill(NaN);
+        const shortStop = new Float64Array(count).fill(NaN);
+        if (!ohlc?.high || !ohlc?.low) {
+            this._computed = { longStop, shortStop, count, visibleRange };
+            return this._computed;
+        }
+        const n = Math.max(2, Math.floor(this.params.length || 22));
+        const mult = isFinite(+this.params.mult) && +this.params.mult > 0 ? +this.params.mult : 3;
+        const H = ohlc.high, L = ohlc.low, C = sourceData;
+        // Wilder ATR
+        const atr = new Float64Array(count).fill(NaN);
+        let atrPrev = NaN, seedSum = 0, seedCnt = 0, prevC = NaN;
+        for (let i = 0; i < count; i++) {
+            const h = H[i], l = L[i], c = C[i];
+            if (!isFinite(h) || !isFinite(l) || !isFinite(c)) continue;
+            const pc = isFinite(prevC) ? prevC : c;
+            const tr = Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
+            prevC = c;
+            if (seedCnt < n) {
+                seedSum += tr; seedCnt++;
+                if (seedCnt === n) { atrPrev = seedSum / n; atr[i] = atrPrev; }
+            } else {
+                atrPrev = (tr + atrPrev * (n - 1)) / n;
+                atr[i] = atrPrev;
+            }
+        }
+        for (let i = n - 1; i < count; i++) {
+            if (!isFinite(atr[i]) || !isFinite(H[i]) || !isFinite(L[i])) continue;
+            let mx = -Infinity, mn = Infinity, ok = true;
+            for (let j = i - n + 1; j <= i; j++) {
+                const h = H[j], l = L[j];
+                if (!isFinite(h) || !isFinite(l)) { ok = false; break; }
+                if (h > mx) mx = h;
+                if (l < mn) mn = l;
+            }
+            if (!ok) continue;
+            longStop[i] = mx - atr[i] * mult;
+            shortStop[i] = mn + atr[i] * mult;
+        }
+        this._computed = { longStop, shortStop, count, visibleRange };
+        return this._computed;
+    }
+}
+brickRegistry.register('chandelier', ChandelierBrick);
+
+// Relative Volume — volume / SMA(volume, N); >1 = above-average activity.
+// Histogram in a separate panel with the 1.0 baseline (and a 2.0 spike mark).
+class RvolBrick extends IndicatorBrick {
+    static META = {
+        type: 'rvol',
+        label: 'Relative Volume',
+        shortLabel: 'RVOL',
+        description: 'Relative Volume — volume vs its SMA (1.0 = average activity)',
+        category: 'volume',
+        tags: ['volume', 'rvol', 'relative', 'activity'],
+        panelMode: 'separate',
+        params: [
+            new BrickParam({ name: 'length', label: 'SMA Length', default: 20, min: 2, max: 200, step: 1 }),
+        ],
+        inputs: [ new BrickInput({ name: 'source', label: 'Source', default: 'close' }) ],
+        outputs: [
+            new BrickOutput({ name: 'hist', label: 'RVOL', type: 'histogram', color: '#4dd0e1' }),
+        ],
+        levels: [
+            new BrickLevel({ value: 1, label: '1.0', color: 'rgba(255,255,255,0.3)', lineWidth: 1, dash: [2, 4], optional: true, name: 'avg', defaultVisible: true }),
+            new BrickLevel({ value: 2, label: '2.0', color: 'rgba(244,67,54,0.4)', lineWidth: 1, dash: [4, 4], optional: true, name: 'spike', defaultVisible: false }),
+        ],
+    };
+
+    constructor(cfg) { super(cfg); this.needsOHLC = true; }
+
+    _computeRaw(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        const hist = new Float64Array(count).fill(NaN);
+        const vol = (ohlc && (ohlc.vol ?? ohlc.volume)) || null;
+        if (!vol) {
+            this._computed = { hist, count, visibleRange };
+            return this._computed;
+        }
+        const n = Math.max(2, Math.floor(this.params.length || 20));
+        let sum = 0, cnt = 0;
+        for (let i = 0; i < count; i++) {
+            const v = isFinite(vol[i]) ? vol[i] : 0;
+            sum += v; cnt++;
+            if (i >= n) sum -= isFinite(vol[i - n]) ? vol[i - n] : 0;
+            if (i >= n - 1) {
+                const sma = sum / n;
+                if (sma > 1e-12) hist[i] = v / sma;
+            }
+        }
+        this._computed = { hist, count, visibleRange };
+        return this._computed;
+    }
+}
+brickRegistry.register('rvol', RvolBrick);
 
 // Also register in INDICATOR_TYPES for backward compat
 for (const [type, cls] of brickRegistry._bricks) {
@@ -87227,6 +87997,7 @@ class ChartFactory {
                                 '<div class="s-row"><span class="s-row-label">Thickness (px)</span><input type="number" class="s-input" data-vb-thick value="' + num(v.thickPx, 2) + '" min="1" max="8" step="1"></div>' +
                                 '<div class="s-row"><span class="s-row-label">Strength window (bars)</span><input type="number" class="s-input" data-vb-normwin value="' + num(v.normWin, 20) + '" min="2" max="500" step="1"></div>' +
                                 '<div class="s-row"><span class="s-row-label">Strength curve</span><input type="number" class="s-input" data-vb-capow value="' + num(v.pow, 1) + '" min="0.25" max="6" step="0.25"></div>' +
+                                '<div class="s-row"><span class="s-row-label">Caps opacity %</span><input type="number" class="s-input" data-vb-capalpha value="' + Math.round((isFinite(+v.capAlpha) && +v.capAlpha > 0 ? +v.capAlpha : 1) * 100) + '" min="5" max="100" step="5"></div>' +
                             '</div>' +
                             '<div class="s-section-div">' +
                                 '<div class="s-section-label">OI data source</div>' +
@@ -87243,6 +88014,7 @@ class ChartFactory {
                                 '<div class="s-row"><span class="s-row-label">Line color</span><input type="color" class="s-color-input" data-vb-macol value="' + col(v.maColor, '#4dd0e1') + '" style="width:36px;height:26px;border:1px solid rgba(255,255,255,0.1);border-radius:4px;background:transparent;cursor:pointer;"></div>' +
                                 '<div class="s-row"><span class="s-row-label">Width (px)</span><input type="number" class="s-input" data-vb-maw value="' + num(v.maWidth, 1.5) + '" min="0.5" max="6" step="0.5"></div>' +
                                 '<div class="s-row"><span class="s-row-label">Line style</span><div class="s-dd" data-vb-mastyle></div></div>' +
+                                '<div class="s-row"><span class="s-row-label">Line opacity %</span><input type="number" class="s-input" data-vb-maalpha value="' + Math.round((isFinite(+v.maAlpha) && +v.maAlpha > 0 ? +v.maAlpha : 1) * 100) + '" min="5" max="100" step="5"></div>' +
                             '</div>' : '') +
                         '</div>' +
                     '</div>' +
@@ -87312,6 +88084,8 @@ class ChartFactory {
                 onOi('[data-vb-thick]',   (e) => { const x = parseFloat(e.target.value); if (isFinite(x) && x >= 1 && x <= 8) { v.thickPx = Math.round(x); applyOi(); } });
                 onOi('[data-vb-normwin]', (e) => { const x = parseFloat(e.target.value); if (isFinite(x) && x >= 2 && x <= 500) { v.normWin = Math.round(x); applyOi(); } });
                 onOi('[data-vb-capow]',   (e) => { const x = parseFloat(e.target.value); if (isFinite(x) && x >= 0.25 && x <= 6) { v.pow = x; applyOi(); } });
+                onOi('[data-vb-capalpha]', (e) => { const x = parseFloat(e.target.value); if (isFinite(x) && x >= 5 && x <= 100) { v.capAlpha = x / 100; applyOi(); } });
+                onOi('[data-vb-maalpha]', (e) => { const x = parseFloat(e.target.value); if (isFinite(x) && x >= 5 && x <= 100) { v.maAlpha = x / 100; applyOi(); } });
                 // ── V363: volume MA line wiring ──
                 const maOnChk = backdrop.querySelector('[data-vb-maon]');
                 if (maOnChk) maOnChk.addEventListener('change', () => { v.maOn = !!maOnChk.checked; applyOi(); });
@@ -87781,42 +88555,319 @@ class ChartFactory {
             });
         }
 
+        // V365 picker UI REDESIGN round 2 (user: «стили какие-то жидкие, как
+        // будто что-то забыло примениться… Сейчас это просто список, что
+        // выглядит кашей. Нужно больше визуальных особенностей и удобства для
+        // поиска и зацепления глазом»). V364 already added tabs + search +
+        // short descriptions, but visually it stayed a bare text list. Now:
+        //   • CARD GRID instead of a text list — every brick is a card with
+        //     an ICON TILE tinted by the indicator's own plot color
+        //     (META.color — surfaced through BrickRegistry.list(); fallback:
+        //     category color), hover lifts the card and glows its border in
+        //     the same accent;
+        //   • CATEGORY IDENTITY — each category (and the ALL tab) has its own
+        //     accent color + SVG glyph (trend ↗ green, momentum pulse orange,
+        //     volatility bands purple, volume bars cyan, composite hexagon
+        //     gold, overlay layers pink); tabs are pill chips «glyph · name ·
+        //     count» filled with their color when active; ALL groups cards
+        //     under colored section headers (icon + name + count + hairline);
+        //   • SEARCH ROW — lens icon, live count chip «N / 78» in the header,
+        //     ✕ clear button appears when typing; font stays 16 px (no iOS
+        //     zoom) and is deliberately NOT focused on open (V364 contract);
+        //     «/» focuses it on explicit keystroke, Esc closes — ONE
+        //     document-level handler (window._pickDocKeys, installed once)
+        //     guarded by .ind-cat-list presence, so manager/settings renders
+        //     are inert and a body-focused keydown is still caught;
+        //   • SMART BADGES — every card shows its panel mode («overlay» /
+        //     «pane») and, if instances of that type are already on the chart,
+        //     a green «✓N» badge (counts via api.getIndicator()) — the eye
+        //     instantly separates known from new;
+        //   • contracts unchanged: onPick(type) on card click, Back / × /
+        //     backdrop-click, tab switching, live search filter, empty state,
+        //     outputs list in the title tooltip, short one-line descriptions
+        //     (_PICKER_SHORT below), NO autofocus at open.
+        const _PICKER_SHORT = {
+            sma: 'Simple Moving Average', ema: 'Exponential Moving Average',
+            wma: 'Linear-Weighted MA', dema: 'Double EMA',
+            tema: 'Triple EMA, low lag', t3: 'Tillson T3 — smoothed, low lag',
+            zltema: 'Zero-Lag TEMA', tma: 'Triangular MA',
+            lsma: 'Least Squares MA (regression)', hma: 'Hull MA — fast, smooth',
+            jma: 'Jurik MA — smooth, adaptive', vama: 'Volatility-Adjusted MA',
+            mf: 'Median Filter over price', edsma: 'Elliot Decycler MA',
+            kijun: 'Kijun-sen style mid-line', atr: 'Average True Range',
+            alma: 'Arnaud Legoux MA', kalman: 'Kalman Filter estimate',
+            bollinger: 'Bollinger: SMA ± k·σ bands', bands: 'ATR/StdDev/Pct/Donchian bands',
+            macd: 'MACD line, signal, histogram', stochastic: 'Stochastic %K/%D (0-100)',
+            rsi: 'Relative Strength Index (0-100)', mfi: 'Money Flow Index — volume RSI',
+            dpo: 'Detrended Price Oscillator', ao: 'Awesome Oscillator SMA5−SMA34',
+            roc: 'Rate of Change — % over N bars', chop: 'Choppiness Index — sideways meter',
+            uo: 'Ultimate Oscillator — 3 windows', stc: 'Schaff Trend Cycle — double stoch',
+            coppock: 'Coppock Curve — long-term momentum', er: 'Kaufman Efficiency Ratio',
+            rvi: 'Relative Vigor Index + signal', aroon: 'Aroon Up/Down — days since extreme',
+            vortex: 'Vortex VI+/VI− crossovers', donchian: 'Donchian high/low channel',
+            chandelier: 'ATR trailing stops', rvol: 'Relative Volume vs SMA',
+            cci: 'Commodity Channel Index', trix: 'TRIX — triple-smoothed ROC',
+            williamsr: 'Williams %R (0..−100)', obv: 'On-Balance Volume',
+            cmf: 'Chaikin Money Flow', accumdist: 'Accumulation/Distribution line',
+            pvt: 'Price-Volume Trend', eldersray: 'Elders Ray (bull/bear power)',
+            zigzag: 'ZigZag pivots + Fibonacci', sr: 'Support/Resistance levels',
+            ob: 'Order Blocks + Fair Value Gaps', gap: 'Price gap detector',
+            volrevfractals: 'Williams fractals reversal', supertrend: 'Supertrend trailing line',
+            psar: 'Parabolic SAR dots', vwap: 'VWAP ± volume-σ bands',
+            twap: 'Time-Weighted Average Price', adx: 'ADX trend strength + DI',
+            stochrsi: 'Stochastic of RSI', zscore: 'Statistical Z-Score bands',
+            zscore_ensemble: 'Ensemble of Z-Score windows', ou_bands: 'Ornstein-Uhlenbeck bands',
+            ou_zscore: 'OU Z-Score of the spread', hpoc: 'Historical Point of Control',
+            hpresidual: 'Hodrick-Prescott residual', knnanomaly: 'KNN anomaly detector',
+            vpin: 'VPIN — toxic flow meter', timemarker: 'Time markers on bars',
+            volnormcandles: 'Volume-normalized candles', bidask_imbalance: 'Bid/Ask imbalance',
+            btc_realized: 'BTC Realized Price bands', cvd: 'Cumulative Volume Delta (CoinGlass)',
+            fundingrate: 'Funding rate (CoinGlass)', openinterest: 'Open Interest (CoinGlass)',
+            relperf: 'Relative performance vs coin', gammaexposure: 'Options gamma exposure',
+            econevents: 'Economic events timeline', tokenunlocks: 'Token unlocks timeline',
+            maxpain: 'Options max pain', bigbuys: 'Large buy/sell prints',
+        };
+        function _pickerShortDesc(b) {
+            const s = _PICKER_SHORT[b.type];
+            if (s) return s;
+            const d = String(b.description || '').split(/[.·—–]/)[0].trim();
+            return d.length > 64 ? d.slice(0, 61) + '…' : d;
+        }
+        // V365-picker-ui: category identity — accent color + 12×12 SVG glyph
+        // (stroke:currentColor, so CSS vars paint it). Unknown categories
+        // fall back to a neutral gray dot. Colors match the app's palette
+        // (GitHub-dark accents) and stay distinct across categories.
+        const _PICKER_CAT_META = {
+            all:        { c: '#58a6ff', icon: '<circle cx="3.2" cy="3.2" r="1.15" fill="currentColor" stroke="none"/><circle cx="8.8" cy="3.2" r="1.15" fill="currentColor" stroke="none"/><circle cx="3.2" cy="8.8" r="1.15" fill="currentColor" stroke="none"/><circle cx="8.8" cy="8.8" r="1.15" fill="currentColor" stroke="none"/>' },
+            trend:      { c: '#3fb950', icon: '<path d="M1.5 10.5 4.6 7.2l2 1.6L10.5 4"/><path d="M7.6 3.6h3v3"/>' },
+            momentum:   { c: '#f0883e', icon: '<path d="M1 6.2h2.1L4.4 2.8l2.3 7 1.5-3.6h2.8"/>' },
+            volatility: { c: '#bc8cff', icon: '<path d="M1.2 4.4q2.4-2.6 4.8 0t4.8 0"/><path d="M1.2 7.6q2.4 2.6 4.8 0t4.8 0"/>' },
+            volume:     { c: '#39c5cf', icon: '<path d="M2.6 10.4V7.2"/><path d="M6 10.4V3.2"/><path d="M9.4 10.4V5.4"/>' },
+            composite:  { c: '#e3b341', icon: '<path d="M6 1.6 9.7 3.7v4.4L6 10.2 2.3 8.1V3.7Z"/>' },
+            overlay:    { c: '#ec7cb9', icon: '<path d="M1.6 5.1 6 2.7l4.4 2.4L6 7.5Z"/><path d="M2.6 7.4 6 9.3l3.4-1.9"/>' },
+            other:      { c: '#8b949e', icon: '<circle cx="6" cy="6" r="1.4" fill="currentColor" stroke="none"/>' },
+        };
+        const _catMeta = (c) => _PICKER_CAT_META[c] || _PICKER_CAT_META.other;
+        // '#rrggbb' → 'r,g,b' — CSS rgba(var(--argb), a) needs the triplet.
+        function _pickRgb(hex) {
+            const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+            if (!m) return '139,148,158';
+            const v = parseInt(m[1], 16);
+            return ((v >> 16) & 255) + ',' + ((v >> 8) & 255) + ',' + (v & 255);
+        }
+        // V365-picker-ui: brick accent resolution — META.color first (top-level
+        // on MA/oscillator factories now), then the FIRST output's plot color
+        // (covers hand-written bricks that keep color only on outputs), then
+        // the category color. Non-hex values (rgba()/named) safely degrade to
+        // the category accent via _pickRgb's fallback.
+        function _pickAccent(b, cat) {
+            if (b.color) return b.color;
+            const oc = b.outputs && b.outputs[0] && b.outputs[0].color;
+            if (oc && /^#?[0-9a-f]{6}$/i.test(String(oc).trim())) return oc;
+            return _catMeta(cat).c;
+        }
+        function _pickSvg(cat, cls) {
+            const cm = _catMeta(cat);
+            return '<svg class="' + cls + '" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + cm.icon + '</svg>';
+        }
+        // V365-picker-ui: ONE document-level keyboard handler for the picker
+        // ('/' → focus search, Esc → back). A modal-scoped onkeydown cannot
+        // catch '/' right after the dialog opens, because focus is still on
+        // <body> (and programmatic clicks don't move focus) — the document
+        // handler can. It is inert outside the picker: it acts only while a
+        // .ind-cat-list is actually in the DOM (manager/settings renders
+        // replace the backdrop's innerHTML and leave no such node), and it
+        // never fights the search input (activeElement check).
+        if (!window._pickDocKeys) {
+            window._pickDocKeys = (e) => {
+                const ctx = window._pickKeyCtx;
+                if (!ctx || !document.querySelector('.ind-cat-list')) return;
+                if (e.key === 'Escape') { e.preventDefault(); ctx.back(); }
+                else if (e.key === '/' && document.activeElement !== ctx.search) {
+                    e.preventDefault(); ctx.search.focus();
+                }
+            };
+            document.addEventListener('keydown', window._pickDocKeys);
+        }
         function _renderPicker(backdrop, api, engine, onPick, backToMgr) {
             const cats = brickRegistry.listByCategory();
-            const catNames = Object.keys(cats).sort();
-            // V38: Build picker HTML with explicit string concatenation so
-            // each category's label + items stay together as a group.
-            let listHtml = '';
-            for (const cat of catNames) {
-                listHtml += '<div class="ind-cat-group">';
-                listHtml += '<div class="ind-cat-label">' + cat + '</div>';
-                for (const b of cats[cat]) {
-                    listHtml += '<button class="ind-brick-item" data-type="' + b.type + '">';
-                    listHtml += '<span class="ind-brick-name">' + b.label + '</span>';
-                    listHtml += '<span class="ind-brick-desc">' + b.description + '</span>';
-                    listHtml += '<span class="ind-brick-outs">' + b.outputs.map(o => o.label).join(', ') + '</span>';
-                    listHtml += '</button>';
+            // V366-picker-tabs: curated tab order — thematic categories first,
+            // the placement-based Overlay tab after them, any unknown category
+            // last (alphabetical). The same order drives the All-view sections.
+            const CAT_ORDER = ['trend', 'momentum', 'volatility', 'volume', 'composite', 'overlay', 'other'];
+            const catNames = CAT_ORDER.filter(c => cats[c] && cats[c].length)
+                .concat(Object.keys(cats).filter(c => !CAT_ORDER.includes(c)).sort());
+            // All-view sections: PRIMARY categories only (each brick exactly
+            // once there) — 'overlay' is a placement tab, not a section.
+            const secNames = catNames.filter(c => c !== 'overlay');
+            const total = brickRegistry.list().length;
+            let tab = 'all';    // active tab: 'all' or a category name
+            let query = '';     // live search text
+            // V365: how many instances of each type are already on the chart
+            // → green «✓N» badge on the card (eye-catch: known vs new).
+            const usedCount = {};
+            try {
+                for (const ind of (api.getIndicator() || [])) {
+                    const t = (ind && ind.constructor && ind.constructor.META && ind.constructor.META.type) || (ind && ind.type);
+                    if (t) usedCount[t] = (usedCount[t] || 0) + 1;
                 }
-                listHtml += '</div>';
-            }
+            } catch (_) {}
+            const listEl = () => backdrop.querySelector('.ind-cat-list');
+            const cardHtml = (b, cat, withCatChip) => {
+                // V366-picker-tabs: the glyph / accent follow the brick's
+                // PRIMARY category (thematic identity) — the same indicator
+                // looks identical in every tab it belongs to, so the Overlay
+                // tab doesn't repaint half the registry pink.
+                const prim = cats[b.category] ? b.category : 'other';
+                const acc = _pickAccent(b, prim);        // own plot color first
+                const outs = (b.outputs || []).map(o => o.label).join(', ');
+                const used = usedCount[b.type] || 0;
+                const badge = b.panelMode === 'separate'
+                    ? '<span class="ind-pick-badge pane">pane</span>'
+                    : '<span class="ind-pick-badge overlay">overlay</span>';
+                // Cross-membership chip (user: «табы не ясно как собирают»):
+                // in a specific tab, cards whose PRIMARY category differs
+                // carry a tiny colored chip with it — the eye sees WHY the
+                // brick is in this tab (e.g. Supertrend = trend, in Overlay).
+                let chip = '';
+                if (withCatChip && b.category !== cat && cats[b.category]) {
+                    const cc = _catMeta(b.category).c;
+                    chip = '<span class="ind-pick-badge cat" style="color:' + cc +
+                        ';border-color:rgba(' + _pickRgb(cc) + ',.4);background:rgba(' + _pickRgb(cc) + ',.08)">' +
+                        b.category + '</span>';
+                }
+                return '<button class="ind-brick-item" data-type="' + b.type + '" title="' + outs + '"' +
+                    ' style="--ac:' + acc + ';--argb:' + _pickRgb(acc) + '">' +
+                    '<span class="ind-pick-ico">' + _pickSvg(prim, '') + '</span>' +
+                    '<span class="ind-pick-txt">' +
+                    '<span class="ind-brick-name">' + b.label + '</span>' +
+                    '<span class="ind-brick-desc">' + _pickerShortDesc(b) + '</span>' +
+                    '</span>' +
+                    '<span class="ind-pick-meta">' + chip + badge +
+                    (used ? '<span class="ind-pick-badge onchart">✓ ' + used + '</span>' : '') +
+                    '</span>' +
+                    '</button>';
+            };
+            const renderList = () => {
+                const list = listEl();
+                if (!list) return;
+                const q = query.trim().toLowerCase();
+                const matchQ = (b) => !q ||
+                    (b.label + ' ' + b.type + ' ' + (b.tags || []).join(' ') + ' ' + b.description)
+                        .toLowerCase().includes(q);
+                // V366-picker-tabs: search runs INSIDE the active tab — but if
+                // the tab has no match while other tabs do, fall back to a
+                // global search grouped by primary sections, so the picker
+                // never dead-ends just because the user stayed on the wrong tab.
+                let globalFallback = false;
+                if (tab !== 'all' && q) {
+                    const inTab = (cats[tab] || []).filter(b => matchQ(b)).length;
+                    if (!inTab && brickRegistry.list().some(b => matchQ(b))) globalFallback = true;
+                }
+                const sections = (tab === 'all' || globalFallback)
+                    ? secNames
+                    : [tab];
+                const withCatChip = tab !== 'all' && !globalFallback;
+                let listHtml = '', shown = 0;
+                for (const cat of sections) {
+                    const pool = cats[cat] || [];
+                    // All mode AND global-search fallback: PRIMARY members only
+                    // (each brick exactly once — a tag-cross brick like STC
+                    // must not render twice across the fallback sections);
+                    // tab mode: the whole membership group (already name-sorted).
+                    const items = (tab === 'all' || globalFallback)
+                        ? pool.filter(b => b.category === cat && matchQ(b))
+                        : pool.filter(b => matchQ(b));
+                    if (!items.length) continue;
+                    shown += items.length;
+                    const cm = _catMeta(cat);
+                    if (sections.length > 1) {
+                        listHtml += '<div class="ind-pick-sechead" style="--ac:' + cm.c + ';--argb:' + _pickRgb(cm.c) + '">' +
+                            '<span class="sc-ico">' + _pickSvg(cat, '') + '</span>' +
+                            '<span class="sc-t">' + cat + '</span>' +
+                            '<span class="sc-n">' + items.length + '</span>' +
+                            '<span class="sc-line"></span>' +
+                            '</div>';
+                    }
+                    listHtml += '<div class="ind-pick-grid">' + items.map(b => cardHtml(b, cat, withCatChip)).join('') + '</div>';
+                }
+                if (!shown) {
+                    listHtml = '<div class="ind-pick-empty">' + _pickSvg('all', '') +
+                        '<div>Nothing matches <b>«' + query.replace(/</g, '&lt;') + '»</b></div>' +
+                        '<div class="hint2">Try a shorter term, a tag like «volume» — or clear the search</div>' +
+                        '</div>';
+                }
+                list.innerHTML = listHtml;
+                // Live count chip: full count when unfiltered, «N / 78» while searching.
+                const chip = backdrop.querySelector('.ind-pick-count');
+                if (chip) chip.textContent = shown === total ? String(total) : shown + ' / ' + total;
+                list.querySelectorAll('.ind-brick-item').forEach(item => {
+                    item.onclick = () => onPick(item.dataset.type);
+                });
+            };
+            const tabBtn = (c) => {
+                const cm = _catMeta(c);
+                const n = c === 'all' ? total : cats[c].length;
+                const name = c === 'all' ? 'All' : c.charAt(0).toUpperCase() + c.slice(1);
+                return '<button class="ind-cat-tab' + (c === tab ? ' active' : '') + '" data-tab="' + c + '"' +
+                    ' style="--tc:' + cm.c + ';--trgb:' + _pickRgb(cm.c) + '">' +
+                    _pickSvg(c, '') + name + '<span class="t-n">' + n + '</span></button>';
+            };
+            const tabsHtml = tabBtn('all') + catNames.map(tabBtn).join('');
             backdrop.innerHTML =
-                '<div class="ind-modal">' +
+                '<div class="ind-modal ind-pick-modal">' +
                 '<div class="ind-modal-header">' +
-                '<h3>Add Indicator</h3>' +
+                '<span class="ind-modal-ttl"><h3>Add Indicator</h3><span class="ind-pick-count">' + total + '</span></span>' +
                 '<button class="ind-modal-close">&times;</button>' +
                 '</div>' +
                 '<div class="ind-modal-body">' +
-                '<div class="ind-cat-list">' + listHtml + '</div>' +
+                '<div class="ind-pick-searchrow">' +
+                '<svg class="ind-pick-lens" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="6" cy="6" r="4.2"/><path d="M9.4 9.4 12.4 12.4"/></svg>' +
+                '<input type="text" class="ind-cat-search" placeholder="Search — name, tag, type…" ' +
+                'autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search">' +
+                '<button type="button" class="ind-pick-clear" title="Clear search">&times;</button>' +
+                '</div>' +
+                '<div class="ind-cat-tabs">' + tabsHtml + '</div>' +
+                '<div class="ind-cat-list"></div>' +
                 '</div>' +
                 '<div class="ind-modal-footer">' +
+                '<span class="ind-pick-kbdhint"><b>/</b> search&nbsp;&nbsp;·&nbsp;&nbsp;<b>Esc</b> close</span>' +
                 '<button class="ind-btn ind-btn-back">Back</button>' +
                 '</div>' +
                 '</div>';
             backdrop.querySelector('.ind-modal-close').onclick = backToMgr;
             backdrop.querySelector('.ind-btn-back').onclick = backToMgr;
-            backdrop.querySelectorAll('.ind-brick-item').forEach(item => {
-                item.onclick = () => onPick(item.dataset.type);
+            backdrop.querySelectorAll('.ind-cat-tab').forEach(t => {
+                t.onclick = () => {
+                    tab = t.dataset.tab || 'all';
+                    backdrop.querySelectorAll('.ind-cat-tab').forEach(x => x.classList.toggle('active', x === t));
+                    renderList();
+                };
             });
+            // NO autofocus (user: «текстбокс без фокуса при открытии окна») —
+            // an autofocused search pops the touch keyboard and hides half of
+            // the picker on phones. «/» is the explicit focus shortcut; Esc
+            // closes — both via the single document-level handler above.
+            const searchEl = backdrop.querySelector('.ind-cat-search');
+            const rowEl = backdrop.querySelector('.ind-pick-searchrow');
+            // Register the picker in the document-level key handler ('/' /
+            // Esc, see window._pickDocKeys). Cleared naturally by the guard:
+            // any other view render leaves no .ind-cat-list, and the ctx is
+            // overwritten on the next picker open.
+            window._pickKeyCtx = { search: searchEl, back: backToMgr };
+            searchEl.addEventListener('input', (e) => {
+                query = e.target.value || '';
+                if (rowEl) rowEl.classList.toggle('has-text', !!query.trim());
+                renderList();
+            });
+            const clearBtn = backdrop.querySelector('.ind-pick-clear');
+            if (clearBtn) clearBtn.onclick = () => {
+                searchEl.value = '';
+                query = '';
+                if (rowEl) rowEl.classList.remove('has-text');
+                renderList();
+            };
+            renderList();
             backdrop.onclick = (e) => { if (e.target === backdrop) backToMgr(); };
         }
 
@@ -102447,12 +103498,16 @@ window.VolOiCap = (function () {
     // V363 chase state (all keyed by the session-cache key — a symbol/tf/source
     // change rotates the key and every map resets implicitly):
     const exhaustedLeft = {};              // key → ts: the source holds NO OI older than the held firstX
-    const extChain = {};                   // key → consecutive leftward extensions (immediate follow-ups)
-    const emptyRuns = {};                  // key → consecutive empty fetch results
+    const emptyRuns = {};                  // key → consecutive empty fetch results (cold/tail kinds only)
     const deadUntil = {};                  // key → ts: 3+ empty answers in a row → 10 min pause
+    // V364 chase state: back-to-back coverage instead of a 20 s trickle
+    const chainRuns = {};                  // key → chained follow-ups fired in the current burst
+    const chaseGate = {};                  // key → ts: after MAX_CHAIN the burst yields to a 1.5 s cadence
+    let _lastNormMs = 30 * 60000;          // ensure() publishes its norm-window margin here for chaseLeft
     const FAIL_COOLDOWN_MS = 20000;
     const KICK_SPACING_MS = 20000;         // brick parity (_vnCvdKicks): a clamped/partial answer must not re-fire every frame
-    const CHAIN_LIMIT = 3;                 // ≤3 immediate follow-ups after an extending kick, then the 20 s spacing resumes
+    const CHASE_SPACING_MS = 1500;         // V364: left-chase cadence — full-history coverage must not trickle in 20 s steps
+    const MAX_CHAIN = 12;                  // V364: ≤12 back-to-back follow-ups per burst, then the 1.5 s cadence
     const EXHAUSTED_RETRY_MS = 90000;      // soft left wall: a dry answer pauses the chase for 90 s, then ONE re-check
     const DEAD_MS = 600000;                // dead coin (no OI anywhere): 3 empty answers → 10 min pause
 
@@ -102535,23 +103590,94 @@ window.VolOiCap = (function () {
     // left-exhausted (the CoinGlass OI klines have a finite retention —
     // probed live 2026-11-20: m1 ≈ 3 days, h1 ≈ 12 days, h4 ≈ 180 days —
     // bars older than the wall can never have caps, and re-kicking the same
-    // window every 20 s only burned the CoinGlass rate budget). An EXTENDING
-    // 'left' kick clears kicks[key] so the next draw frame immediately
-    // chases the remaining gap (bounded by CHAIN_LIMIT — each extension
-    // moves firstX left by up to one ≤4320-row answer, so the chain is
-    // short); after the limit the ordinary 20 s spacing resumes. 3
-    // consecutive EMPTY answers → the key pauses for DEAD_MS (a coin with
-    // no OI anywhere must not re-spam the rebuild every fail cooldown).
+    // window every 20 s only burned the CoinGlass rate budget). V364: an
+    // EXTENDING 'left' answer fires the NEXT leftward fetch immediately
+    // (chaseLeft — a back-to-back burst of up to MAX_CHAIN=12, then a 1.5 s
+    // cadence via chaseGate), so coverage of the whole loaded history takes
+    // seconds instead of the old ≤3-chained / 20 s-spaced trickle. A DRY
+    // 'left' answer with a live session = the wall itself (soft exhaustedLeft
+    // pause) and does NOT count toward DEAD_MS — only cold/tail empty answers
+    // do (a coin with no OI anywhere must not re-spam the rebuild every fail
+    // cooldown, but a coin whose OLDER OI simply does not exist must keep
+    // refreshing its tail).
     // And the whole kick is skipped while the OI-pane brick is fetching the
     // SAME session key (_brickFetching/_warmInflight) — its result lands via
     // _auxSessionPut and the snapshot re-applies on identity change: «если
     // этот индикатор уже есть на панели, не делаем повторные запросы».
-    function kick(key, src, tfMs, from, to, kind) {
+    // V364 chase driver — the immediate back-to-back follow-up after an
+    // extending answer. Runs in setTimeout(0) (after .finally cleared the
+    // in-flight flag), re-resolves the chart source and SKIPS silently when
+    // the user switched symbol/TF (session key no longer matches) — no stale
+    // fetches for a coin that is no longer on screen.
+    function chaseLeft(key, tfMs) {
+        setTimeout(() => {
+            try {
+                if (!cg()) return;
+                const s = curSrc();
+                if (!s.symbol || !s.timeframe) return;
+                if (oiKey(s.symbol, s.timeframe) !== key) return;   // switched away
+                const sess = AuxSeriesBrick._auxSessionGet(key);
+                if (!sess || !sess.raw || !sess.raw.length) return;
+                if ((chainRuns[key] || 0) >= MAX_CHAIN) {
+                    // burst cap → hand the remaining gap back to the frame
+                    // loop at the fast 1.5 s cadence (no 20 s stall)
+                    chainRuns[key] = 0;
+                    chaseGate[key] = Date.now() + CHASE_SPACING_MS;
+                    return;
+                }
+                let dataFrom = 0;
+                try {
+                    const a = window._chart && window._chart.api;
+                    const dr = (a && a.getDataRange) ? a.getDataRange() : null;
+                    if (dr && dr.firstX > 0) dataFrom = Math.round(dr.firstX);
+                } catch (e) {}
+                if (!dataFrom) return;
+                const target = dataFrom - _lastNormMs - 3600000;
+                if (target >= Math.round(sess.firstX)) return;      // covered
+                kick(key, s, tfMs, target, Math.round(sess.firstX) + tfMs, 'left', true);
+            } catch (e) {}
+        }, 0);
+    }
+
+    // Gated async fetch of one key into the shared aux session cache.
+    // V362: the result is MERGED into the session (newer value wins — the
+    // same shape as the brick's _vnMergePts). The old put REPLACED the
+    // snapshot: a narrow tail refresh could shrink a wide session, and gap
+    // fills never accumulated — coverage could only ever stay as narrow as
+    // the first fetch («капы только на последние свечи»).
+    // V363: `kind` — 'cold' | 'left' | 'tail'. A 'left' kick whose answer
+    // brought NOTHING older than the held firstX marks the key
+    // left-exhausted (the CoinGlass OI klines have a finite retention —
+    // probed live 2026-11-20: m1 ≈ 3 days, h1 ≈ 12 days, h4 ≈ 180 days —
+    // bars older than the wall can never have caps, and re-kicking the same
+    // window every 20 s only burned the CoinGlass rate budget).
+    // V364: full-history coverage is a BACK-TO-BACK burst, not a trickle
+    // (user: «Шапки рисуются все ещё частично на последних свечах только.
+    // Типа на 50 последних, 70 и тд сначала. Потом, внезапно, я Ждал очень
+    // много времени и шапки загрузились дальше»):
+    //   • every EXTENDING answer fires the next leftward fetch IMMEDIATELY
+    //     (chaseLeft → kick …, force=true skips only the spacing gate) — up
+    //     to MAX_CHAIN=12 per burst; after that the cadence is 1.5 s
+    //     (CHASE_SPACING_MS) instead of the old 20 s brick-parity gate —
+    //     coverage of the default ≈1000-bar framing now completes in a few
+    //     seconds (one ≤4320-row answer per step, 1–3 steps typical);
+    //   • `force` bypasses ONLY the spacing — in-flight / dead / fail /
+    //     hidden-tab / brick-dedup guards still apply, so «если этот
+    //     индикатор уже есть на панели, не делаем повторные запросы» holds;
+    //   • a dry LEFT answer with a live session = the retention wall: soft
+    //     pause via exhaustedLeft (90 s re-check), NOT the 3×empty → 10 min
+    //     dead pause (the old counting could freeze coverage AND tail
+    //     refreshes on coins whose older OI simply does not exist).
+    function kick(key, src, tfMs, from, to, kind, force) {
         const C = cg(); if (!C) return;
         if (inflight.has(key)) return;
         if (Date.now() < (deadUntil[key] || 0)) return;
         if (Date.now() - (fails[key] || 0) < FAIL_COOLDOWN_MS) return;
-        if (Date.now() - (kicks[key] || 0) < KICK_SPACING_MS) return;
+        if (!force) {
+            const _sp = (kind === 'left') ? CHASE_SPACING_MS : KICK_SPACING_MS;
+            if (Date.now() - (kicks[key] || 0) < _sp) return;
+            if (Date.now() < (chaseGate[key] || 0)) return;
+        }
         if (typeof document !== 'undefined' && document.hidden) return;
         if (AuxSeriesBrick._brickFetching && AuxSeriesBrick._brickFetching.has(key)) return;
         if (AuxSeriesBrick._warmInflight && AuxSeriesBrick._warmInflight.has(key)) return;
@@ -102581,16 +103707,16 @@ window.VolOiCap = (function () {
                 emptyRuns[key] = 0; deadUntil[key] = 0;
                 // left-exhaustion + chained-chase bookkeeping: did this answer
                 // move the session's left edge? (threshold: one bar of grid
-                // drift — rows ON the held edge are endTime duplicates)
+                // drift — rows ON the held edge = endTime-дубли)
                 const cur = AuxSeriesBrick._auxSessionGet(key);
                 const curFirst = (cur && isFinite(cur.firstX)) ? Math.round(cur.firstX) : Infinity;
                 const extended = isFinite(curFirst) && isFinite(heldFirst) &&
                     curFirst < heldFirst - tfMs * 0.6;
                 if (extended) {
-                    extChain[key] = (extChain[key] || 0) + 1;
-                    if (extChain[key] <= CHAIN_LIMIT) delete kicks[key];   // immediate follow-up (bounded)
+                    chainRuns[key] = (chainRuns[key] || 0) + 1;
+                    chaseLeft(key, tfMs);   // V364: immediate follow-up (burst-bounded)
                 } else {
-                    extChain[key] = 0;
+                    chainRuns[key] = 0;
                     if (kind === 'left') {
                         // SOFT wall: the answer brought nothing older — but the
                         // CoinGlass backends serve restored history
@@ -102602,23 +103728,35 @@ window.VolOiCap = (function () {
                         // first dry answer happened to be) or storming every
                         // 20 s
                         exhaustedLeft[key] = Date.now();
-                    } else if (kind === 'cold' && heldFirst === Infinity && isFinite(curFirst) &&
-                               curFirst > fromMs + tfMs + 5000) {
-                        // first fetch: the source STARTS inside the requested
-                        // window (retention wall / late listing)
-                        exhaustedLeft[key] = Date.now();
                     } else if (kind === 'cold') {
-                        // the cold window was provisional: the chart lazy-loads
-                        // history continuously, so dataFrom at kick time may be
-                        // far NEWER than the loaded range at land time (measured
-                        // at boot: the first draw fired with a ~300-bar batch,
-                        // the full 1000-bar batch landed a second later). Allow
-                        // ONE immediate left-chase follow-up — bounded like the
-                        // extension chain.
-                        extChain[key] = 1;
-                        delete kicks[key];
+                        // V364: ALWAYS chase after a cold land. A partial cold
+                        // answer (fewer rows than requested) is NOT proof of a
+                        // wall — the endpoint clamps every answer to ≤4320
+                        // rows, and the probe exposed the old V363 heuristic
+                        // (curFirst > from + tf ⇒ "source starts inside the
+                        // window") as a FALSE WALL: it silenced the chase right
+                        // after request #1 whenever the loaded history exceeded
+                        // one answer — the exact «сначала 50-70 свечей, потом
+                        // ждал очень много времени» trickle. The chase itself
+                        // discovers the wall: its non-extending answer flips
+                        // exhaustedLeft (soft 90 s re-check), its empty answer
+                        // hits the dry-left branch below — either way coverage
+                        // stops honestly instead of never starting.
+                        chaseLeft(key, tfMs);
                     }
                 }
+                repaintSoon();
+            } else if (kind === 'left' && AuxSeriesBrick._auxSessionGet(key)) {
+                // V364: a dry LEFT answer with a live session = the retention
+                // wall (the window [target .. firstX] holds nothing older —
+                // the data does not exist), NOT a dead coin. Soft-pause via
+                // exhaustedLeft (90 s re-check) and keep the session alive —
+                // the old code counted this toward emptyRuns → after 3 the
+                // key went silent for 10 min, freezing coverage AND tail
+                // refreshes.
+                exhaustedLeft[key] = Date.now();
+                emptyRuns[key] = 0;
+                chainRuns[key] = 0;
                 repaintSoon();
             } else {
                 fails[key] = Date.now();
@@ -102742,8 +103880,9 @@ window.VolOiCap = (function () {
     //      everywhere after ONE round-trip (measured: the old visible-only
     //      cold fetch covered ~120 of 1000 loaded bars and the 20 s-spaced
     //      chase needed a minute of panning to fill the rest);
-    //   4. an extending left chase follows up IMMEDIATELY (chained kicks,
-    //      ≤ CHAIN_LIMIT) instead of waiting 20 s per chunk;
+    //   4. an extending left chase follows up IMMEDIATELY (back-to-back
+    //      chaseLeft bursts of ≤ MAX_CHAIN, then a 1.5 s cadence) instead of
+    //      waiting 20 s per chunk;
     //   5. at the CoinGlass retention wall (m1 ≈ 3 days, h1 ≈ 12, h4 ≈ 180 —
     //      probed live) the chase stops (exhaustedLeft) instead of re-kicking
     //      the same futile window every 20 s forever — bars older than the
@@ -102762,6 +103901,7 @@ window.VolOiCap = (function () {
         const visFrom = visOk ? Math.round(xData[iMin]) : 0;
         const visTo = visOk ? Math.round(xData[iMax]) : 0;
         const normMs = (Math.round(cfg.oiCapNormWin || 20) + 10) * (tfMs || 60000);
+        _lastNormMs = normMs;   // V364: chaseLeft reuses the same margin
         // V363: the chart's loaded-bar left edge — the widest window the caps
         // can ever be drawn on (CoinGlass has no OI beyond the exchange's own
         // candle history). getDataRange() is a synchronous dataPort query.
@@ -102807,22 +103947,21 @@ window.VolOiCap = (function () {
             }
             return;
         }
-        // cold key — V363: cover the whole LOADED history in request #1 when
-        // it fits inside one CoinGlass answer (the endpoint replies with the
-        // NEWEST ≤4320 rows of the window — probed live 2026-11-20 — so a
-        // ≤4300-row window comes back complete): pans/zooms inside the loaded
-        // history then paint instantly, and the default ≈1000-bar framing is
-        // fully covered after ONE round-trip. A wider loaded history stays
-        // visible-first (the response must cover the SCREEN) — the older half
-        // is filled by the immediate chained left chase (kick kind 'left').
+        // cold key — V364: request the whole LOADED-history window right away.
+        // The endpoint answers with the NEWEST ≤4320 rows of the window
+        // (probed live 2026-11-20), so response #1 covers the SCREEN in every
+        // case; the older part of the framing is filled by the immediate
+        // back-to-back chained chase (chaseLeft, burst-bounded) instead of
+        // the old 20 s-per-kick trickle the user kept waiting through
+        // («Потом, внезапно, я Ждал очень много времени и шапки загрузились
+        // дальше»). Without a loaded range (first frames, no candles yet)
+        // fall back to the visible window.
         let from = Date.now() - 2 * 86400000, to = Date.now() + tfMs + 120000;
         if (visOk) {
-            from = visFrom - normMs - 3600000;
             to = Math.max(visTo, Date.now()) + tfMs + 120000;
-            if (dataFrom > 0 && tfMs > 0) {
-                const _wideFrom = dataFrom - normMs - 3600000;
-                if ((to - _wideFrom) <= 4300 * tfMs) from = _wideFrom;   // fits → cover everything
-            }
+            from = (dataFrom > 0 && tfMs > 0)
+                ? dataFrom - normMs - 3600000
+                : visFrom - normMs - 3600000;
         }
         kick(key, src, tfMs, from, to, 'cold');
     }
@@ -102860,6 +103999,11 @@ window.VolOiCap = (function () {
 
         const up = cfg.oiCapUp || '#bc8cff';
         const down = cfg.oiCapDown || '#e3b341';
+        // V364: user opacity — the caps paint OVER the bars, so an alpha < 1
+        // lets the bars show through (user: «прозрачность добавь и шапкам
+        // (они должны рисоваться поверх баров, чтобы те просвечивали когда
+        // прозрачность была»)
+        const capAlpha = Math.max(0.05, Math.min(1, isFinite(+cfg.oiCapAlpha) ? +cfg.oiCapAlpha : 1));
         const thick = Math.max(1, Math.min(8, +cfg.oiCapThick || 2));
         // V362: a segment narrower than ~2 px antialiases into the bar / the
         // background and reads as INVISIBLE at far zoom (barW ≈ 3 px → a 45 %
@@ -102922,9 +104066,10 @@ window.VolOiCap = (function () {
         // V362: the caps are signal markers riding on the volume bars — they
         // must NOT inherit the series' globalAlpha (the vol overlay draws at
         // style.alpha ≈ 0.6, which washed both the top caps and the base
-        // ticks into the background). Paint opaque, restore afterwards.
+        // ticks into the background). V364: paint at the user's own opacity
+        // (default 1 = the old crisp behavior), restore afterwards.
         const prevAlpha = ctx.globalAlpha;
-        ctx.globalAlpha = 1;
+        ctx.globalAlpha = capAlpha;
         for (let k = 0; k < PAL_STEPS; k++) {
             if (showTop && cntT[k] > 0) {
                 ctx.fillStyle = pal[k];
@@ -103022,7 +104167,8 @@ window.VolOiCap = (function () {
             for (let k = base - (P - 1); k <= base - 1; k++) push(valAt(k));
         }
         ctx.save();
-        ctx.globalAlpha = 1;   // crisp over the (α≈0.6) bars — same as the caps
+        // V364: user opacity (default 1 = crisp over the α≈0.6 bars, as before)
+        ctx.globalAlpha = Math.max(0.05, Math.min(1, isFinite(+cfg.volMaAlpha) ? +cfg.volMaAlpha : 1));
         ctx.strokeStyle = color;
         ctx.lineWidth = width;
         ctx.setLineDash(dash ? [4, 3] : []);
@@ -103051,7 +104197,7 @@ window.VolOiCap = (function () {
         _rev: rev,
         _setPhaseShift: (v) => { window.__VOL_OI_PHASE_SHIFT = v ? 1 : 0; rev.v++; repaintSoon(); },
         _debug: () => ({ rev: rev.v, inflight: [...inflight], fails: { ...fails }, kicks: { ...kicks },
-            exhaustedLeft: { ...exhaustedLeft }, extChain: { ...extChain },
+            exhaustedLeft: { ...exhaustedLeft }, chainRuns: { ...chainRuns }, chaseGate: { ...chaseGate },
             emptyRuns: { ...emptyRuns }, deadUntil: { ...deadUntil } }),
     };
 })();
