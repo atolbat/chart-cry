@@ -3,6 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <!-- V371 PER-COINDICATOR OVERRIDES (юзер: «добавь возможность для индикаторов быть overridden для их параметров для разных монет. Есть дефолтные значения, а есть таблица или типа того для разных монет отдельных. Если овервриттен, то напр на панели (если панель) надо это писать, вместе с параметрами. Все параметры можно не менять, только самую основу. Сделай удобный интерфейс для этого, для создания и удаления таких переписей»): ① МОДЕЛЬ — у каждого IndicatorBrick теперь _baseParams (глобальный набор, то что правит модалка настроек) + symbolOverrides { BTC:{period:9}, SOL:{period:50} } (ключ — баз-коин) + params = ЭФФЕКТИВНЫЕ параметры текущего коина; _resolveSymbolOverride(manager) вызывается В НАЧАЛЕ compute() ДО fast-path: при смене коина (ключ по adapter.symbol||dataStore.symbol, нормализация _ceCoinKeyFromSymbol: BTCUSDT/BTCUSDT.P/BTC/USDT:USDT/BTC.D → BTC, 1000PEPEUSDT → 1000PEPE) params пересобираются из base+override и все кэши (_computed/_derivedSeq/_zDerived/_knnCache/_hpCache/_vncCache/_vpin*) инвалидируются; тот же коин → no-op, fast-path живёт; коин без оверрайда → чистый base; оверрайды сняты → base. ② ТОЛЬКО ОСНОВА: оверрайдится ОДИН core-параметр — «окно», которое бейдж и так показывает (_ceCoreParamOfMeta: name period|window|length|len|bars, иначе первый numeric; bool/select/mode/ratio* исключены); у индикаторов без numeric-параметров секция не рендерится. ③ UI — в модалке настроек секция «Per-coin overrides» (сразу после параметров, свёрнута): таблица строк coin→value с ✕-удалением и «+ Add override for <текущий коин>» (коин префиллом, правится инпутом); сэйв собирает { COIN:{param:value} } (пустые коины/NaN отбрасываются); редактирование параметров в модалке пишет _baseParams, а НЕ эффективные params — оверрайд текущего коина не запекается в базу. ④ ПАНЕЛЬНЫЙ БЕЙДЖ: активный оверрайд виден — RSI(9·BTC) / CVD perp·BTC (_ceOvrBadgeSuffix в _autoLabel 3b и в свайп-ветке 2); карточка менеджера показывает сводку «· ovr BTC=9, SOL=50». ⑤ СЕРИАЛИЗАЦИЯ: StatePersistence.serialize + PresetManager._captureSnapshot хранят _baseParams (не эффективные params!) + symbolOverrides; конструктор adopt'ит cfg.symbolOverrides как obStyle — рестарт страницы, пресет-экспорт/импорт и карусель переживают переписи. РЕГРЕСС self-test 23.1: нормализация (7 кейсов), _ceCoreParamOfMeta (period-приоритет / первый numeric / skip bool+select / null), суффикс бейджа, резолюция на живом SMA-кирпиче (merge BTC=9 → base не тронут → same-coin fast-path нетронут → ETH=base → снятие=base → compute() мержит BTC=5 и SMA(5) реально считается с NaN-warmup длиной 4 → perp-символ BTCUSDT.P тот же коин-ключ 7). -->
+    <!-- V370 INDICATORS: VWMA + LINREG (юзер: «Добавь vwma и linreg»): два новых оверлей-кирпича семейства MA_SPECS (createMABrick → auto-карточка пикера, авто-настройки, Overlay/Trend/Volume-табы V366, INDICATOR_TYPES бэкфилл, legacy window-имена). ① VWMA — Volume Weighted MA: каждый бар окна взвешен своим объёмом Σ(price·vol)/Σ(vol); needsOHLC:true → maFn-фолбэк получает ctx.ohlc.vol; seriesJsSpec НЕ задаётся (одновходовый derive() не несёт объёма) → всегда батч-путь через rolling prefix-суммы P/V → O(count) как у SMA; NaN → 0 (конвенция SMA); нет объёма в ctx (_maFnDirect anchor-путь / фиды без объёма) → деградация в plain SMA вместо дырки; дефолт 20, цвет #4dd0e1, теги ['moving average','volume','smooth','weighted'] → Trend + Volume табы. ② LINREG — Linear Regression Curve (TradingView): конец МНК-прямой по последним n барам; O(count) rolling prefix-суммы P=Σy и Q=Σi·y по ФАКТИЧЕСКИМ индексам баров (slope инвариантен к сдвигу x, Σx² consecutive-integers closed form — без цикла по окну); n=2..500, дефолт 100 (TV), цвет #f778ba, теги ['moving average','regression','trend','projection']; проекция вперёд/назад — БЕСПЛАТНО через генерический V121 «Offset (bars)» дисплей-параметр (уже у каждого индикатора в Display-группе, _drawLine сдвигает кривую на N баров = ровно linreg(source,length,offset) из Pine; СВОЙ extraParam offset НЕ добавляли — был бы двойной сдвиг compute+render). ③ PANO-ПАРИТЕТ V214: 'vwma'+'linreg' в PANO_MA_TYPES; _maFnDirect(src,count) → третий опциональный аргумент ohlcOverride (ctx.ohlc = ohlcOverride||null) — computeCellIndicators передаёт tile-ohlc (mkOhlc несёт vol) → в тайлах ЧЕСТНАЯ VWMA (объёмная), а не SMA-двойник; linreg в тайлах точен всегда (объём не нужен). ④ ПИКЕР: _PICKER_SHORT['vwma']='Volume Weighted MA — volume-weighted price', ['linreg']='Linear Regression Curve endpoint'. РЕГРЕСС probe_v370: boot 0 pageerror; реестр/INDICATOR_TYPES/legacy-имена; математика против brute-force референса (VWMA периоды 1/5/20 + constant-price и без объёма=SMA + _maFnDirect parity; LinReg периоды 2/5/100 + constant→flat и ramp→идентичность + NaN→0); collectCellSpec кладёт оба типа в spec.mas с полным params-снапшотом; listByCategory: trend+overlay (+volume для vwma); addIndicator({type:'vwma'/'linreg'}) на живом графике без ошибок; пикер: карточки присутствуют, поиск находит, в Overlay-табе есть оба. -->
+    <!-- V369 APERTURE BOX: BTC/CURRENT + ETH/CURRENT INLINE RATIOS + SELF-PCT OF THE CHART COIN (юзер: «Зачем мне бтс/етх соотношение? Мне нужно бтс/текущее и етх/текущее. Можешь после процентов каждого это значение сразу ставить мелко. Плюс тут какой-то косяк: я использую инструмент на бтс, пишет определенный процент, а снизу где пишет бтс и етх за это время отдельно, бтс имеет другой процент. Это как?»): ① СТРОКА «BTC/ETH 0.45» УДАЛЕНА; вместо неё у КАЖДОЙ процентной строки СРАЗУ СПРАВА мелкое (10px, серый) отношение К ТЕКУЩЕЙ МОНЕТЕ ГРАФИКА: «BTC: +2.34% 1.25» = btc% ÷ главный% бокса (ход текущего символа), «ETH: …» + своё отношение; _apFmtRatio(v, den) обобщён (знаменатель = текущий %, |den|<0.01 → «—»), статусы загрузки ПЕР-СТРОЧНЫЕ (btcLd/ethLd вместо общего fxLoading — локально известная монета рисуется сразу, вторая держит «…»). ② КОСЯК «на БТС-графике у BTC другой процент» ЗАКРЫТ ЛОКАЛЬНЫМ САМО-ПРОЦЕНТОМ: если базовый актив символа графика = BTC (или ETH), эта строка бокса берёт процент РОВНО главного числа ((p2.y−p1.y)/p1.y·100, 0 сети, мгновенно) — раньше он считался close-to-close по свечам Binance BTCUSDT и расходился с главным числом (close ≠ low/high экстремумов точек + другой источник цен); _apChartBase(api) = dataStore.symbol || config.symbol → разделители '/' '-' '_' → суффиксы USDT/USDC/USD/PERP → 'BTC'; резолв _apFxCompute локальное значение НЕ перетирает (guard), кэш окна не загрязняется (фетчатся по-прежнему обе серии — окно и так греется префетчем). РЕГРЕСС probe_v369: boot 0 pageerror, на BTC-графике fx.btc === (p2.y−p1.y)/p1.y·100 точно и сразу (не mock-значение Binance), инлайн btc/current = 1.00 и eth/current из состояния, строки BTC/ETH больше нет, префетч при активации + кэш + 3-й тап + клик-дисмисс + magnet-свипы — паритет V368. -->
+    <!-- V368 APERTURE BOX: % FIRST + ABS SMALL + BTC/ETH RATIO + PREFETCH ON TOOL TAP (юзер: «Ты в этом окошке пишешь абсолютную разность, а надо проценты, абс можно но мелко очень, чтобы не мешалось под. И еще, в бтс и етх ты так же пиши сколько одно поделить на другое (проценты на проценты делишь), и там уже число типа 0.45 мелко пишешь. И да, когда мы толь надимаем на инструмент этот, то мож бтс и етх свечи уже подгружать начать»): ① ГЛАВНОЕ ЧИСЛО БОКСА — ПРОЦЕНТ хода p1→p2 ((p2.y−p1.y)/p1.y·100, знак по хронологии, крупно 18px в цвет знака — прежний diff переехал мелко): АБСОЛЮТНАЯ разница min↔max теперь строка 10px СЕРАЯ прямо под процентом («абс можно но мелко очень, чтобы не мешалось под») — высота бокса пересчитана, ширина берёт max всех 7 строк. ② BTC/ETH RATIO: под строками BTC/ETH мелкая строка «BTC/ETH 0.45» = btc% ÷ eth% (деление процентов на проценты; |eth|<0.01 → «—», пока грузится — «…»); _apFmtRatio подписывает минус юникод-минусом, 2 знака. ③ ПРЕФЕТЧ СЕРИЙ BTC/ETH ПРЯМО ПРИ ВЫБОРЕ ИНСТРУМЕНТА (юзер: «когда мы толь надимаем на инструмент этот, то мож бтс и етх свечи уже подгружать начать»): ApertureTool.onEnter → _apPrefetchSeries(api) fire-and-forget — тянет КАЖДУЮ серию BTCUSDT+ETHUSDT на ТФ ГРАФИКА (api.getIntervalMs → '1m'…'1d') и на ТФ-бакет ВИДИМОГО диапазона (scaleCache.pixToVal → _apFxInterval), perp fapi → fallback spot api, limit=1000, AbortController 8s, дедуп _apSeriesInflight, свежесть 60 с (повторная активация не дёргает сеть); серии в _apSeriesMem ('base|sym|iv' → {t0,t1,arr}), _apFxCloseAt СНАЧАЛА ищет закрытие свечи в серии бинпоиском (последний openTime ≤ t, покрытие t0..t1) и только мимо сети идёт в точечный limit=1 запрос → замер внутри префетчнутого окна получает проценты мгновенно, второй замер того же окна — из _apFxMem как раньше. РЕГРЕСС probe_v368: boot 0 pageerror, поток V367 (2 тапа → бокс, 3-й тап деактив, magnet-свипы, клик-дисмисс, кэш без новых запросов), префетч при активации (≥2 klines-запроса limit=1000 BTCUSDT/ETHUSDT ДО завершения замера), fx-done из серии, скриншоты бокса (процент крупно, abs мелко, BTC/ETH ratio), CE.runTests паритет. -->
+    <!-- V367 APERTURE TOOL (юзер: «Добавь рядом с инструментом рулер, инструмент апертура, который будет рулер при включённой настройке выбора точки через рэ … но по умолчанию, без настроек так - точки мин и Макс на рэндже … пишет в подобном рулер боксе разницу мин макс, но в зависимости от того, был мин первым или макс (знак). Так же пишешь сколько баров, вольюм там как в рулере. Но плюс к этому еще и пиши насколько за это время (между точками) изменился бтс и эфир в процентах. Но лениво, сначала просто пишешь доступную инфу и подгружаешь бтс и эфир инфу/свечи … Но кэшируй данные, чтобы второй раз рулер у не ждал»): ① НОВЫЙ ИНСТРУМЕНТ APERTURE в группе Рулетки (кнопка-ирис рядом с Ruler, mode 'aperture' → TOOL_MODE_TO_KEY/_apertureTool, TOOLS_WITH_PX_ARG, TrendLineTool.setMode valid + singleTapModes, _drawingLockedPanel-замок панели, EngineInteraction.apertureTool → config._apertureTool + ChartAPI.getApertureTool(), экспорт в window). Класс ApertureTool extends Tool (паттерн Рулетки: _apertureData — единственный источник правды, 3-й тап деактивирует — panZoom + снятие active с кнопок, onExit хранит завершённый замер). ② ДВА ПОТОКА ТОЧЕК: дефолт (Range magnet OFF) — тап 1 фиксирует край, тап 2 закрывает «апертуру» → точки = бары МИНИМУМА (low) и МАКСИМУМА (high) внутри диапазона (скан живого DataStore: highData/lowData/getX — один проход, там же бары + суммарный объём); пока тянется — живая полоса с H/L экстремумами через dataPort FIND_RANGE_EXTREME (обе стороны сразу); Range magnet ON — добавлен в _ceRangeSupportedMode: обе точки ставятся двухтаповыми свипами на экстремум, ровно как Рулетка (_handleRangeTap → onCommit с px на экстремуме, чередование high/low сохранено). ③ БОКС В СТИЛЕ РУЛЕТКИ: разница min↔max крупно со ЗНАКОМ ПО ХРОНОЛОГИИ (p1 = более ранняя точка; diff = p2.y − p1.y: min первым → «+» зелёный, max первым → «−» красный), строка «длительность · N bars» (formatDuration), «Vol: …» (formatValue, живой пересчёт как в Рулетке), «BTC: ±x.xx%» и «ETH: ±x.xx%» — маркеры H/L с ценами у точек, стрелка p1→p2 в цвет знака, полоса-апертура (rgba blue 0.06 + пунктирные края), клампинг бокса в панель + коннектор — всё как у _renderRulerPreview. ④ ЛЕНИВЫЕ BTC/ETH: после завершения замера бокс сразу показывает локальные данные, проценты грузятся асинхронно (_apFxCompute → Binance USDT-M perp /fapi/v1/klines, fallback spot /api/v3/klines; на каждую границу точечный запрос limit=1 endTime=ti → закрытие свечи, содержащей ti; TF по длине окна 1m/5m/15m/1h/4h/1d; AbortController 8s) и дорисовываются в бокс при приходе («…» → значение/«—»); sign-цвета зелёный/красный. ⑤ КЭШ: память сессии _apFxMem (без TTL) + localStorage 'ce_apfx_v1' (TTL 10 мин, ≤60 записей) + дедуп параллельных запросов _apFxInflight — второй замер того же окна мгновенный, без ожидания; полная неудача не кэшируется. ⑥ DISMISS: mousedown/touchstart клики очищают завершённую апертуру (как у Рулетки, с защитой активного инструмента от 3-тапового контракта). РЕГРЕСС probe_v367: boot 0 pageerror, кнопка Aperture в группе Рулетки, дефолт-поток (2 тапа → бокс с diff/bars/vol, H/L у экстремумов), 3-й тап деактивирует, ленивые BTC/ETH (мок Binance → проценты в боксе), кэш (второй замер синий), magnet-поток (свипы → точки на экстремумах), клик-дисмисс, CE.runTests паритет. -->
     <!-- V366 PICKER TABS ASSEMBLY (юзер: «Немного табы не ясно как собирают. То есть оверлей имеет всего два индикатор, хотя по логике там больше. Индикатор так то к нему табам может принадлежать. И еще, отсортируй их в табах по имени.»): ① ТАБЫ = ГРУППЫ С МНОЖЕСТВЕННЫМ ЧЛЕНСТВОМ (BrickRegistry.listByCategory переписан): кирпич попадает в НЕСКОЛЬКО табов сразу — (а) первичная категория META.category всегда; (б) таб 'overlay' теперь ТАБ РАЗМЕЩЕНИЯ: все кирпичи с panelMode 'overlay' (рисуются на главном графике) — вся MA-семья (17), Bands, Donchian, Chandelier, Supertrend, PSAR, VWAP/TWAP, ZigZag, S/R, Order Blocks, event-маркеры… → 40 карточек вместо 2; (в) кросс-членство по тегам ('volume'→Volume, 'volatility'→Volatility, 'trend'/'moving average'→Trend, 'momentum'/'oscillator'→Momentum) — MFI (primary momentum) видна и в Volume, ATR (primary trend) и в Volatility, MACD и в Trend; дедуп по type внутри группы. Счётчики на пилюлях = размер группы членства (Overlay 40, Trend 33, Momentum 27, Volume 12, Volatility 8, Composite 20). ② 'OVERLAY' БОЛЬШЕ НЕ ПЕРВИЧНАЯ КАТЕГОРИЯ: TimeMarker → composite (сиблинг Econ Events/Token Unlocks), TWAP → volume (сиблинг VWAP); дескриптор list() нормализует легаси category:'overlay' → 'composite' на всякий случай — таб Overlay собирается ТОЛЬКО по panelMode. ③ СОРТИРОВКА ПО ИМЕНИ (юзер: «отсортируй их в табах по имени»): каждая группа/секция сортируется label.localeCompare(base-sensitive, numeric-aware) — в All-секциях и в каждом табе алфавит. ④ ПИКЕР: канонический порядок табов All → Trend → Momentum → Volatility → Volume → Composite → Overlay (неизвестные категории — в конце по алфавиту), тот же порядок ведёт секции All; во view 'All' секции = ПЕРВИЧНЫЕ категории (каждый кирпич ровно один раз, таб Overlay секцией не является); в конкретном табе — вся группа членства; ИКОНКА/АКЦЕНТ карточки теперь от ПЕРВИЧНОЙ категории (тематическая идентичность — Supertrend в Overlay табе остаётся зелёным трендовым глифом, а не розовым слоя-глифом); ЧИП ПЕРВИЧНОЙ КАТЕГОРИИ на карточках, чья primary ≠ активный таб (мини-бейдж в цвете категории: «trend» на Supertrend внутри Overlay) — глаз видит, ПОЧЕМУ кирпич в этом табе; ПОИСК: ищет внутри активного таба, но если в табе 0 совпадений, а в реестре есть — автоматический глобальный фолбэк, сгруппированный по первичным секциям (пикер не заходит в тупик на «не том табе»). CSS: .ind-pick-badge.cat (lowercase-чип, цвета инлайном из палитры категорий). РЕГРЕСС probe_v366: группировка (overlay=40, trend=33, momentum=27, volume=12, volatility=8, composite=20, суммы All-секций = 78, дублей нет), сортировка по label во всех группах, All = primary-секции без overlay-секции, чипы cross-членства в табах (Supertrend в Overlay несёт «trend»-чип), глобальный фолбэк поиска (в Overlay «rsi» → секция momentum с RSI), клики/поиск/Esc-контракты прежние, boot 0 pageerror. -->
     <!-- V365 PICKER UI ROUND 2 (юзер: «Добавление индикаторов юай и стили какие-то жидкие, как будто что-то забыло примениться. Переделай. Сейчас это просто список, что выглядит кашей. Нужно больше визуальных особенностей и удобства для поиска и зацепления глазом»): ① КАРТОЧКИ ВМЕСТО ТЕКСТОВОГО СПИСКА: пикер «Add Indicator» переведён с голых строк на СЕТКУ КАРТОЧЕК (.ind-pick-grid, auto-fill minmax(250px,1fr), 2 колонки на десктопе/1 на мобиле) — каждая карточка: ИКОНКА-ПЛИТКА 30×30 с SVG-глифом категории, покрашенная в СОБСТВЕННЫЙ цвет индикатора (BrickRegistry.list() теперь отдаёт META.color — раньше поле существовало в META, но не выходило из реестра; fallback — цвет категории), name 12px + короткое однострочное описание 9.5px (V364-контракт _PICKER_SHORT сохранён), hover — фон/борд/тень светятся тем же акцентом (rgba(var(--argb),a), триплет из _pickRgb), active — scale(.985); тултип с outputs и клик→onPick(type) без изменений. ② ИДЕНТИЧНОСТЬ КАТЕГОРИЙ: _PICKER_CAT_META — цвет + глиф на категорию (all голубой · trend зелёный ↗ · momentum оранжевый пульс · volatility фиолетовые ленты · volume голубые бары · composite золотой гексагон · overlay розовые слои · other серый); ТАБЫ — пилюли «глиф · имя · число» с буквами (All/Trend/Momentum…), активный залит своим цветом (+glow), скролл-строка без скроллбара; таб ALL группирует карточки под ЦВЕТНЫМИ СЕКЦИОННЫМИ ЗАГОЛОВКАМИ (.ind-pick-sechead: иконка в плитке + имя + счётчик + волосяная линия градиентом в цвет категории); конкретный таб — плоская сетка без заголовков. ③ ПОИСК-СТРОКА: лупа-SVG + инпут 16px (анти-iOS-зум, БЕЗ autofocus при открытии — контракт V364) + кнопка ✕ (видна при наборе), счётчик-чип в шапке живой «N / 78» при фильтрации и просто «78» без неё; шапка модалки «Add Indicator» + чип; футер — слева подсказка «/ search · Esc close», справа Back. ④ УМНЫЕ БЕЙДЖИ: у каждой карточки справа колонка бейджей — «overlay»/«pane» (panelMode, голубой/фиолетовый) и зелёный «✓N», если тип уже на графике (подсчёт через api.getIndicator() → constructor.META.type, безопасный try) — глаз мгновенно отделяет уже добавленное от нового. ⑤ КЛАВИАТУРА: Esc → backToMgr и «/» → фокус в поиск — ОДИН document-level keydown (window._pickDocKeys, ставится один раз), который действует ТОЛЬКО пока в DOM есть .ind-cat-list (менеджер/настройки заменяют innerHTML бэкдропа и список исчезает → хэндлер инертен), поэтому ловит «/» даже когда фокус ещё на <body> (программные клики не двигают фокус) и не конфликтует с инпутом (activeElement-проверка); модалка шире — 660px (.ind-pick-modal), мобайл — fullscreen (существующее правило) + 1 колонка. Старые .ind-cat-label/.ind-cat-group/.ind-brick-outs удалены (не использовались больше нигде — проверено rg). РЕГРЕСС probe_v365: boot 0 pageerror, пикер открывается, 78 карточек + 7 табов (All + 6 категорий с числами), поиск НЕ в фокусе при открытии, фильтрация «rsi» → чип «N / 78» + совпадающие карточки, ✕ очищает, таб Momentum → 24 карточки без секционных заголовков, бейджи overlay/pane на местах, клик по RSI → открылась модалка настроек, CE.runTests паритет с прематчем, скриншоты десктоп/мобайл. -->
     <!-- V364 CAPS COVERAGE ROUND 3 (INSTANT CHASE) + OPACITY + 12 INDICATORS + PICKER REDESIGN (юзер: «Шапки рисуются все ещё частично на последних свечах только. Типа на 50 последних, 70 и тд сначала. Потом, внезапно, я Ждал очень много времени и шапки загрузились дальше... Еще, ты забыл добавить прозрачность линии смуза вольюм барам. Так же прозрачность добавь и шапкам (они должны рисоваться поверх баров, чтобы те просвечивали когда прозрачность была. Ещё в индикаторы добавь ROC, Tillson T3, RSI, chopness, ultimate oscillator, Schaff Trend Cycle, Relative Vigor, coppock, cci, adx, donchain, aroon, chandelier, Vortex, Efficiency Ratio, relative volume. И улучши окно со списком индикаторов, там где мы выбираем какой добавить. Сейчас там квша с огромными описаниями. Описания должны быть маленькие, должен быть поиск (текстбокс без фокуса при открытии окна), и возможно каждый раздел надо сделать в виде табов там, с табом all в том числе»): ① ПОКРЫТИЕ ШАПОК — МГНОВЕННАЯ ЦЕПОЧКА ВМЕСТО 20-СЕКУНДНОГО РУЧЕЙКА: V363 уже покрывал широкую историю холодным фетчем и цепным чейзом, НО чейз ограничивался CHAIN_LIMIT=3 и KICK_SPACING_MS=20 s — на историм глубже одного ответа CoinGlass шапки ползли ~20 баров за шаг с паузами (живая картина юзера: «50 → 70 → ... → ждал очень много времени»). V364: (a) КАЖДЫЙ РАСШИРЯЮЩИЙ ответ немедленно стреляет следующим левым киком chaseLeft() (setTimeout 0 — после .finally сбросил inflight; ре-резолв curSrc + гард совпадения ключа — свитч монеты/ТФ молча останавливает цепь, никаких чужих фетчей); burst-лимит MAX_CHAIN=12 подряд, дальше каденция CHASE_SPACING_MS=1.5 s (вместо 20 s) — покрытие дефолтного ≈1000-барного фрейминга (1-3 ответа ≤4320 строк) завершается за секунды; (b) ХОЛОДНЫЙ ФЕТЧ СРАЗУ ПРОСИТ ВСЮ ЗАГРУЖЕННУЮ ИСТОРИЮ (dataFrom − normMs − 1h .. now) — эндпоинт всегда отвечает НОВЕЙШИМИ ≤4320 строками окна, поэтому ЭКРАН покрыт первым же ответом в любом случае, а старую половину добирает мгновенная цепь (старая visible-first логика с проверкой «влезает ли в 4300 строк» удалена — она и была источником «сначала 50-70 свечей» при dataFrom, выросшем между кадрами); (c) ПУСТОЙ ЛЕВЫЙ ОТВЕТ ПРИ ЖИВОЙ СЕССИИ = СТЕНА РЕТЕНШНА, а не мёртвая монета: мягкая пауза exhaustedLeft (90 s ре-чек) вместо счёта emptyRuns → 3 пустых → deadUntil 10 мин (старый код мог заморозить покрытие И хвостовое обновление на монете, у которой просто нет старого OI); (d) force-флаг у kick() обходит ТОЛЬКО спейсинг-гейт — inflight/dead/fail/скрытый таб/дедуп с кирпичом (_brickFetching/_warmInflight) остаются, «если этот индикатор уже есть на панели, не делаем повторные запросы» не тронуто; extChain/CHAIN_LIMIT заменены на chainRuns/chaseGate (+_debug). ② ПРОЗРАЧНОСТЬ (юзер: «прозрачность добавь и шапкам (они должны рисоваться поверх баров, чтобы те просвечивали когда прозрачность была», «ты забыл добавить прозрачность линии смуза вольюм барам»): новые хаб-поля capAlpha/maAlpha (0.05…1, дефолт 1; sanitize-клампы, restore/round-trip бесплатно; applyVolOiToConfig кладёт oiCapAlpha/volMaAlpha на общий конфиг серии 'vol'); drawCaps красит ctx.globalAlpha = capAlpha (шапки и так поверх баров — при α<1 бары просвечивают), drawVolMa — ctx.globalAlpha = volMaAlpha; в ⚙ Volume Bars две строки «Caps opacity %» (секция OI cap) и «Line opacity %» (секция Volume MA), живой ввод 5…100 % → /100 в хаб. ③ 12 НОВЫХ ИНДИКАТОРОВ (юзеров список; T3/RSI/CCI/ADX уже были): а) в OSCILLATOR_SPECS 6 декларативных осцилляторов (авто-регистрация через createOscillatorBrick, панель separate): ROC — % изменения за N баров (zero-уровень); Choppiness Index — 100·log10(ΣTR/(maxH−minL))/log10(n), уровни 61.8/38.2 + опциональные зоны; Ultimate Oscillator — взвешенные 3 окна BP/TR (7/14/28), уровни 70/50/30 (prefix-sums окна); Schaff Trend Cycle — двойной стохастик MACD(23,50) с EMA(3)-сглаживанием, уровни 75/50/25 (flat-окно стохастика несёт предыдущее значение, EMA seeded SMA); Coppock Curve — WMA(10) от ROC(11)+ROC(14), zero-уровень; Kaufman Efficiency Ratio — |net|/path ×100, опциональная 50. б) 6 полных кирпичей ПЕРЕД бэкфиллом INDICATOR_TYPES (addIndicator резолвит типы через него): RVIBrick (RVI по Элерсу — циклические веса 4/3/2/1 на (c−o)/(h−l), SMMA(10), signal SMA(4), zero-уровень); AroonBrick (Up/Down = 100·(n−barsSinceExtreme)/n, самые свежие экстремумы побеждают тай-брейк, уровни 70/30); VortexBrick (VI+/VI− = Σ|h−l_prev|/ΣTR, Σ|l−h_prev|/ΣTR); DonchianBrick (оверлей: upper/lower/middle + band-fill, middle по умолчанию скрыт); ChandelierBrick (оверлей: longStop = HH(n) − ATR(n)·mult, shortStop = LL(n) + ATR·mult, Wilder-ATR, дефолты 22/3); RvolBrick (отдельная панель, гистограмма vol/SMA(vol,20) через базовый _drawHistogram, уровни 1.0/2.0). Все — needsOHLC где нужно, декларативные params/outputs/levels → модалка настроек и пикер подхватывают без изменений рендера. ④ ПИКЕР ИНДИКАТОРОВ (юзер: «каша с огромными описаниями... маленькие, поиск без фокуса, разделы в виде табов с табом all»): _renderPicker переписан — строка ТАБОВ «All» + категория реестра (с числом кирпичей, горизонтальный скролл), ТАБ фильтрует список (All — с мелкими секционными заголовками), ТЕКСТБОКС ПОИСКА (16 px = без iOS-зума; autocomplete/spellcheck off; БЕЗ autofocus — клавиатура не выскакивает при открытии) живо фильтрует по label/type/tags/описанию с пустым состоянием «Nothing matches»; ОПИСАНИЯ КОРОТКИЕ — _PICKER_SHORT (type → одна короткая строка, ~70 известных типов) с fallback на первое предложение META.description, обрезанное до 64 символов с «…»; список outputs переехал в title-тултип кирпича; клик/Back/×/клик по бэкдропу — контракты прежние. CSS: .ind-cat-search/.ind-cat-tabs/.ind-cat-tab (+active) рядом с прежними правилами пикера. РЕГРЕСС probe_v364: юниты чейза (расширяющий ответ → немедленный follow-up, 4 фетча < 1.5 с на 1000-барном фрейминге с мок-ответами по 300 строк; burst-кап MAX_CHAIN → chaseGate 1.5 s; пустой left-ответ при живой сессии → exhaustedLeft и НЕ dead; дедуп с кирпичом при force; юниты α (drawCaps/drawVolMa globalAlpha == хаб-значения, sanitize round-trip), математика 12 новых индикаторов против эталонных значений (ROC/CHOP/UO/STC/Coppock/ER на синтетике + RVI/Aroon/Vortex/Donchian/Chandelier/RVOL через brickRegistry.create+_computeRaw), DOM пикера (табы All+категории с числами, поиск НЕ в фокусе при открытии, фильтрация, короткие описания ≤ 64+3 символов), boot 0 code-ошибок, self-test паритет; e2e живой график: полный фрейминг покрыт шапками за ≤ 3 запроса и ≤ 10 с. -->
@@ -14318,7 +14323,10 @@ class PanelLabelRenderer {
                         for (const ind of im.getAll()) {
                             if (!ind.visible) continue;
                             if ((ind.panelId || 'main') !== pId) continue;
-                            if (typeof ind.panelLabel === 'function' && ind.panelLabel()) names.push(ind.panelLabel());
+                            if (typeof ind.panelLabel === 'function' && ind.panelLabel()) {
+                                // V371: mark an active per-coin override on the badge.
+                                names.push(ind.panelLabel() + _ceOvrBadgeSuffix(ind));
+                            }
                         }
                         if (names.length > 0) live = names.join(' · ');
                     }
@@ -14372,10 +14380,13 @@ class PanelLabelRenderer {
                     const win = this._windowParamLabel(meta.params, ind.params);
                     // V110: append "log" suffix if logScale is enabled
                     const logSuffix = ind.params?.logScale === true ? ' log' : '';
+                    // V371: active per-coin override → badge shows WHICH coin is
+                    // overriding the params: RSI(9·BTC) / CVD perp·BTC.
+                    const _ovSfx = _ceOvrBadgeSuffix(ind);
                     if (win !== null) {
-                        names.push(`${lbl}(${win})${logSuffix}`);
+                        names.push(`${lbl}(${win}${_ovSfx})${logSuffix}`);
                     } else {
-                        names.push(lbl + logSuffix);
+                        names.push(lbl + _ovSfx + logSuffix);
                     }
                 }
                 if (names.length > 0) {
@@ -22735,6 +22746,84 @@ class BrickBand {
 
 // ─── Brick Base ────────────────────────────────────────────────────────────
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// V371: PER-COIN PARAMETER OVERRIDES (юзер: «добавь возможность для индикаторов
+// быть overridden для их параметров для разных монет. Есть дефолтные значения,
+// а есть таблица для разных монет отдельных. Если overridden — на панели (если
+// панель) надо это писать, вместе с параметрами. Все параметры можно не менять,
+// только самую основу. Удобный интерфейс для создания и удаления переписей»).
+// ═══════════════════════════════════════════════════════════════════════════════
+// Модель:
+//   ind._baseParams      — ГЛОБАЛЬНЫЙ набор параметров (то, что правит модалка
+//                          настроек; сериализуется как params).
+//   ind.symbolOverrides  — { BTC: { period: 9 }, SOL: { period: 50 } }, ключ —
+//                          баз-коин (нормализация ниже). null когда пусто.
+//   ind.params           — ЭФФЕКТИВНЫЕ параметры текущего коина
+//                          (base + override[текущий коин]) — пересобирается
+//                          в compute() при смене монеты (_resolveSymbolOverride),
+//                          все читатели (бейдж, рендер, autofit) видят
+//                          эффективные значения автоматически.
+// Панельный бейдж помечает активный оверрайд суффиксом «·COIN» (RSI(9·BTC)).
+// Сериализация (StatePersistence + PresetManager) хранит _baseParams + overrides.
+
+/**
+ * V371: normalize a chart symbol to the base-coin key used in override maps.
+ *   'BTCUSDT' → 'BTC'      'BTC/USDT:USDT' → 'BTC'   'DOGE/ETH' → 'DOGE'
+ *   'BTCUSDT.P' → 'BTC'    'BTC.D' → 'BTC'            '1000PEPEUSDT' → '1000PEPE'
+ * The chart may show the same COIN through different instruments (spot/perp,
+ * USDT/USDC quote, ratio) — per-coin overrides follow the COIN, not the ticker.
+ */
+function _ceCoinKeyFromSymbol(sym) {
+    if (!sym) return '';
+    let s = String(sym).toUpperCase().trim();
+    if (!s) return '';
+    // Ratio / pair forms: 'DOGE/ETH', 'BTC/USDT:USDT' → left part.
+    if (s.includes('/')) s = s.split('/')[0];
+    // Index form: 'BTC.D', 'BTCUSDT.P' → part before the dot.
+    if (s.includes('.')) s = s.split('.')[0];
+    // Strip common quote / perp suffixes: BTCUSDT → BTC, BTCUSDC → BTC.
+    s = s.replace(/(USDT|USDC|USD|PERP|FDUSD|TUSD|BUSD|DAI)+$/, '');
+    return s || String(sym).toUpperCase().trim();
+}
+
+/**
+ * V371: the CORE («basic») parameter of a brick META — the window number the
+ * panel badge shows (same heuristic as PanelLabel._windowParamLabel). Only
+ * this param is overridable per coin («только самую основу»).
+ * Returns the BrickParam or null when the brick has no numeric params.
+ */
+function _ceCoreParamOfMeta(meta) {
+    const numeric = (meta?.params || []).filter(p => p && p.type !== 'bool' && p.type !== 'select'
+        && p.name !== 'mode' && !/^ratio/i.test(String(p.name || '')));
+    if (!numeric.length) return null;
+    return numeric.find(x => /^(period|window|length|len|bars)$/i.test(String(x.name || '')))
+        || numeric.find(x => /period|window|length|lookback|bars/i.test(String(x.name || '') + ' ' + String(x.label || '')))
+        || numeric[0];
+}
+
+/**
+ * V371: badge suffix for an indicator that currently runs on an ACTIVE
+ * per-coin override — '·BTC' (empty string when no override is applied).
+ */
+function _ceOvrBadgeSuffix(ind) {
+    try {
+        const coin = ind?._activeOverrideCoin;
+        if (!coin) return '';
+        const ov = ind?.symbolOverrides?.[coin];
+        if (!ov || !Object.keys(ov).length) return '';
+        return '·' + coin;
+    } catch (_) { return ''; }
+}
+
+// V371: expose to window — the CE file is split into consecutive IIFEs, and
+// the helpers are ALSO used from other IIFEs (PanelLabelRenderer._autoLabel
+// in ce$panel$render$utils, the indicator settings modal, StatePersistence,
+// PresetManager) and from the self-test harness script. Bare references
+// inside THIS IIFE keep resolving to the locals directly.
+window._ceCoinKeyFromSymbol = _ceCoinKeyFromSymbol;
+window._ceCoreParamOfMeta = _ceCoreParamOfMeta;
+window._ceOvrBadgeSuffix = _ceOvrBadgeSuffix;
+
 class IndicatorBrick extends IndicatorBase {
     /**
      * @param {object} cfg — { id, panelId, visible, sourceId, params, ... }
@@ -22950,6 +23039,23 @@ class IndicatorBrick extends IndicatorBase {
         //   want strict "use only fully closed HTF bars" behavior can
         //   uncheck the option in the indicator settings UI.
         this.extendPartial = false;  // V53-remove-extendPartial: virtual-candle tail removed
+        // ── V371: per-coin parameter overrides ──
+        // `_baseParams` — the GLOBAL param set (what the settings modal edits,
+        //   what serialization stores). `this.params` starts as the base and
+        //   is REBUILT per coin by _resolveSymbolOverride() on compute().
+        // `symbolOverrides` — { BTC: { period: 9 }, SOL: { period: 50 } } keyed
+        //   by base coin (see _ceCoinKeyFromSymbol); null when empty. Adopted
+        //   from cfg like obStyle/bandOverlay so EVERY restore path (state
+        //   reload, preset import, carousel re-create) keeps the overrides.
+        this._baseParams = { ...this.params };
+        this._ovAppliedSym = null;      // coin key currently merged into params
+        this._activeOverrideCoin = null; // coin with an ACTIVE override (badge)
+        if (cfg.symbolOverrides && typeof cfg.symbolOverrides === 'object') {
+            try { this.symbolOverrides = JSON.parse(JSON.stringify(cfg.symbolOverrides)); }
+            catch (_) { this.symbolOverrides = null; }
+        } else {
+            this.symbolOverrides = null;
+        }
     }
 
     /**
@@ -22964,6 +23070,80 @@ class IndicatorBrick extends IndicatorBase {
         // Return first output
         if (outs.length > 0) return this._computed[outs[0].name] || null;
         return null;
+    }
+
+    // ═══ V371: per-coin parameter overrides ═════════════════════════════════
+
+    /**
+     * V371: the base-coin key of the market the manager currently serves.
+     * Prefers the adapter symbol (flips synchronously at a coin-switch start)
+     * over the DataStore stamp (flips when new candles land).
+     */
+    _currentCoinKey(manager) {
+        try {
+            const ad = manager?.multiTf?._adapter?.symbol;
+            const ds = manager?._lastDataStore?.symbol;
+            return _ceCoinKeyFromSymbol(ad || ds || '') || null;
+        } catch (_) { return null; }
+    }
+
+    /**
+     * V371: drop every per-brick result cache so the next compute() runs with
+     * the freshly merged params (same reset set the settings-modal save path
+     * performs).
+     */
+    _invalidateForOverride() {
+        this._computed = null;
+        this._computeVersion = -1;
+        this._computeMutation = null;
+        this._computeAnchorVer = null;
+        if (this._derivedSeq) {
+            if (this._derivedSeq.dispose) { try { this._derivedSeq.dispose(); } catch (_) {} }
+            this._derivedSeq = null; this._derivedKey = null; this._derivedDataVersion = -1;
+        }
+        if (this._zDerived) {
+            if (this._zDerived.dispose) { try { this._zDerived.dispose(); } catch (_) {} }
+            this._zDerived = null; this._zDataVersion = -1;
+        }
+        this._knnCache = null; this._knnCacheKey = null;
+        this._hpCache = null; this._hpCacheKey = null;
+        this._vncCache = null; this._vncCacheKey = null;
+        this._vpinBuyVol = null; this._vpinSellVol = null;
+    }
+
+    /**
+     * V371: rebuild this.params for the CURRENT chart coin
+     * (base + symbolOverrides[coin]). Called at the TOP of compute() BEFORE
+     * the fast-path — a coin switch must recompute with the new params even
+     * when version/mutation did not change. No-op when the coin did not
+     * change, so the fast-path stays effective frame to frame.
+     */
+    _resolveSymbolOverride(manager) {
+        const ovMap = this.symbolOverrides;
+        const hasAny = !!(ovMap && typeof ovMap === 'object' && Object.keys(ovMap).length > 0);
+        if (!hasAny) {
+            // Overrides removed at runtime → restore the base set once.
+            if (this._ovAppliedSym != null || this._activeOverrideCoin != null) {
+                this.params = { ...(this._baseParams || this.params) };
+                this._ovAppliedSym = null;
+                this._activeOverrideCoin = null;
+                this._invalidateForOverride();
+            }
+            return;
+        }
+        const sym = this._currentCoinKey(manager);
+        if (!sym) return;                       // no identity yet → keep current
+        if (sym === this._ovAppliedSym) return; // same coin → nothing to merge
+        this._ovAppliedSym = sym;
+        if (!this._baseParams) this._baseParams = { ...this.params };
+        const merged = { ...this._baseParams };
+        const ov = ovMap[sym];
+        this._activeOverrideCoin = (ov && typeof ov === 'object' && Object.keys(ov).length > 0) ? sym : null;
+        if (ov && typeof ov === 'object') {
+            for (const k in ov) merged[k] = ov[k];
+        }
+        this.params = merged;
+        this._invalidateForOverride();
     }
 
     /**
@@ -23068,6 +23248,12 @@ class IndicatorBrick extends IndicatorBase {
      * computed this frame, reuse its result.
      */
     compute(sourceData, count, version, visibleRange, emaPool, mutation, ohlc, manager) {
+        // V371-symbol-override: resolve per-coin parameter overrides for the
+        // CURRENT chart coin BEFORE any compute path (fast-path included) —
+        // a coin switch must recompute with the new params even when
+        // version/mutation stayed the same. No-op when the coin is unchanged,
+        // so the fast-path stays effective frame to frame.
+        try { this._resolveSymbolOverride(manager); } catch (_) { /* never block compute */ }
         // FIX V49n-gex-skip: GEX and other AuxSeriesBrick indicators that
         // fetch external data on a timer must NOT be cached by the fast-path.
         // They need _computeRaw called every frame so the timer check runs.
@@ -26171,6 +26357,99 @@ const MA_SPECS = [
             new BrickParam({ name: 'measurementNoise', label: 'Measurement Noise (R)', default: 0.1, min: 0.0001, max: 10, step: 0.01 }),
         ],
     },
+    // ── V370: VWMA — Volume Weighted Moving Average (юзер: «Добавь vwma и linreg»).
+    //    Each bar of the window is weighted by its traded volume:
+    //    VWMA = Σ(price·vol) / Σ(vol) — high-activity bars dominate the
+    //    average, quiet bars fade out. Volume arrives via ctx.ohlc.vol
+    //    (needsOHLC marks the spec so the framework passes ohlc into the
+    //    maFn fallback). NO seriesJsSpec on purpose: the single-input
+    //    derive() stream carries no volume, so VWMA always takes the batch
+    //    path — rolling prefix sums keep it O(count), the same cost class
+    //    as the SMA spec. When ctx has no volume (_maFnDirect anchor path
+    //    or feeds without volume) it degrades to a plain SMA instead of
+    //    drawing a gap.
+    {
+        type: 'vwma', label: 'VWMA', description: 'Volume Weighted MA — bars weighted by traded volume',
+        tags: ['moving average', 'volume', 'smooth', 'weighted'], color: '#4dd0e1',
+        periodDefault: 20, periodMin: 1, periodMax: 500, periodStep: 1,
+        needsOHLC: true,
+        maFn: (src, count, n, ctx) => {
+            const line = new Float64Array(count).fill(NaN);
+            const vol = (ctx.ohlc && (ctx.ohlc.vol ?? ctx.ohlc.volume)) || null;
+            if (!vol) {
+                // No volume available → equal weights (plain SMA). Never a
+                // gap: the line must still draw on feeds without volume.
+                let sum = 0;
+                for (let i = 0; i < count; i++) {
+                    const v = isFinite(src[i]) ? src[i] : 0;
+                    sum += v;
+                    if (i >= n) sum -= isFinite(src[i - n]) ? src[i - n] : 0;
+                    if (i >= n - 1) line[i] = sum / n;
+                }
+                return line;
+            }
+            // Σ(price·vol)/Σ(vol) over window [i−n+1 .. i] via prefix sums —
+            // non-finite inputs count as 0 (app convention, matches the SMA
+            // spec's NaN handling so warmup bars stay consistent).
+            const PV = new Float64Array(count + 1);
+            const VV = new Float64Array(count + 1);
+            for (let i = 0; i < count; i++) {
+                const p = isFinite(src[i]) ? src[i] : 0;
+                const v = isFinite(vol[i]) ? vol[i] : 0;
+                PV[i + 1] = PV[i] + p * v;
+                VV[i + 1] = VV[i] + v;
+            }
+            for (let i = n - 1; i < count; i++) {
+                const a = i - n + 1;
+                const vSum = VV[i + 1] - VV[a];
+                if (vSum > 1e-12) line[i] = (PV[i + 1] - PV[a]) / vSum;
+            }
+            return line;
+        },
+    },
+    // ── V370: LinReg — Linear Regression Curve (юзер: «Добавь vwma и linreg»).
+    //    Endpoint of the least-squares straight-line fit over the last n bars —
+    //    the classic TradingView "Linear Regression Curve". O(count) via
+    //    rolling prefix sums of y and i·y over ACTUAL bar indices (the slope
+    //    is shift-invariant, so no per-bar window loop; Σx² of consecutive
+    //    integers comes from the closed form 6S(m) = m(m+1)(2m+1)). The
+    //    forward/backward projection is FREE through the generic V121
+    //    "Offset (bars)" display param every brick already has in its
+    //    settings ("Display" group): _drawLine shifts the whole curve by
+    //    that many bars — exactly Pine's linreg(source, length, offset)
+    //    semantics. NO own 'offset' extraParam here (the renderer would
+    //    shift AND the compute would extend — a double shift).
+    {
+        type: 'linreg', label: 'LinReg', description: 'Linear Regression Curve — least-squares fit endpoint',
+        tags: ['moving average', 'regression', 'trend', 'projection'], color: '#f778ba',
+        periodDefault: 100, periodMin: 2, periodMax: 500, periodStep: 1,
+        maFn: (src, count, n, ctx) => {
+            const line = new Float64Array(count).fill(NaN);
+            // prefix sums: P = Σy, Q = Σ i·y (non-finite → 0, app convention)
+            const P = new Float64Array(count + 1);
+            const Q = new Float64Array(count + 1);
+            for (let i = 0; i < count; i++) {
+                const y = isFinite(src[i]) ? src[i] : 0;
+                P[i + 1] = P[i] + y;
+                Q[i + 1] = Q[i] + y * i;
+            }
+            for (let i = n - 1; i < count; i++) {
+                const a = i - n + 1;
+                const Sw = P[i + 1] - P[a];            // Σy over the window
+                const Qw = Q[i + 1] - Q[a];            // Σ x·y with x = bar index
+                const xBar = a + (n - 1) / 2;          // mean x of the window
+                const yBar = Sw / n;
+                // Σx² for consecutive integers a..i — closed form, no loop.
+                // s2(−1) = 0 → the a = 0 edge falls out naturally.
+                const s2 = (m) => m * (m + 1) * (2 * m + 1) / 6;
+                const Sxx = (s2(i) - s2(a - 1)) - n * xBar * xBar;
+                const slope = Sxx > 1e-12 ? (Qw - n * xBar * yBar) / Sxx : 0;
+                // endpoint of the fit AT the current bar (x = i): y = ȳ + slope·(i − x̄)
+                line[i] = yBar + slope * (i - xBar);
+            }
+            return line;
+        },
+    },
 ];
 
 /**
@@ -26413,16 +26692,21 @@ function createMABrick(spec) {
          *
          * @param {Float64Array} src — close array (modified with partial close)
          * @param {number} count — array length
+         * @param {object} [ohlcOverride] — V370: optional ohlc for volume-aware
+         *   MAs (VWMA). computeCellIndicators passes the tile ohlc (mkOhlc
+         *   carries vol) so tiles compute the REAL volume-weighted line
+         *   instead of an SMA lookalike. Omitted → ctx.ohlc stays null and
+         *   volume-aware maFns degrade gracefully (VWMA → SMA).
          * @returns {Float64Array|null} MA line array, or null if maFn unavailable
          */
-        _maFnDirect(src, count) {
+        _maFnDirect(src, count, ohlcOverride) {
             if (!spec.maFn) return null;
             const n = Math.max(spec.periodMin, Math.floor(this.params.period));
             const ctx = {
                 version: 0,
                 mutation: 'init',
                 emaPool: null,
-                ohlc: null,
+                ohlc: ohlcOverride || null,
                 params: this.params,
             };
             try {
@@ -26453,6 +26737,7 @@ const _MA_LEGACY_NAMES = {
     lsma: 'LSMABrick', hma: 'HMABrick', jma: 'JMABrick',
     vama: 'VAMABrick', mf: 'MFBrick', edsma: 'EDSMABrick',
     kijun: 'KijunBrick', atr: 'ATRBrick', alma: 'ALMABrick', kalman: 'KalmanBrick',
+    vwma: 'VWMABrick', linreg: 'LinRegBrick',   // V370
 };
 for (const spec of MA_SPECS) {
     const cls = createMABrick(spec);
@@ -46520,7 +46805,11 @@ function _ceRangeSupportedMode(mode) {
         // vertical rays, the polygon and the ruler.
         || mode === 'hline' || mode === 'horizontal' || mode === 'vline' || mode === 'vertical'
         || mode === 'hray' || mode === 'vray'
-        || mode === 'polygon' || mode === 'ruler';
+        || mode === 'polygon' || mode === 'ruler'
+        // V367-aperture: with the Range magnet ON the aperture places its two
+        // points via X-range sweeps EXACTLY like the ruler (each tap pair
+        // commits one point at the sweep's high/low).
+        || mode === 'aperture';
         // ('fibauto' deliberately NOT here — see the module header above.)
 }
 
@@ -55914,6 +56203,7 @@ class ChartAPI {
     isActiveTool(name)          { return this._ctx.config._activeToolName === name; }
     getTrendLineTool()          { return this._ctx.config._trendLineTool || null; }
     getRulerTool()              { return this._ctx.config._rulerTool || null; }
+    getApertureTool()           { return this._ctx.config._apertureTool || null; }   // V367-aperture
     getIndicatorManager()       { return this._ctx?.indicatorManager || this._ctx?.config?._indicatorManager || null; }
     getHooks()                  { return this._ctx?.config?._hooks || null; }
     getRendering()              { return this._ctx?.config?._chartEngineRendering || null; }
@@ -57076,6 +57366,7 @@ const TOOL_MODE_TO_KEY = {
     zone: '_zoneTool', gridbot: '_gridBotTool',
     polygon: '_polygonTool', ruler: '_rulerTool',
     impulse5: '_impulse5Tool',   // V148-impulse5: Elliott 5-wave impulse
+    aperture: '_apertureTool',   // V367-aperture: range min/max measurement
     abc: '_elliottAbcTool', tri: '_elliottTriTool', wxy: '_elliottWxyTool',   // V156
     // V42.1: алиасы — TrendLineTool.setMode использует эти имена
     horizontal: '_hLineTool', vertical: '_vLineTool',
@@ -57087,13 +57378,14 @@ const TOOL_MODE_LABELS = {
     ray: 'Ray', hray: 'HRay', vray: 'VRay', polygon: 'Poly',
     fib: 'Fib', fibtrend: 'FibT', fibexp: 'FibE', fibauto: 'FibA',
     zone: 'Zone', gridbot: 'Grid', ruler: 'Ruler', impulse5: '5W',
+    aperture: 'Apert',   // V367-aperture
     abc: 'ABC', tri: '\u25b3', wxy: 'WXY',   // V156
 };
 
 // Специальные инструменты, требующие onCommit(api, px) вместо onCommit(api):
 // polygon — переменное число вершин, нужна px для close-to-first-vertex проверки
 // ruler — двухтаповый с хранением _rulerData, нужна px
-const TOOLS_WITH_PX_ARG = new Set(['polygon', 'ruler', 'impulse5', 'abc', 'tri', 'wxy']);
+const TOOLS_WITH_PX_ARG = new Set(['polygon', 'ruler', 'impulse5', 'abc', 'tri', 'wxy', 'aperture']);
 
 class ToolRegistry {
     constructor() {
@@ -57375,6 +57667,7 @@ class ToolBase extends Tool {
                                ray:'Ray', hray:'HRay', vray:'VRay', polygon:'Poly',
                                fib:'Fib', fibtrend:'FibT', fibexp:'FibE', fibauto:'FibA',
                                zone:'Zone', gridbot:'Grid', ruler:'Ruler', impulse5:'5W',
+                               aperture:'Apert',
                                abc:'ABC', tri:'\u25b3', wxy:'WXY' };
             const tlt = api._ctx?.config?._trendLineTool;
             const curMode = tlt?.getMode?.() || 'free';
@@ -58788,6 +59081,1003 @@ for (const [legacyName, specName] of Object.entries(_legacyToolCtorMap)) {
     window[legacyName] = function () { return ToolFactory.create(specName); };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// V367-aperture: APERTURE — range min/max measurement tool (сосед Рулетки).
+//
+// Две точки измерения берутся из ДИАПАЗОНА, а не ставятся вручную:
+//   • По умолчанию (Range magnet OFF): тап 1 фиксирует край диапазона, тап 2
+//     закрывает его («апертура») → точки = бар МИНИМУМА (low) и бар МАКСИМУМА
+//     (high) внутри диапазона. Пока диапазон тянется — живая подсветка BOTH
+//     экстремумов с подписями H/L (как у свипа range-магнита, но обе стороны).
+//   • С включённым Range magnet: инструмент ведёт себя как Рулетка — каждая
+//     точка ставится двухтаповым свипом диапазона на его экстремум
+//     (high/low чередуются; тот же _handleRangeTap-поток).
+//
+// Бокс в стиле рулетки:
+//   1. Разница min↔max (крупно, зелёная/красная): ЗНАК по хронологии —
+//      min-бар раньше → ход вверх → «+», max-бар раньше → вниз → «−».
+//   2. Длительность между точками · число баров.
+//   3. Vol: суммарный объём диапазона (как в Рулетке — живой пересчёт).
+//   4. BTC ±x.xx% и 5. ETH ±x.xx% — изменение между точками.
+//      ЛЕНИВО: бокс появляется сразу с локальными данными, проценты
+//      дозагружаются с Binance (USDT-M perp → spot fallback) и дорисовываются
+//      когда придут. КЭШ: память сессии + localStorage (TTL 10 мин) и дедуп
+//      параллельных запросов — второй замер того же окна мгновенный.
+//
+// 3-й тап деактивирует инструмент (очищает измерение, panZoom, кнопки тулбара)
+// — тот же контракт, что у Рулетки. Esc закрывает активный свип (V197-хук).
+// ═══════════════════════════════════════════════════════════════════════════
+
+// V369 (юзер: «Зачем мне бтс/етх соотношение? Мне нужно бтс/текущее и етх/текущее.
+// Можешь после процентов каждого это значение сразу ставить мелко. Плюс тут
+// какой-то косяк: я использую инструмент на бтс, пишет определенный процент,
+// а снизу где пишет бтс и етх за это время отдельно, бтс имеет другой процент.
+// Это как?»):
+//   ① СТРОКА «BTC/ETH 0.45» УДАЛЕНА: у каждой %-строки СРАЗУ СПРАВА мелкое
+//      (10px, серый) отношение К ТЕКУЩЕЙ МОНЕТЕ — btc% ÷ main% и eth% ÷ main%
+//      (main% = главный процент бокса = ход символа графика). Статусы загрузки
+//      пер-строчные: локально известная монета рисуется сразу, вторая — «…».
+//   ② САМО-ПРОЦЕНТ ГРАФИКА: если база символа графика = BTC/ETH, этот % берётся
+//      ЛОКАЛЬНО (ровно главный процент, 0 сети) — раньше BTC на BTC-графике
+//      считался close-to-close по Binance и расходился с главным числом
+//      (close ≠ low/high экстремумов точек + другой источник цен). Резолв сети
+//      локальное значение не перетирает.
+// V368 (юзер: «Ты в этом окошке пишешь абсолютную разность, а надо проценты,
+// абс можно но мелко очень, чтобы не мешалось под. И еще, в бтс и етх ты так
+// же пиши сколько одно поделить на другое (проценты на проценты делишь), и
+// там уже число типа 0.45 мелко пишешь. И да, когда мы толь надимаем на
+// инструмент этот, то мож бтс и етх свечи уже подгружать начать»):
+//   ① ГЛАВНОЕ ЧИСЛО БОКСА — ПРОЦЕНТ хода p1→p2 ((p2.y−p1.y)/p1.y·100, знак
+//      по хронологии, крупно в цвет знака); АБСОЛЮТНАЯ разница — мелко (10px,
+//      серый) строкой под процентом, чтобы не мешалась.
+//   ② BTC/ETH RATIO: под строками BTC/ETH мелкое «BTC/ETH 0.45» = btc%/eth%
+//      (проценты делим на проценты; |eth|<0.01 → «—»).
+//   ③ ПРЕФЕТЧ СЕРИЙ BTC/ETH на АКТИВАЦИИ инструмента (onEnter): свечи
+//      BTCUSDT/ETHUSDT грузятся сразу (perp → spot; ТФ графика + ТФ-бакет
+//      видимого диапазона; limit=1000, дедуп, свежесть 60 с) — точечный
+//      _apFxCloseAt сначала ищет закрытие в серии бинпоиском (0 сети) и
+//      только мимо идёт в сеть. Кэш замеров (_apFxMem) не тронут.
+
+// ── V367-aperture: BTC/ETH % между точками — лениво и с кэшем ────────────────
+const _apFxMem = new Map();        // 't1|t2' → { btc, eth, ts } — сессия, без TTL
+const _apFxInflight = new Map();   // 't1|t2' → Promise — параллельные замеры дедупятся
+const _APFX_LS_KEY = 'ce_apfx_v1'; // localStorage: { 't1|t2': { btc, eth, ts } }
+const _APFX_LS_TTL_MS = 10 * 60000;
+
+function _apFxOk(v) { return v !== null && v !== undefined && isFinite(v); }
+
+function _apFxLsRead() {
+    try {
+        if (typeof _safeStorage !== 'undefined' && _safeStorage) {
+            const raw = _safeStorage.getItem(_APFX_LS_KEY);
+            if (!raw) return null;
+            const o = JSON.parse(raw);
+            return (o && typeof o === 'object') ? o : null;
+        }
+    } catch (e) { /* sandbox */ }
+    return null;
+}
+
+function _apFxLsWrite(map) {
+    try {
+        if (typeof _safeStorage !== 'undefined' && _safeStorage) {
+            _safeStorage.setItem(_APFX_LS_KEY, JSON.stringify(map));
+        }
+    } catch (e) { /* sandbox / quota */ }
+}
+
+/** TF запроса по длине окна — на каждую границу один точечный запрос (limit=1). */
+function _apFxInterval(spanMs) {
+    if (spanMs <= 30 * 60000) return '1m';
+    if (spanMs <= 4 * 3600e3) return '5m';
+    if (spanMs <= 2 * 86400e3) return '15m';
+    if (spanMs <= 10 * 86400e3) return '1h';
+    if (spanMs <= 60 * 86400e3) return '4h';
+    return '1d';
+}
+
+// ── V369-aperture: базовый актив СИМВОЛА ГРАФИКА ─────────────────────────────
+// 'BTCUSDT' / 'btc-usdt' / 'BTC/USDT' / 'BTCUSD.PERP' → 'BTC'. Источник —
+// dataStore.symbol (штампуется loadHistory), fallback — config.symbol. Нужен
+// для самопроцента: график BTC/ETH → эта строка бокса берёт ход p1→p2 без
+// сети, совпадение с главным числом бокса гарантировано.
+function _apChartBase(api) {
+    let sym = '';
+    try {
+        const ctx = api && api._ctx;
+        const ds = ctx && ctx.dataStore;
+        if (ds && typeof ds.symbol === 'string' && ds.symbol) sym = ds.symbol;
+        else if (ctx && ctx.config && typeof ctx.config.symbol === 'string') sym = ctx.config.symbol;
+    } catch (e) { sym = ''; }
+    let s = String(sym).toUpperCase().trim();
+    if (!s) return '';
+    s = s.split('/')[0].split('-')[0].split('_')[0];   // пары и перп-суффиксы
+    let prev = null;                                   // 'BTCUSD.PERP' → BTC
+    while (prev !== s) {
+        prev = s;
+        s = s.replace(/(USDT|USDC|USD|PERP)$/, '').replace(/[^A-Z0-9]+$/, '');
+    }
+    return s;
+}
+
+// ── V368-aperture: серии свечей BTC/ETH, префетч при активации инструмента ──
+// Пользователь: «когда мы толь надимаем на инструмент этот, то мож бтс и етх
+// свечи уже подгружать начать». Серии кладутся в _apSeriesMem, точечные
+// запросы _apFxCloseAt сначала ищут закрытие в них (0 сети) — замер внутри
+// префетчнутого окна получает BTC/ETH % мгновенно; мимо покрытия — сеть.
+const _apSeriesMem = new Map();      // 'base|sym|iv' → { t0, t1, arr, ts }
+const _apSeriesInflight = new Map(); // тот же ключ → Promise (дедуп активаций)
+const _AP_SERIES_FRESH_MS = 60000;   // повторная активация не дёргает сеть
+const _AP_SERIES_LIMIT = 1000;
+const _AP_SERIES_BASES = [
+    ['https://fapi.binance.com', '/fapi/v1/klines'],   // USDT-M perp
+    ['https://api.binance.com', '/api/v3/klines'],     // spot fallback
+];
+
+/** ТФ графика (ms) → строка интервала Binance. null = неизвестный ТФ. */
+function _apIvStrFromMs(ms) {
+    const m = { 60000: '1m', 180000: '3m', 300000: '5m', 900000: '15m',
+        1800000: '30m', 3600000: '1h', 14400000: '4h', 86400000: '1d' };
+    return m[ms] || null;
+}
+
+/** Свечи лимитом 1000 (новейшие). Результат в _apSeriesMem, null = неудача. */
+async function _apFetchSeries(base, path, symbol, iv) {
+    const key = base + '|' + symbol + '|' + iv;
+    const cur = _apSeriesMem.get(key);
+    if (cur && (Date.now() - cur.ts) < _AP_SERIES_FRESH_MS) return cur;
+    const infl = _apSeriesInflight.get(key);
+    if (infl) return infl;
+    const job = (async () => {
+        const url = base + path + '?symbol=' + encodeURIComponent(symbol)
+            + '&interval=' + encodeURIComponent(iv) + '&limit=' + _AP_SERIES_LIMIT;
+        const ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+        const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch (e) { /* noop */ } }, 8000) : null;
+        try {
+            const resp = await fetch(url, ctrl ? { signal: ctrl.signal } : undefined);
+            if (!resp.ok) return null;
+            const k = await resp.json();
+            if (!Array.isArray(k) || !k.length) return null;
+            const arr = [];
+            for (let i = 0; i < k.length; i++) {
+                const t = parseFloat(k[i][0]);
+                const c = parseFloat(k[i][4]);
+                if (isFinite(t) && isFinite(c)) arr.push([t, c]);
+            }
+            if (!arr.length) return null;
+            const last = arr.length - 1;
+            const step = (last > 0) ? Math.max(1, arr[last][0] - arr[last - 1][0]) : 1;
+            const out = { t0: arr[0][0], t1: arr[last][0] + step, arr: arr, ts: Date.now() };
+            _apSeriesMem.set(key, out);
+            return out;
+        } catch (e) {
+            return null;
+        } finally {
+            if (timer) clearTimeout(timer);
+            _apSeriesInflight.delete(key);
+        }
+    })();
+    _apSeriesInflight.set(key, job);
+    return job;
+}
+
+/** Закрытие свечи, содержащей t, из префетчнутой серии (0 сети). null = мимо. */
+function _apSeriesClose(symbol, iv, t) {
+    for (let bi = 0; bi < _AP_SERIES_BASES.length; bi++) {
+        const s = _apSeriesMem.get(_AP_SERIES_BASES[bi][0] + '|' + symbol + '|' + iv);
+        if (!s || !s.arr || !s.arr.length) continue;
+        if (t < s.t0 || t > s.t1) continue;
+        let lo = 0, hi = s.arr.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (s.arr[mid][0] <= t) lo = mid; else hi = mid - 1;
+        }
+        if (s.arr[lo][0] <= t) return s.arr[lo][1];
+    }
+    return null;
+}
+
+/** Выбор инструмента → сразу греем серии BTC/ETH (ТФ графика + видимый бакет). */
+function _apPrefetchSeries(api) {
+    const ivs = [];
+    try {
+        const ivChart = _apIvStrFromMs(api && typeof api.getIntervalMs === 'function'
+            ? api.getIntervalMs() : 0);
+        if (ivChart) ivs.push(ivChart);
+    } catch (e) { /* нет API — пропускаем */ }
+    try {
+        const sc = api && api.scaleCache;
+        const dims = api && typeof api.getPlotDims === 'function' ? api.getPlotDims() : null;
+        if (sc && sc.valid && sc.xScale && dims) {
+            const span = Math.abs(sc.xScale.pixToVal(dims.right) - sc.xScale.pixToVal(dims.left));
+            if (isFinite(span) && span > 0) {
+                const ivSpan = _apFxInterval(span);
+                if (!ivs.includes(ivSpan)) ivs.push(ivSpan);
+            }
+        }
+    } catch (e) { /* нет скейл-кэша — пропускаем */ }
+    for (let ii = 0; ii < ivs.length; ii++) {
+        for (let si = 0; si < 2; si++) {
+            const sym = (si === 0) ? 'BTCUSDT' : 'ETHUSDT';
+            // perp первым; пустой ответ → spot-фолбэк (та же иерархия, что у замера)
+            _apFetchSeries(_AP_SERIES_BASES[0][0], _AP_SERIES_BASES[0][1], sym, ivs[ii])
+                .then((r) => {
+                    if (!r) _apFetchSeries(_AP_SERIES_BASES[1][0], _AP_SERIES_BASES[1][1], sym, ivs[ii]);
+                })
+                .catch(() => { /* префетч не может падать */ });
+        }
+    }
+}
+
+/** Закрытие свечи, содержащей момент t (последний openTime ≤ t). null = нет. */
+async function _apFxCloseAt(base, path, symbol, t, iv) {
+    try {
+        const sc = _apSeriesClose(symbol, iv, t);   // V368: префетчнутая серия — 0 сети
+        if (_apFxOk(sc)) return sc;
+    } catch (e) { /* сеть ниже */ }
+    const url = base + path + '?symbol=' + encodeURIComponent(symbol)
+        + '&interval=' + encodeURIComponent(iv)
+        + '&endTime=' + Math.max(0, Math.floor(t)) + '&limit=1';
+    const ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch (e) { /* noop */ } }, 8000) : null;
+    try {
+        const resp = await fetch(url, ctrl ? { signal: ctrl.signal } : undefined);
+        if (!resp.ok) return null;
+        const k = await resp.json();
+        if (!Array.isArray(k) || !k.length) return null;
+        const c = parseFloat(k[0][4]);
+        return isFinite(c) ? c : null;
+    } catch (e) {
+        return null;
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
+/** % изменения одного символа между t1 и t2 (USDT-M perp, fallback spot). */
+async function _apFxPct(symbol, t1, t2, iv) {
+    const bases = [
+        ['https://fapi.binance.com', '/fapi/v1/klines'],   // USDT-M perp
+        ['https://api.binance.com', '/api/v3/klines'],     // spot fallback
+    ];
+    for (let bi = 0; bi < bases.length; bi++) {
+        const b = bases[bi][0], p = bases[bi][1];
+        try {
+            const c1 = await _apFxCloseAt(b, p, symbol, t1, iv);
+            const c2 = await _apFxCloseAt(b, p, symbol, t2, iv);
+            if (_apFxOk(c1) && _apFxOk(c2) && c1 > 0) return ((c2 - c1) / c1) * 100;
+        } catch (e) { /* next base */ }
+    }
+    return null;
+}
+
+/**
+ * BTC/ETH % для окна [t1, t2]. Порядок: память → localStorage (TTL) → сеть.
+ * Успех (хотя бы один символ) кэшируется в оба слоя; полная неудача НЕ
+ * кэшируется — следующий замер попробует снова.
+ */
+function _apFxCompute(t1, t2) {
+    const key = t1 + '|' + t2;
+    const mem = _apFxMem.get(key);
+    if (mem) return Promise.resolve(mem);
+    const lsMap = _apFxLsRead();
+    if (lsMap && lsMap[key] && lsMap[key] && (Date.now() - (lsMap[key].ts || 0)) < _APFX_LS_TTL_MS
+        && (_apFxOk(lsMap[key].btc) || _apFxOk(lsMap[key].eth))) {
+        _apFxMem.set(key, lsMap[key]);
+        return Promise.resolve(lsMap[key]);
+    }
+    const infl = _apFxInflight.get(key);
+    if (infl) return infl;
+    const job = (async () => {
+        const span = Math.max(0, t2 - t1);
+        const iv = _apFxInterval(span);
+        const out = { btc: null, eth: null, ts: Date.now() };
+        try {
+            const b = await _apFxPct('BTCUSDT', t1, t2, iv);
+            const e = await _apFxPct('ETHUSDT', t1, t2, iv);
+            out.btc = b; out.eth = e;
+        } catch (e) { /* keep nulls */ }
+        _apFxInflight.delete(key);
+        if (_apFxOk(out.btc) || _apFxOk(out.eth)) {
+            _apFxMem.set(key, out);
+            try {
+                const m = _apFxLsRead() || {};
+                m[key] = out;
+                // держим не более 60 свежих записей
+                const keys = Object.keys(m);
+                if (keys.length > 60) {
+                    keys.sort((a, b2) => (m[a].ts || 0) - (m[b2].ts || 0));
+                    while (keys.length > 60) delete m[keys.shift()];
+                }
+                _apFxLsWrite(m);
+            } catch (e2) { /* quota */ }
+        }
+        return out;   // оба null — бокс покажет «—», повторный замер попробует снова
+    })();
+    _apFxInflight.set(key, job);
+    return job;
+}
+
+/** Компактный формат цены — переиспользует _ceRangeFmtPrice, если он доступен. */
+function _apFmtPrice(v) {
+    if (!isFinite(v)) return '—';
+    if (typeof _ceRangeFmtPrice === 'function') {
+        try { return _ceRangeFmtPrice(v); } catch (e) { /* fallback ниже */ }
+    }
+    const a = Math.abs(v);
+    if (a >= 10000) return v.toLocaleString('en-US', { maximumFractionDigits: 0 });
+    if (a >= 100) return v.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    if (a >= 1) return v.toFixed(4);
+    return v.toPrecision(6);
+}
+
+/** Знаковая разница цен (юникс-минус, чтобы знак был читаемым на канвасе). */
+function _apFmtSignedDiff(v) {
+    if (!isFinite(v)) return '—';
+    return (v >= 0 ? '+' : '\u2212') + _apFmtPrice(Math.abs(v));
+}
+
+/** Знаковый процент: null → '—' (пока грузится — рисуем «…» отдельной логикой). */
+function _apFmtSignedPct(v, dec) {
+    if (!_apFxOk(v)) return '—';
+    const d = (dec === undefined) ? 2 : dec;
+    return (v >= 0 ? '+' : '\u2212') + Math.abs(v).toFixed(d) + '%';
+}
+
+/** V369: X% ÷ текущий% — «сколько одно поделить на другое», число типа 0.45. */
+function _apFmtRatio(v, den) {
+    if (!_apFxOk(v) || !_apFxOk(den) || Math.abs(den) < 0.01) return '—';
+    const r = v / den;
+    if (!isFinite(r)) return '—';
+    return (r >= 0 ? '' : '\u2212') + Math.abs(r).toFixed(2);
+}
+
+function _apFxColor(v, loading) {
+    if (loading) return '#8b949e';
+    if (!_apFxOk(v)) return '#8b949e';
+    return v >= 0 ? '#3fb950' : '#f85149';
+}
+
+/** Нормализация пары точек: p1 = более ранняя; which — по цене (выше = max). */
+function _apNormalizePair(d) {
+    if (!d || !d.p1 || !d.p2) return;
+    if (d.p1.x > d.p2.x) { const tmp = d.p1; d.p1 = d.p2; d.p2 = tmp; }
+    if (d.p1.y > d.p2.y) { d.p1.which = 'max'; d.p2.which = 'min'; }
+    else if (d.p1.y < d.p2.y) { d.p1.which = 'min'; d.p2.which = 'max'; }
+    else { d.p1.which = 'min'; d.p2.which = 'max'; }
+}
+
+class ApertureTool extends Tool {
+    constructor() {
+        super();
+        this._panelId = 'main';
+        this._api = null;
+        // Registry compat: TrendLineTool._drawingLockedPanel checks t._spec.aperture
+        this._spec = { aperture: true };
+        // _apertureData — единственный источник правды (паттерн Рулетки):
+        //   { src:'range'|'magnet', t1, t2, range:{xa,xb},
+        //     p1:{x,y,which}, p2:{x,y,which}, panelId, complete, fx }
+        //   p1 — ВСЕГДА более ранняя точка (min x); знак diff = p2.y − p1.y
+        //   кодирует направление (min первым → «+», max первым → «−»).
+        //   fx: { loading:bool, btc:number|null, eth:number|null }.
+        this._apertureData = null;
+        this._fxToken = 0;
+    }
+
+    onEnter(api) {
+        this._api = api;
+        this._active = true;
+        // V368: BTC/ETH свечи начинаем грузить СРАЗУ при выборе инструмента —
+        // к моменту завершения замера серии уже в кэше (или через 60 с свежи),
+        // проценты появляются мгновенно без ожидания сети.
+        try { _apPrefetchSeries(api); } catch (e) { /* префетч не может сломать вход */ }
+        const dims = api.getPlotDims();
+        if (dims) {
+            const cx = (dims.left + dims.right) / 2;
+            const cy = (dims.top + dims.bottom) / 2;
+            const panelId = api.getActivePanel(cy);
+            this._panelId = panelId || 'main';
+            api.setInputLogicalPos(cx, cy);
+            if (panelId) api.setInputActivePanel(panelId);
+            api.showInput();
+            api.crosshair.set(cx, cy);
+        }
+        // Завершённый замер стирается при повторной активации (как у Рулетки);
+        // пока инструмент неактивен, завершённый замер остаётся видимым.
+        if (this._apertureData && this._apertureData.complete) this._apertureData = null;
+        api.dirty.set(DirtyFlags.OVERLAY);
+        api.requestRender();
+    }
+
+    onExit(api) {
+        // Завершённый замер ОСТАЁТСЯ после деактивации (как у Рулетки),
+        // незавершённый — очищается. _api НЕ обнуляем: рендер завершённого
+        // замера идёт через renderPreview(octx, ls, api), но хук _startFx
+        // держит ссылку для финального requestRender после догрузки fx.
+        if (this._apertureData && !this._apertureData.complete) this._apertureData = null;
+        this._active = false;
+    }
+
+    onCommit(api, px) {
+        const sc = api.scaleCache;
+        if (!sc || !sc.valid || !sc.xScale) { api.requestRender(); return; }
+        const xScale = sc.xScale;
+        const d0 = this._apertureData;
+        // Кросс-панельная защита Рулетки: незавершённый замок держит панель.
+        const panelId = (d0 && !d0.complete && d0.panelId)
+            || api.getActivePanel(px.y) || 'main';
+        const yS = sc.yScales[panelId];
+        if (!yS) { api.requestRender(); return; }
+        this._panelId = panelId;
+
+        // 3-й тап: замер завершён → деактивация (контракт Рулетки).
+        if (d0 && d0.complete) {
+            this._deactivateAperture(api);
+            return;
+        }
+
+        // Range magnet ON: onCommit вызывается ТОЛЬКО на закрытии свипа
+        // (_handleRangeTap), с px на экстремуме диапазона — одна точка за вызов.
+        const magnetActive = (typeof window._ceRangeSessionActive === 'function'
+            && window._ceRangeSessionActive());
+        if (magnetActive) {
+            const dp = { x: xScale.pixToVal(px.x), y: yS.pixToVal(px.y) };
+            let d = d0;
+            if (!d || d.src !== 'magnet') {
+                d = this._apertureData = {
+                    src: 'magnet', t1: undefined, t2: undefined, range: null,
+                    p1: null, p2: null, panelId, complete: false, fx: null,
+                };
+            }
+            if (!d.p1) {
+                d.p1 = { x: dp.x, y: dp.y, which: null };
+            } else if (!d.p2) {
+                d.p2 = { x: dp.x, y: dp.y, which: null };
+                d.complete = true;
+                this._active = false;
+                _apNormalizePair(d);
+                this._startFx(api, d);
+            }
+            api.dirty.set(DirtyFlags.OVERLAY);
+            api.requestRender();
+            return;
+        }
+
+        // Дефолт: тап 1 = край диапазона.
+        if (!d0 || d0.p1) {
+            // свежий диапазон (нет данных, либо «хвост» от magnet-потока)
+            this._apertureData = {
+                src: 'range', t1: xScale.pixToVal(px.x), t2: null, range: null,
+                p1: null, p2: null, panelId, complete: false, fx: null,
+            };
+            api.dirty.set(DirtyFlags.OVERLAY);
+            api.requestRender();
+            return;
+        }
+
+        // Тап 2 = закрыть апертуру: найти бары min/max в диапазоне.
+        const t2 = xScale.pixToVal(px.x);
+        const xa = Math.min(d0.t1, t2), xb = Math.max(d0.t1, t2);
+        const scan = this._scanRange(api, xa, xb);
+        if (!scan) {
+            // в диапазоне нет свечей (пустое будущее) — начинаем заново от тапа
+            this._apertureData = {
+                src: 'range', t1: t2, t2: null, range: null,
+                p1: null, p2: null, panelId, complete: false, fx: null,
+            };
+            api.dirty.set(DirtyFlags.OVERLAY);
+            api.requestRender();
+            return;
+        }
+        const minP = { x: scan.min.x, y: scan.min.y, which: 'min' };
+        const maxP = { x: scan.max.x, y: scan.max.y, which: 'max' };
+        d0.t2 = t2;
+        d0.range = { xa: xa, xb: xb };
+        d0.p1 = (minP.x <= maxP.x) ? minP : maxP;
+        d0.p2 = (minP.x <= maxP.x) ? maxP : minP;
+        d0.complete = true;
+        this._active = false;
+        this._startFx(api, d0);
+        api.dirty.set(DirtyFlags.OVERLAY);
+        api.requestRender();
+    }
+
+    /**
+     * Сканирование диапазона [xa, xb] по живому DataStore: бар минимума (low),
+     * бар максимума (high), число баров и суммарный объём — один проход.
+     * Возвращает null, если свечей в диапазоне нет.
+     */
+    _scanRange(api, xa, xb) {
+        try {
+            const ds = api && api._ctx
+                ? (api._ctx.dataStore || (api._ctx.dataPort && api._ctx.dataPort.dataStore))
+                : null;
+            if (!ds || ds.size === 0 || !isFinite(xa) || !isFinite(xb)) return null;
+            const lo = Math.min(xa, xb), hi = Math.max(xa, xb);
+            const ii = ds.getVisibleLogicalIndices(lo, hi);
+            if (!ii || ii.length < 2) return null;
+            const iMin = ii[0], iMax = ii[1];
+            if (iMax < iMin) return null;
+            let candleId = null;
+            for (const id in ds.seriesMap) {
+                if (ds.seriesMap[id].openData !== null) { candleId = id; break; }
+            }
+            if (!candleId) return null;
+            const cs = ds.seriesMap[candleId];
+            const volId = ds.seriesMap['vol'] ? 'vol'
+                : (ds.seriesMap['volume'] ? 'volume' : null);
+            let minV = Infinity, minI = -1, maxV = -Infinity, maxI = -1;
+            let vol = 0, bars = 0;
+            for (let i = iMin; i <= iMax; i++) {
+                const pi = ds.getPhysicalIndex(i);
+                if (pi < 0) continue;
+                const h = cs.highData ? cs.highData[pi] : NaN;
+                const l = cs.lowData ? cs.lowData[pi] : NaN;
+                if (!isFinite(h) || !isFinite(l)) continue;
+                bars++;
+                if (l < minV) { minV = l; minI = i; }
+                if (h > maxV) { maxV = h; maxI = i; }
+                if (volId) {
+                    const v = ds.getData(volId, i);
+                    if (isFinite(v)) vol += v;
+                }
+            }
+            if (minI < 0 || maxI < 0 || bars === 0) return null;
+            return {
+                min: { x: ds.getX(minI), y: minV },
+                max: { x: ds.getX(maxI), y: maxV },
+                bars: bars, vol: vol,
+            };
+        } catch (e) { return null; }
+    }
+
+    /**
+     * Ленивая догрузка BTC/ETH % между точками (кэш → сеть), затем перерисовка.
+     * V369: монета, совпадающая с СИМВОЛОМ ГРАФИКА, получает свой процент
+     * ЛОКАЛЬНО — ровно тот же ход p1→p2, что и главное число бокса. Раньше
+     * btc% считался close-to-close по свечам Binance, и на BTC-графике у BTC
+     * был «другой процент»: close ≠ low/high экстремумов + другой источник
+     * цен. Локальное значение появляется мгновенно и НЕ перетирается резолвом
+     * сети; вторая монета грузится как раньше (_apFxCompute — обе серии, кэш
+     * окна остаётся полным для графиков без BTC/ETH).
+     */
+    _startFx(api, d) {
+        if (!d || !d.p1 || !d.p2) return;
+        const t1 = Math.min(d.p1.x, d.p2.x);
+        const t2 = Math.max(d.p1.x, d.p2.x);
+        const token = ++this._fxToken;
+        // V369: график = BTC/ETH → этот % известен сразу и ровно = главному.
+        const base = _apChartBase(api);
+        const diff = d.p2.y - d.p1.y;
+        const selfPct = (d.p1.y > 0) ? (diff / d.p1.y) * 100 : NaN;
+        const selfIsBtc = (base === 'BTC') && isFinite(selfPct);
+        const selfIsEth = (base === 'ETH') && isFinite(selfPct);
+        d.fx = {
+            loading: true,
+            btc: selfIsBtc ? selfPct : null,
+            eth: selfIsEth ? selfPct : null,
+        };
+        _apFxCompute(t1, t2).then((out) => {
+            if (token !== this._fxToken) return;   // замер очищен/заменён
+            const dd = this._apertureData;
+            if (!dd || !dd.fx) return;
+            dd.fx = {
+                loading: false,
+                // V369: локальный процент графика не заменяем сетевым
+                btc: selfIsBtc ? dd.fx.btc : (out ? out.btc : null),
+                eth: selfIsEth ? dd.fx.eth : (out ? out.eth : null),
+            };
+            const a = this._api || api;
+            if (a) {
+                try { a.dirty.set(DirtyFlags.OVERLAY); a.requestRender(); } catch (e) { /* noop */ }
+            }
+        }).catch(() => {
+            const dd = this._apertureData;
+            if (dd && dd.fx) dd.fx.loading = false;
+        });
+    }
+
+    /**
+     * 3-й тап — деактивация: очистить замер, вернуться в panZoom,
+     * снять active с кнопки Aperture и Trend (контракт _deactivateRuler).
+     */
+    _deactivateAperture(api) {
+        this._apertureData = null;
+        this._active = false;
+        this._fxToken++;
+
+        api.setActiveTool('panZoom');
+
+        const cont = (api.getContainer && typeof api.getContainer === 'function')
+            ? api.getContainer() : null;
+        const apBtn = cont ? cont.querySelector('[data-role="btn-tool-aperture"]')
+                          : document.querySelector('[data-role="btn-tool-aperture"]');
+        if (apBtn) apBtn.classList.remove('active');
+        const trendBtn = cont ? cont.querySelector('[data-role="btn-trend-line"]')
+                              : document.querySelector('[data-role="btn-trend-line"]');
+        if (trendBtn) {
+            trendBtn.textContent = 'Trend: \u2197';
+            trendBtn.classList.remove('active');
+        }
+
+        api.dirty.set(DirtyFlags.OVERLAY);
+        api.requestRender();
+    }
+
+    clear() {
+        this._apertureData = null;
+        this._fxToken++;
+        if (this._api) {
+            try {
+                this._api._ctx.dirty.set(DirtyFlags.OVERLAY);
+                this._api.requestRender();
+            } catch (e) { /* noop */ }
+        }
+    }
+
+    renderPreview(ctx, layout, api) {
+        const d = this._apertureData;
+        if (!d) return;
+        const sc = api && api.scaleCache ? api.scaleCache : null;
+        if (!sc || !sc.valid || !sc.xScale || !sc.yScales[d.panelId]) return;
+        const xScale = sc.xScale;
+        const yS = sc.yScales[d.panelId];
+        const pb = _toolPanelBounds(layout, d.panelId || 'main');
+        if (!pb) return;
+        const panelLeft = layout.plotLeft, panelRight = layout.plotRight;
+        const panelTop = pb.top, panelBottom = pb.bottom;
+
+        if (!d.complete) {
+            // magnet-поток между свипами: показываем только поставленную точку
+            // (активный свип рисует _ceRangeRenderOverlay и глушит preview).
+            if (d.src === 'magnet') {
+                if (d.p1) {
+                    _drawDot(ctx, xScale.valToPix(d.p1.x), yS.valToPix(d.p1.y), 5, TOOL_MARKER_FILL);
+                }
+                return;
+            }
+            this._renderApertureLive(ctx, api, d, xScale, yS, panelTop, panelBottom, panelLeft, panelRight);
+            return;
+        }
+        if (!d.p1 || !d.p2) return;
+        this._renderApertureDone(ctx, api, d, xScale, yS, panelTop, panelBottom, panelLeft, panelRight);
+    }
+
+    /** Незавершённая апертура: полоса диапазона + живые H/L экстремумы. */
+    _renderApertureLive(ctx, api, d, xScale, yS, panelTop, panelBottom, panelLeft, panelRight) {
+        const x1 = Math.max(panelLeft, Math.min(panelRight, xScale.valToPix(d.t1)));
+        let x2 = (api && api.crosshair && isFinite(api.crosshair.x)) ? api.crosshair.x : x1;
+        x2 = Math.max(panelLeft, Math.min(panelRight, x2));
+        const xa = Math.min(x1, x2), xb = Math.max(x1, x2);
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        if (xb - xa > 0.5) {
+            ctx.fillStyle = 'rgba(88,166,255,0.07)';
+            ctx.fillRect(xa, panelTop, xb - xa, panelBottom - panelTop);
+        }
+        ctx.strokeStyle = TOOL_LINE_COLOR;
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.85;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(Math.round(xa) + 0.5, panelTop);
+        ctx.lineTo(Math.round(xa) + 0.5, panelBottom);
+        ctx.moveTo(Math.round(xb) + 0.5, panelTop);
+        ctx.lineTo(Math.round(xb) + 0.5, panelBottom);
+        ctx.stroke();
+        ctx.restore();
+
+        // живые экстремумы диапазона (обе стороны сразу)
+        try {
+            if (api && api.dataPort && typeof api.dataPort.query === 'function') {
+                const xMin = xScale.pixToVal(xa), xMax = xScale.pixToVal(xb);
+                const extH = api.dataPort.query({ type: 'FIND_RANGE_EXTREME', payload: { xMin: xMin, xMax: xMax, findMax: true } });
+                const extL = api.dataPort.query({ type: 'FIND_RANGE_EXTREME', payload: { xMin: xMin, xMax: xMax, findMax: false } });
+                const _lbl = (ext, txt, color, above) => {
+                    if (!ext || !isFinite(ext.x) || !isFinite(ext.y)) return;
+                    const ex = xScale.valToPix(ext.x);
+                    const ey = yS.valToPix(ext.y);
+                    if (ex < panelLeft - 2 || ex > panelRight + 2) return;
+                    _drawDot(ctx, ex, ey, 3.5, color);
+                    ctx.save();
+                    ctx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
+                    const label = txt + ' ' + _apFmtPrice(ext.y);
+                    const tw = ctx.measureText(label).width;
+                    let tx = ex + 8;
+                    if (tx + tw > panelRight - 4) tx = ex - 8 - tw;
+                    let ty = above ? ey - 7 : ey + 13;
+                    ty = Math.max(panelTop + 10, Math.min(panelBottom - 5, ty));
+                    ctx.fillStyle = color;
+                    ctx.textAlign = 'left';
+                    ctx.textBaseline = 'alphabetic';
+                    ctx.fillText(label, tx, ty);
+                    ctx.restore();
+                };
+                _lbl(extH, 'H', '#ff7b81', true);
+                _lbl(extL, 'L', '#7bd97f', false);
+            }
+        } catch (e) { /* рисование не должно ломать кадр */ }
+    }
+
+    /** Завершённая апертура: полоса, точки H/L, стрелка хронологии, бокс. */
+    _renderApertureDone(ctx, api, d, xScale, yS, panelTop, panelBottom, panelLeft, panelRight) {
+        const p1 = {
+            x: d.p1.x, y: d.p1.y,
+            px: xScale.valToPix(d.p1.x),
+            py: yS.valToPix(d.p1.y),
+        };
+        const p2 = {
+            x: d.p2.x, y: d.p2.y,
+            px: xScale.valToPix(d.p2.x),
+            py: yS.valToPix(d.p2.y),
+        };
+
+        // ── апертура-диапазон: для src='range' — вся полоса свипа,
+        //      для 'magnet' — между двумя точками ──
+        let band = null;
+        let xa2, xb2;
+        if (d.range && isFinite(d.range.xa) && isFinite(d.range.xb)) {
+            xa2 = Math.min(d.range.xa, d.range.xb);
+            xb2 = Math.max(d.range.xa, d.range.xb);
+        } else {
+            xa2 = Math.min(p1.x, p2.x);
+            xb2 = Math.max(p1.x, p2.x);
+        }
+        if (isFinite(xa2) && isFinite(xb2)) {
+            const bxa = Math.max(panelLeft, Math.min(panelRight, xScale.valToPix(xa2)));
+            const bxb = Math.max(panelLeft, Math.min(panelRight, xScale.valToPix(xb2)));
+            if (bxb - bxa > 0.5) band = { xa: Math.min(bxa, bxb), xb: Math.max(bxa, bxb) };
+        }
+        if (band) {
+            ctx.save();
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = 'rgba(88,166,255,0.06)';
+            ctx.fillRect(band.xa, panelTop, band.xb - band.xa, panelBottom - panelTop);
+            ctx.strokeStyle = TOOL_LINE_COLOR;
+            ctx.lineWidth = 1;
+            ctx.globalAlpha = 0.45;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(Math.round(band.xa) + 0.5, panelTop);
+            ctx.lineTo(Math.round(band.xa) + 0.5, panelBottom);
+            ctx.moveTo(Math.round(band.xb) + 0.5, panelTop);
+            ctx.lineTo(Math.round(band.xb) + 0.5, panelBottom);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        // ── линия p1 → p2 (хронология) со стрелкой; цвет = знак diff ──
+        const diff = p2.y - p1.y;
+        const up = diff >= 0;
+        const lineColor = up ? '#3fb950' : '#f85149';
+        ctx.save();
+        ctx.strokeStyle = lineColor;
+        ctx.fillStyle = lineColor;
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = 0.95;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(p1.px, p1.py);
+        ctx.lineTo(p2.px, p2.py);
+        ctx.stroke();
+        const angle = Math.atan2(p2.py - p1.py, p2.px - p1.px);
+        const headLen = 11, headAngle = Math.PI / 7;
+        ctx.beginPath();
+        ctx.moveTo(p2.px, p2.py);
+        ctx.lineTo(p2.px - headLen * Math.cos(angle - headAngle), p2.py - headLen * Math.sin(angle - headAngle));
+        ctx.lineTo(p2.px - headLen * Math.cos(angle + headAngle), p2.py - headLen * Math.sin(angle + headAngle));
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+
+        // ── маркеры H/L + подписи цен ──
+        const _mark = (p, which) => {
+            const isMax = which === 'max';
+            const c = isMax ? '#f23645' : '#4caf50';
+            _drawDot(ctx, p.px, p.py, 5, c);
+            ctx.save();
+            ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(p.px, p.py, 5, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
+            const label = (isMax ? 'H ' : 'L ') + _apFmtPrice(p.y);
+            const tw = ctx.measureText(label).width;
+            let tx = p.px + 8;
+            if (tx + tw > panelRight - 4) tx = p.px - 8 - tw;
+            let ty = isMax ? p.py - 8 : p.py + 14;
+            ty = Math.max(panelTop + 10, Math.min(panelBottom - 5, ty));
+            ctx.fillStyle = isMax ? '#ff7b81' : '#7bd97f';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'alphabetic';
+            ctx.fillText(label, tx, ty);
+            ctx.restore();
+        };
+        _mark(p1, d.p1.which || (p1.y >= p2.y ? 'max' : 'min'));
+        _mark(p2, d.p2.which || (p2.y >= p1.y ? 'max' : 'min'));
+
+        // ── метрики ──
+        const dxMs = Math.abs(p2.x - p1.x);
+        const timeStr = isFinite(dxMs) ? formatDuration(dxMs) : '—';
+        let barsStr = '—', volStr = '—';
+        try {
+            const scan = this._scanRange(api, xa2, xb2);
+            if (scan) {
+                if (scan.bars > 0) barsStr = String(scan.bars);
+                if (scan.vol > 0) volStr = formatValue(scan.vol);
+            }
+        } catch (e) { /* — */ }
+
+        // V368: главное число бокса — ПРОЦЕНТ хода p1→p2 (от ранней точки),
+        // абсолютная разница — мелко серым строкой под ним («чтобы не мешалась»).
+        const pct = (p1.y > 0) ? (diff / p1.y) * 100 : NaN;
+        const pctStr = _apFmtSignedPct(pct, 2);
+        const absStr = _apFmtSignedDiff(diff);
+        const fx = d.fx || null;
+        const fxLoading = fx ? !!fx.loading : true;
+        // V369: статусы ПЕР-СТРОЧНЫЕ — локально известный процент (график =
+        // эта монета) рисуется сразу, вторая строка ждёт сеть с «…».
+        const fxV = (k) => (fx && _apFxOk(fx[k])) ? fx[k] : null;
+        const btcLd = fxLoading && fxV('btc') === null;
+        const ethLd = fxLoading && fxV('eth') === null;
+        const btcStr = btcLd ? '\u2026' : _apFmtSignedPct(fxV('btc'));
+        const ethStr = ethLd ? '\u2026' : _apFmtSignedPct(fxV('eth'));
+        // V369: отношение к ТЕКУЩЕЙ монете графика (x% ÷ main%), мелкое число
+        // сразу после каждого процента; знаменатель ~0 → «—».
+        const btcRStr = btcLd ? '\u2026' : _apFmtRatio(fxV('btc'), pct);
+        const ethRStr = ethLd ? '\u2026' : _apFmtRatio(fxV('eth'), pct);
+
+        // ── бокс в стиле Рулетки ──
+        ctx.save();
+        const padX = 10, padY = 8;
+        const gapAbove = 10;
+        const innerGap = 4;
+        const bigFont = 'bold 18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+        const medFont = '12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+        const smFont  = '11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+        const xsFont  = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';   // V368: abs + ratio
+
+        const rectLeft = Math.min(p1.px, p2.px);
+        const rectRight = Math.max(p1.px, p2.px);
+        const rectTop = Math.min(p1.py, p2.py);
+        const rectBottom = Math.max(p1.py, p2.py);
+
+        ctx.font = bigFont;
+        const pctW = ctx.measureText(pctStr).width;
+        const metaStr = timeStr + ' \u00b7 ' + barsStr + (barsStr !== '—' ? ' bars' : '');
+        ctx.font = xsFont;
+        const absW = ctx.measureText(absStr).width;
+        ctx.font = medFont;
+        const metaW = ctx.measureText(metaStr).width;
+        ctx.font = smFont;
+        const volW = ctx.measureText('Vol: ' + volStr).width;
+        const btcLblW = ctx.measureText('BTC: ' + btcStr).width;
+        const ethLblW = ctx.measureText('ETH: ' + ethStr).width;
+        // V369: каждая %-строка = метка + мелкое отношение к текущей монете
+        ctx.font = xsFont;
+        const btcRw = ctx.measureText(btcRStr).width;
+        const ethRw = ctx.measureText(ethRStr).width;
+        const ratioGap = 5;
+        const btcLineW = btcLblW + ratioGap + btcRw;
+        const ethLineW = ethLblW + ratioGap + ethRw;
+
+        const contentW = Math.max(pctW, absW, metaW, volW, btcLineW, ethLineW);
+        const boxW = Math.ceil(contentW + padX * 2);
+        const bigH = 22, medH = 16, smH = 14, xsH = 12;
+        const boxH = padY * 2 + bigH + innerGap + xsH + innerGap + medH + innerGap
+                   + smH + innerGap + smH + innerGap + smH;   // V369: без строки BTC/ETH
+
+        let bx = rectLeft + (rectRight - rectLeft) / 2 - boxW / 2;
+        // p2 выше на экране («замер вверх») → бокс над прямоугольником
+        const measuringUp = p2.py < p1.py;
+        let by;
+        if (measuringUp) by = rectTop - gapAbove - boxH;
+        else by = rectBottom + gapAbove;
+
+        const margin = 6;
+        if (bx < panelLeft + margin) bx = panelLeft + margin;
+        if (bx + boxW > panelRight - margin) bx = panelRight - margin - boxW;
+        if (by < panelTop + margin) {
+            by = rectBottom + gapAbove;
+            if (by + boxH > panelBottom - margin) {
+                by = panelBottom - margin - boxH;
+                if (by < panelTop + margin) by = panelTop + margin;
+            }
+        } else if (by + boxH > panelBottom - margin) {
+            by = rectTop - gapAbove - boxH;
+            if (by < panelTop + margin) by = panelTop + margin;
+        }
+
+        // коннектор бокс → прямоугольник
+        ctx.save();
+        ctx.strokeStyle = TOOL_LINE_COLOR;
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.5;
+        ctx.setLineDash([2, 3]);
+        const connectorX = bx + boxW / 2;
+        if (measuringUp && by + boxH < rectTop) {
+            ctx.beginPath();
+            ctx.moveTo(connectorX, by + boxH);
+            ctx.lineTo(connectorX, rectTop);
+            ctx.stroke();
+        } else if (!measuringUp && by > rectBottom) {
+            ctx.beginPath();
+            ctx.moveTo(connectorX, rectBottom);
+            ctx.lineTo(connectorX, by);
+            ctx.stroke();
+        }
+        ctx.restore();
+
+        // скруглённый фон
+        const rr = 6;
+        ctx.globalAlpha = 1.0;
+        ctx.fillStyle = 'rgba(15, 20, 30, 0.94)';
+        ctx.strokeStyle = TOOL_LINE_COLOR;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(bx + rr, by);
+        ctx.lineTo(bx + boxW - rr, by);
+        ctx.arcTo(bx + boxW, by, bx + boxW, by + rr, rr);
+        ctx.lineTo(bx + boxW, by + boxH - rr);
+        ctx.arcTo(bx + boxW, by + boxH, bx + boxW - rr, by + boxH, rr);
+        ctx.lineTo(bx + rr, by + boxH);
+        ctx.arcTo(bx, by + boxH, bx, by + boxH - rr, rr);
+        ctx.lineTo(bx, by + rr);
+        ctx.arcTo(bx, by, bx + rr, by, rr);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // текст
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const centerX = bx + boxW / 2;
+        let ty = by + padY + bigH / 2;
+        ctx.font = bigFont;
+        ctx.fillStyle = lineColor;
+        ctx.fillText(pctStr, centerX, ty);        // V368: % — главное число
+
+        ty += bigH / 2 + innerGap + xsH / 2;
+        ctx.font = xsFont;
+        ctx.fillStyle = '#8b949e';
+        ctx.fillText(absStr, centerX, ty);        // V368: abs — мелко, не мешается
+
+        ty += xsH / 2 + innerGap + medH / 2;
+        ctx.font = medFont;
+        ctx.fillStyle = '#e6edf3';
+        ctx.fillText(metaStr, centerX, ty);
+
+        ty += medH / 2 + innerGap + smH / 2;
+        ctx.font = smFont;
+        ctx.fillStyle = '#8b949e';
+        ctx.fillText('Vol: ' + volStr, centerX, ty);
+
+        // V369: %-строки с инлайн-отношением к текущей монете (мелко, серый)
+        ty += smH / 2 + innerGap + smH / 2;
+        ctx.font = smFont;
+        ctx.fillStyle = _apFxColor(fxV('btc'), btcLd);
+        const btcX0 = centerX - btcLineW / 2;
+        ctx.textAlign = 'left';
+        ctx.fillText('BTC: ' + btcStr, btcX0, ty);
+        ctx.font = xsFont;
+        ctx.fillStyle = '#8b949e';
+        ctx.fillText(btcRStr, btcX0 + btcLblW + ratioGap, ty);
+
+        ty += smH / 2 + innerGap + smH / 2;
+        ctx.font = smFont;
+        ctx.fillStyle = _apFxColor(fxV('eth'), ethLd);
+        const ethX0 = centerX - ethLineW / 2;
+        ctx.fillText('ETH: ' + ethStr, ethX0, ty);
+        ctx.font = xsFont;
+        ctx.fillStyle = '#8b949e';
+        ctx.fillText(ethRStr, ethX0 + ethLblW + ratioGap, ty);
+
+        ctx.restore();
+    }
+}
+
 // ─── FibAutoRangeTool — auto-snap fib to range min/max ──────────────────────
 //
 // V37: 3-phase tool that auto-finds swing highs/lows in a user-defined range.
@@ -59468,7 +60758,7 @@ class TrendLineTool extends InteractionTool {
      * Resets any in-progress drawing so the next tap starts fresh in the new mode.
      */
     setMode(mode) {
-        const valid = ['free','horizontal','vertical','polygon','ruler','ray','hray','vray','fib','fibtrend','fibexp','fibauto','zone','gridbot','impulse5','abc','tri','wxy'];
+        const valid = ['free','horizontal','vertical','polygon','ruler','aperture','ray','hray','vray','fib','fibtrend','fibexp','fibauto','zone','gridbot','impulse5','abc','tri','wxy'];
         if (!valid.includes(mode)) {
             debugLog('[TrendLine.setMode] REJECTED unknown mode "' + mode + '"');
             console.warn(`TrendLineTool.setMode: unknown mode "${mode}" — ignoring`);
@@ -59548,7 +60838,7 @@ class TrendLineTool extends InteractionTool {
             // preview is visible immediately on enter (before first mousemove).
             // V37: publish via crosshair — _cursorPx is auto-mirrored by the
             // subscriber wired in ChartAPI constructor.
-            const singleTapModes = ['horizontal','vertical','polygon','ruler','hray','vray','fib'];
+            const singleTapModes = ['horizontal','vertical','polygon','ruler','aperture','hray','vray','fib'];
             const twoTapModes = ['ray'];
             if (singleTapModes.includes(this._mode) || twoTapModes.includes(this._mode)) {
                 this._panelId = panelId || 'main';
@@ -59790,6 +61080,11 @@ class TrendLineTool extends InteractionTool {
         // Ruler: mid-measurement → keep the panel the measurement started on.
         if (t._rulerData && !t._rulerData.complete) {
             return t._rulerData.panelId || t._panelId || null;
+        }
+        // V367-aperture: mid-aperture → keep the panel the range started on
+        //   (same cross-panel protection as the ruler).
+        if (t._apertureData && !t._apertureData.complete) {
+            return t._apertureData.panelId || t._panelId || null;
         }
         // V148-impulse5: in-progress impulse drawing locks after the FIRST
         //   committed point (unlike polygon, which locks after the second).
@@ -60245,7 +61540,7 @@ class TrendLineTool extends InteractionTool {
 
 
 // ── V39: явный экспорт в window (обратная совместимость) ──
-Object.assign(window, { Tool, ToolBase, ToolFactory, TOOL_SPECS, TOOL_MODE_TO_KEY, TOOL_MODE_LABELS, ToolRegistry, toolRegistry, FIB_LEVELS, FIB_COLORS, HLineTool, VLineTool, HRayTool, VRayTool, FreeLineTool, RayTool, FibTool, FibTrendTool, FibExpansionTool, FibAutoRangeTool, ZoneTool, GridBotTool, PolygonTool, RulerTool, Impulse5Tool, ElliottPatternTool, InteractionTool, PanZoomTool, CrosshairTool, TrendLineTool });
+Object.assign(window, { Tool, ToolBase, ToolFactory, TOOL_SPECS, TOOL_MODE_TO_KEY, TOOL_MODE_LABELS, ToolRegistry, toolRegistry, FIB_LEVELS, FIB_COLORS, HLineTool, VLineTool, HRayTool, VRayTool, FreeLineTool, RayTool, FibTool, FibTrendTool, FibExpansionTool, FibAutoRangeTool, ZoneTool, GridBotTool, PolygonTool, RulerTool, ApertureTool, Impulse5Tool, ElliottPatternTool, InteractionTool, PanZoomTool, CrosshairTool, TrendLineTool });
 
 // ── V39: регистрация в реестре модулей ──
 CE.registerModule('ce-tools', ['ce-api-and-nav', 'ce-overlay-objects'], ['ToolBase', 'ToolFactory', 'TOOL_SPECS', 'FIB_LEVELS', 'FIB_COLORS', 'Tool', 'HLineTool', 'VLineTool', 'HRayTool', 'VRayTool', 'FreeLineTool', 'RayTool', 'FibTool', 'FibTrendTool', 'FibExpansionTool', 'FibAutoRangeTool', 'ZoneTool', 'GridBotTool', 'PolygonTool', 'RulerTool', 'InteractionTool', 'PanZoomTool', 'CrosshairTool', 'TrendLineTool'], 'PARTIAL (split required for worker port)');
@@ -61575,6 +62870,20 @@ class PointerController {
             // The ruler is cleared, that's the primary intent.
         }
 
+        // V367-aperture: same click-to-dismiss for the completed aperture —
+        //   unless the aperture tool itself is active (its 3rd-tap handler
+        //   owns the completed state then, exactly like the ruler above).
+        const apertureToolM = (typeof this.api.getApertureTool === 'function')
+            ? this.api.getApertureTool() : null;
+        const apertureCompleteM = !!(apertureToolM && apertureToolM._apertureData
+            && apertureToolM._apertureData.complete);
+        const isApertureActiveM = (this.api.getToolName() === 'trendLine'
+                                 && trendTool && trendTool.getMode() === 'aperture');
+        if (apertureCompleteM && !isApertureActiveM) {
+            apertureToolM._apertureData = null;
+            this.api.requestRender();
+        }
+
         const [x, y]  = this._xy(e);
 
         // V77-eye-button: check eye button hit-test via labelRenderer
@@ -62270,6 +63579,19 @@ class PointerController {
         if ((trendComplete || rulerComplete) && !isRulerActive && e.touches.length === 1) {
             if (trendTool) trendTool._rulerData = null;
             if (rulerTool) rulerTool._rulerData = null;
+            this.api.requestRender();
+        }
+
+        // V367-aperture: same tap-to-dismiss for the completed aperture (the
+        //   3rd-tap handler owns it while the aperture tool is active).
+        const apertureToolT = (typeof this.api.getApertureTool === 'function')
+            ? this.api.getApertureTool() : null;
+        const apertureCompleteT = !!(apertureToolT && apertureToolT._apertureData
+            && apertureToolT._apertureData.complete);
+        const isApertureActiveT = (this.api.getToolName() === 'trendLine'
+                                 && trendTool && trendTool.getMode() === 'aperture');
+        if (apertureCompleteT && !isApertureActiveT && e.touches.length === 1) {
+            apertureToolT._apertureData = null;
             this.api.requestRender();
         }
 
@@ -65614,18 +66936,28 @@ _overlayStage_renderToolPreview(vp, l, ls) {
             const rulerTool = this.config._rulerTool;
             const rulerHasData = !!(rulerTool && rulerTool._rulerData && rulerTool._rulerData.p1);
 
-            if (!trendActive && !rulerHasData) return;
+            // V367-aperture: same rule — the completed aperture (band + points
+            //   + info box) stays visible even after the tool deactivates.
+            const apertureTool = this.config._apertureTool;
+            const apertureHasData = !!(apertureTool && apertureTool._apertureData
+                && (apertureTool._apertureData.p1
+                    || isFinite(apertureTool._apertureData.t1)));
+
+            if (!trendActive && !rulerHasData && !apertureHasData) return;
 
             // Pick which tool to render: prefer the active mode's tool, fall
-            //   back to ruler if trendLine is inactive but ruler has data.
+            //   back to ruler / aperture if trendLine is inactive but the
+            //   completed measurement still has data.
             let tool = null;
             if (trendActive) {
                 tool = toolRegistry.toolForMode(curMode, this.config);
             } else if (rulerHasData) {
                 tool = rulerTool;
+            } else if (apertureHasData) {
+                tool = apertureTool;
             }
             if (!tool) return;
-            if (!(tool.isDrawing() || tool._rulerData)) return;
+            if (!(tool.isDrawing() || tool._rulerData || tool._apertureData)) return;
 
             const octx = this.overlayCanvas.getContext('2d');
             octx.save();
@@ -65793,6 +67125,7 @@ class EngineInteraction {
                 this.gridBotTool = new GridBotTool();
                 this.polygonTool = new PolygonTool();
                 this.rulerTool = new RulerTool();
+                this.apertureTool = new ApertureTool();   // V367-aperture: range min/max measurement
                 this.impulse5Tool = new Impulse5Tool();   // V148-impulse5
                 // V156: Elliott corrective patterns — ABC / triangle / WXY
                 this.elliottAbcTool = new ElliottPatternTool('abc');
@@ -65804,6 +67137,7 @@ class EngineInteraction {
         // V49n: tool stashes needed by toolRegistry.toolForMode() — maps mode → config[key]
         config._trendLineTool = this.trendLineTool;
         config._rulerTool = this.rulerTool;
+        config._apertureTool = this.apertureTool;   // V367-aperture
         config._hLineTool = this.hLineTool;
         config._vLineTool = this.vLineTool;
         config._hRayTool = this.hRayTool;
@@ -80433,7 +81767,7 @@ class ToolbarController {
                 const mode = api.getTrendLineTool()?.getMode?.() || 'free';
                 const labelMap = { free:'Free', horizontal:'Horiz', vertical:'Vert',
                                    ray:'Ray', hray:'HRay', vray:'VRay', polygon:'Poly',
-                                   fib:'Fib', fibtrend:'FibT', fibexp:'FibE', fibauto:'FibA', zone:'Zone', gridbot:'Grid', ruler:'Ruler', impulse5:'5W' };
+                                   fib:'Fib', fibtrend:'FibT', fibexp:'FibE', fibauto:'FibA', zone:'Zone', gridbot:'Grid', ruler:'Ruler', aperture:'Apert', impulse5:'5W' };
                 e.target.textContent = `Trend: \u2197 Drawing (${labelMap[mode] || 'Free'})`;
                 e.target.classList.add('active');
             }
@@ -80462,7 +81796,7 @@ class ToolbarController {
             tool.setMode(next);
             const labelMap = { free:'Free', horizontal:'Horiz', vertical:'Vert',
                                ray:'Ray', hray:'HRay', vray:'VRay', polygon:'Poly',
-                               fib:'Fib', fibtrend:'FibT', fibexp:'FibE', fibauto:'FibA', zone:'Zone', gridbot:'Grid', impulse5:'5W' };
+                               fib:'Fib', fibtrend:'FibT', fibexp:'FibE', fibauto:'FibA', zone:'Zone', gridbot:'Grid', ruler:'Ruler', aperture:'Apert', impulse5:'5W' };
             e.target.textContent = `Mode: ${labelMap[next]}`;
             // Update the Trend button label too if it's currently in drawing state
             const trendBtn = this._el('btn-trend-line');
@@ -84411,8 +85745,19 @@ class PresetManager {
                 source: ind.inputs?.source || undefined,
             };
             // Capture params
-            if (ind.params) {
-                for (const k in ind.params) cfg[k] = ind.params[k];
+            // V371: capture the BASE (global) param set, NOT the effective one —
+            //   the effective params may currently be overridden for the chart's
+            //   coin, and baking them into the preset would corrupt the base.
+            //   Per-coin overrides travel with the preset separately.
+            {
+                const _snapParams = ind._baseParams || ind.params;
+                if (_snapParams) {
+                    for (const k in _snapParams) cfg[k] = _snapParams[k];
+                }
+            }
+            // V371: per-coin parameter overrides survive preset export/import.
+            if (ind.symbolOverrides && Object.keys(ind.symbolOverrides).length > 0) {
+                cfg.symbolOverrides = JSON.parse(JSON.stringify(ind.symbolOverrides));
             }
             // V51-preset-styles: capture outputStyles (alpha, color, lineWidth,
             //   lineStyle) so presets preserve visual customization. Without
@@ -85347,6 +86692,9 @@ class ChartFactory {
             info:   _IC('<circle cx="12" cy="12" r="8.2"/><path d="M12 11.2V16.2M12 7.8h.01"/>'),
             gear:   _IC('<circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.9 1.9M16.6 16.6l1.9 1.9M18.5 5.5l-1.9 1.9M7.4 16.6l-1.9 1.9"/>'),
             ruler:  _IC('<path d="M3.5 16.5L16.5 3.5l4 4L7.5 20.5z"/><path d="M8 12l1.8 1.8M10.8 9.2l1.8 1.8M13.6 6.4l1.8 1.8"/>'),
+            /* V367-aperture: iris glyph — the tool frames a range and picks
+               its extremes (H/L dots on the rim of the band) */
+            aperture: _IC('<circle cx="12" cy="12" r="8.2"/><path d="M12 3.8v6.4M19.4 8.1l-5.5 3.2M19.4 15.9l-5.5-3.2M12 20.2v-6.4M4.6 15.9l5.5-3.2M4.6 8.1l5.5 3.2" stroke-width="1.3"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/>'),
             hline:  _IC('<path d="M3 12h18"/>'),
             vline:  _IC('<path d="M12 3v18"/>'),
             hray:   _IC('<circle cx="4.5" cy="12" r="1.3" fill="currentColor" stroke="none"/><path d="M6.5 12H20M20 12l-3.2-3.2M20 12l-3.2 3.2"/>'),
@@ -86282,9 +87630,18 @@ class ChartFactory {
         });
 
         // Ruler first (most-used measurement tool)
+        // V367-aperture: Aperture sits RIGHT NEXT to the Ruler — same 2-point
+        //   measuring family, but the points are picked by the RANGE:
+        //   default = min & max bars of the swept range (no settings needed);
+        //   Range magnet ON = both points via sweeps like the Ruler.
         const rulerGrp = document.createElement('div');
         rulerGrp.className = 'grp';
         rulerGrp.appendChild(_mkToolBtn('ruler', ICONS.ruler, 'Ruler'));
+        rulerGrp.appendChild(_mkToolBtn('aperture', ICONS.aperture,
+            'Aperture \u2014 range min/max measure. Default: sweep a range (2 taps) \u2192 points snap to the LOW and HIGH bars '
+            + 'of the range; box shows signed min\u2194max diff, duration, bars, volume and lazy BTC/ETH % over the same window '
+            + '(cached \u2014 second measure of the same range is instant). Range magnet ON: both points are placed by sweeps '
+            + 'like the Ruler. 3rd tap dismisses.'));
         toolsPopup.appendChild(rulerGrp);
         toolsPopup.appendChild(_mkSep());
 
@@ -87143,6 +88500,20 @@ class ChartFactory {
                 const outColor = ind.outputStyles?.[firstOutName]?.color || meta.outputs?.[0]?.color || '#58a6ff';
                 const bandInfo = ind.bandOverlay ? ` · band:${esc(String(ind.bandOverlay.type))}` : '';
                 const tfInfo = ind.anchorTimeframe && ind.anchorTimeframe !== 'chart' ? ` · TF:${esc(String(ind.anchorTimeframe))}` : '';
+                // V371: per-coin override summary on the card — which coins have
+                // their own core param (e.g. "ovr BTC=9, SOL=50").
+                const ovrInfo = (() => {
+                    try {
+                        const o = ind.symbolOverrides;
+                        if (!o || typeof o !== 'object') return '';
+                        const keys = Object.keys(o);
+                        if (!keys.length) return '';
+                        // V122-fix(XSS parity): coin keys/values can come from an
+                        // imported preset file — escape like every other field.
+                        return ' · ovr ' + keys.map(k =>
+                            `${esc(String(k))}=${esc(Object.values(o[k] || {}).join('/'))}`).join(', ');
+                    } catch (_) { return ''; }
+                })();
                 // V55-source-label: show source in indicator card.
                 //   sourceRef → "src: <indicator> → <output>"
                 //   source ≠ 'close' → "src: <source>"
@@ -87178,7 +88549,7 @@ class ChartFactory {
                     '<div class="ind-card-color" style="background:' + esc(String(outColor)) + '"></div>' +
                     '<div class="ind-card-info">' +
                     '<div class="ind-card-name">' + esc(String(meta.label || ind.id)) + slideBadge + '</div>' +
-                    '<div class="ind-card-meta">' + paramStr + bandInfo + tfInfo + srcInfo + '</div>' +
+                    '<div class="ind-card-meta">' + paramStr + bandInfo + tfInfo + srcInfo + ovrInfo + '</div>' +
                     '</div>' +
                     '<div class="ind-card-actions">' +
                     '<button class="ind-card-btn ind-vis-btn' + (isHidden && !isSlideGuest ? ' hidden' : '') + '" data-ind-id="' + esc(String(ind.id)) + '" title="' + esc(eyeTitle) + '">' + eyeIcon + '</button>' +
@@ -88596,6 +89967,7 @@ class ChartFactory {
             mf: 'Median Filter over price', edsma: 'Elliot Decycler MA',
             kijun: 'Kijun-sen style mid-line', atr: 'Average True Range',
             alma: 'Arnaud Legoux MA', kalman: 'Kalman Filter estimate',
+            vwma: 'Volume Weighted MA — volume-weighted price', linreg: 'Linear Regression Curve endpoint',
             bollinger: 'Bollinger: SMA ± k·σ bands', bands: 'ATR/StdDev/Pct/Donchian bands',
             macd: 'MACD line, signal, histogram', stochastic: 'Stochastic %K/%D (0-100)',
             rsi: 'Relative Strength Index (0-100)', mfi: 'Money Flow Index — volume RSI',
@@ -89179,13 +90551,20 @@ class ChartFactory {
             const title = isExisting ? `Configure ${meta.label}` : `Add ${meta.label}`;
 
             // Build params from existing or defaults
+            // V371: edit the BASE (global) param set — the effective params
+            // may currently be overridden for the chart's coin; saving what
+            // the user sees must never bake an override value into the base.
             let selectedParams = {};
             for (const p of meta.params) {
-                selectedParams[p.name] = isExisting ? (existingInd.params?.[p.name] ?? p.default) : p.default;
+                selectedParams[p.name] = isExisting
+                    ? (existingInd._baseParams?.[p.name] ?? existingInd.params?.[p.name] ?? p.default)
+                    : p.default;
             }
             // V121-offset: ensure offset param exists in selectedParams
             if (selectedParams.offset === undefined) {
-                selectedParams.offset = isExisting ? (existingInd.params?.offset ?? 0) : 0;
+                selectedParams.offset = isExisting
+                    ? (existingInd._baseParams?.offset ?? existingInd.params?.offset ?? 0)
+                    : 0;
             }
             // V332: cvd ratio legacy migration — V331 stored two booleans
             //   (ratioCvdVol / ratioOiVol); the single ratioOn checkbox now
@@ -89301,6 +90680,35 @@ class ChartFactory {
                 }
             }
             closeGroup();
+            // ── V371: Per-coin parameter overrides ──
+            // A per-coin table for the CORE («basic») param — the window the
+            // panel badge shows. Values below replace the param when the chart
+            // shows that coin; every other coin keeps the defaults above. Only
+            // the core param is overridable («все параметры можно не менять,
+            // только самую основу»). Rows are created/deleted by the editor
+            // wired after innerHTML (renderOvrRows / wireOvrEvents).
+            const _ovrParam = _ceCoreParamOfMeta(meta);
+            let ovrRows = [];
+            if (_ovrParam && isExisting && existingInd.symbolOverrides) {
+                try {
+                    for (const _k of Object.keys(existingInd.symbolOverrides)) {
+                        const _ov = existingInd.symbolOverrides[_k];
+                        const _v = (_ov && typeof _ov === 'object') ? _ov[_ovrParam.name] : undefined;
+                        if (_v === undefined) continue;   // foreign/legacy key
+                        ovrRows.push({ coin: _k, value: _v });
+                    }
+                } catch (_) { ovrRows = []; }
+            }
+            // Current chart coin — prefill for the «Add override» button.
+            let _ovrCurCoin = '';
+            try { _ovrCurCoin = _ceCoinKeyFromSymbol(window._chart?.api?.getSourceInfo?.().symbol) || ''; } catch (_) {}
+            if (_ovrParam) {
+                html += `<div class="s-section-div">`;
+                html += `<div class="s-section-label collapsed">Per-coin overrides</div>`;
+                html += `<div class="s-desc">Overrides <b>${esc(String(_ovrParam.label))}</b> when the chart shows a coin below — all other coins keep the parameters above. The panel badge marks the active coin (e.g. <b>${esc(String(meta.label))}(9·BTC)</b>).</div>`;
+                html += `<div id="ovr-editor" style="display:flex;flex-direction:column;gap:6px;padding:4px 0;"></div>`;
+                html += `</div>`;
+            }
             // V108: Custom marker editor for TimeMarkerBrick.
             //   Replaces the awkward "Markers (JSON)" text input with a friendly
             //   list of markers, each with a datetime-local picker, label, color,
@@ -90171,6 +91579,84 @@ class ChartFactory {
                 });
             });
 
+            // ── V371: Per-coin overrides editor wiring ──
+            // Rows live in `ovrRows` ({ coin, value }), rendered into
+            // #ovr-editor. Delete re-renders; Add appends a row prefilled with
+            // the CURRENT chart coin and the current base value. The save
+            // handler folds ovrRows → symbolOverrides ({ BTC: { period: 9 } }).
+            const _buildOvrCfg = () => {
+                const cfg = {};
+                if (!_ovrParam) return cfg;
+                for (const r of ovrRows) {
+                    if (!r || typeof r !== 'object') continue;
+                    const k = _ceCoinKeyFromSymbol(r.coin);
+                    const v = parseFloat(r.value);
+                    if (!k || !isFinite(v)) continue;
+                    cfg[k] = { [_ovrParam.name]: v };
+                }
+                return cfg;
+            };
+            if (_ovrParam) {
+                const renderOvrRows = () => {
+                    const edEl = configArea.querySelector('#ovr-editor');
+                    if (!edEl) return;
+                    const addBtnRow = edEl.querySelector('[data-ovr-add]')?.closest('.s-row');
+                    let oh = '';
+                    if (ovrRows.length === 0) {
+                        oh += `<div style="font-size:10px;color:#8b949e;padding:1px 0;">No overrides — every coin uses the default ${esc(String(_ovrParam.label))} above.</div>`;
+                    }
+                    ovrRows.forEach((r, i) => {
+                        oh += `<div class="s-row" data-ovr-row="${i}" style="align-items:center;gap:6px;">`;
+                        oh += `<span style="font-size:9px;font-weight:700;letter-spacing:0.5px;color:#f0883e;text-transform:uppercase;min-width:34px;">coin</span>`;
+                        oh += `<input type="text" class="s-input" data-ovr-coin="${i}" value="${esc(String(r.coin || ''))}" placeholder="${esc(_ovrCurCoin || 'COIN')}" style="width:96px;text-transform:uppercase;font-weight:600;" autocomplete="off" spellcheck="false">`;
+                        oh += `<span class="s-row-label" style="min-width:52px;margin-left:4px;text-align:right;">${esc(String(_ovrParam.label))}</span>`;
+                        oh += `<input type="number" class="s-input" data-ovr-val="${i}" value="${esc(String(r.value))}" min="${esc(String(_ovrParam.min ?? ''))}" max="${esc(String(_ovrParam.max ?? ''))}" step="${esc(String(_ovrParam.step ?? 1))}" style="width:76px;">`;
+                        oh += `<button class="ind-btn" data-ovr-del="${i}" title="Delete this override" style="padding:4px 9px;font-size:11px;color:#f85149;">✕</button>`;
+                        oh += `</div>`;
+                    });
+                    // Add button stays at the bottom across re-renders.
+                    const btnHtml = addBtnRow ? '' :
+                        `<div class="s-row" style="gap:8px;">` +
+                        `<button class="ind-btn ind-btn-add" data-ovr-add style="flex:1;padding:6px;">` +
+                        `+ Add override${_ovrCurCoin ? ' for ' + esc(_ovrCurCoin) : ''}</button></div>`;
+                    edEl.innerHTML = oh + btnHtml;
+                    wireOvrEvents();
+                };
+                const wireOvrEvents = () => {
+                    configArea.querySelectorAll('[data-ovr-coin]').forEach(inp => {
+                        inp.addEventListener('input', () => {
+                            const i = +inp.dataset.ovrCoin;
+                            if (ovrRows[i]) ovrRows[i].coin = inp.value.toUpperCase();
+                        });
+                    });
+                    configArea.querySelectorAll('[data-ovr-val]').forEach(inp => {
+                        inp.addEventListener('input', () => {
+                            const i = +inp.dataset.ovrVal;
+                            if (ovrRows[i]) {
+                                const v = parseFloat(inp.value);
+                                ovrRows[i].value = isFinite(v) ? v : inp.value;
+                            }
+                        });
+                    });
+                    configArea.querySelectorAll('[data-ovr-del]').forEach(btn => {
+                        btn.addEventListener('click', () => {
+                            const i = +btn.dataset.ovrDel;
+                            ovrRows.splice(i, 1);
+                            renderOvrRows();
+                        });
+                    });
+                    const addBtn = configArea.querySelector('[data-ovr-add]');
+                    if (addBtn) {
+                        addBtn.addEventListener('click', () => {
+                            const baseV = selectedParams[_ovrParam.name];
+                            ovrRows.push({ coin: _ovrCurCoin || '', value: isFinite(+baseV) ? +baseV : (_ovrParam.default ?? 0) });
+                            renderOvrRows();
+                        });
+                    }
+                };
+                renderOvrRows();
+            }
+
             saveBtn.onclick = () => {
                 errorEl.textContent = '';
                 try {
@@ -90339,7 +91825,20 @@ class ChartFactory {
 
                     if (isExisting) {
                         // Update existing indicator params
-                        Object.assign(existingInd.params, selectedParams);
+                        // V371: the modal edits the BASE (global) param set —
+                        //   write it into _baseParams, install the per-coin
+                        //   overrides from the editor and let compute()
+                        //   re-resolve this.params for the current coin
+                        //   (an override for THIS coin must survive the save).
+                        Object.assign(existingInd._baseParams = { ...(existingInd._baseParams || existingInd.params) }, selectedParams);
+                        existingInd.symbolOverrides = (() => {
+                            const c = _buildOvrCfg();
+                            return Object.keys(c).length > 0 ? c : null;
+                        })();
+                        existingInd._ovAppliedSym = null;
+                        existingInd._activeOverrideCoin = null;
+                        existingInd.params = { ...existingInd._baseParams };
+                        existingInd._invalidateForOverride();
                         // V55-source-ui: apply source change from UI dropdown.
                         //   Previously source was only set for NEW indicators,
                         //   not for existing ones — changing source in settings
@@ -90720,6 +92219,15 @@ class ChartFactory {
                         }
 
                         const cfg = { type: type, id: `${type}-${Date.now()}`, ...selectedParams };
+                        // V371: a NEW indicator can be born with per-coin overrides
+                        //   (created in the modal's Per-coin overrides section) —
+                        //   the IndicatorBrick constructor adopts cfg.symbolOverrides.
+                        {
+                            const _ovCfgNew = _buildOvrCfg();
+                            if (Object.keys(_ovCfgNew).length > 0) {
+                                cfg.symbolOverrides = _ovCfgNew;
+                            }
+                        }
                         const sourceSel = configArea.querySelector('[data-source="source"]');
                         if (sourceSel) {
                             const srcVal = sourceSel.value;
@@ -99995,10 +101503,20 @@ const ChartStatePersistence = (() => {
                 // V49n-fix: save indicator params (period, fast, slow, etc.)
                 //   BrickIndicator stores params in `this.params`, not `this.config`.
                 //   Without this, period=21 would reset to default=14 on reload.
-                if (ind.params) {
-                    for (const k in ind.params) {
-                        if (ind.params[k] !== undefined) cfg[k] = ind.params[k];
+                // V371: save the BASE (global) param set + per-coin overrides —
+                //   the effective params may currently be overridden for the
+                //   chart's coin; baking them in would corrupt the base on
+                //   reload (e.g. base 14 saved as 9 because BTC overrides 9).
+                {
+                    const _serParams = ind._baseParams || ind.params;
+                    if (_serParams) {
+                        for (const k in _serParams) {
+                            if (_serParams[k] !== undefined) cfg[k] = _serParams[k];
+                        }
                     }
+                }
+                if (ind.symbolOverrides && Object.keys(ind.symbolOverrides).length > 0) {
+                    cfg.symbolOverrides = JSON.parse(JSON.stringify(ind.symbolOverrides));
                 }
                 // Don't persist the generated id (it has Date.now()) — let it regenerate.
                 // Actually KEEP the id so panel associations stay stable.
@@ -107560,14 +109078,16 @@ window.CE.runTests = function () {
     // ── 23. V43: Унификация индикаторов — MA_SPECS + createMABrick ──
     // V44: MA_SPECS теперь содержит 16 entries (13 MA + ATR + ALMA + Kalman)
     assert('MA_SPECS is defined', typeof MA_SPECS === 'object' && Array.isArray(MA_SPECS));
-    assert('MA_SPECS has 18 entries (13 MA + T3 + ZL-TEMA + ATR + ALMA + Kalman)', MA_SPECS.length === 18,
+    // V370: + VWMA, LinReg → 20 entries
+    assert('MA_SPECS has 20 entries (13 MA + T3 + ZL-TEMA + ATR + ALMA + Kalman + VWMA + LinReg)', MA_SPECS.length === 20,
         'got ' + MA_SPECS.length);
     assert('createMABrick is function', typeof createMABrick === 'function');
     assert('_resolveSrc is function', typeof _resolveSrc === 'function');
 
     // Каждый MA spec корректен
     const expectedMATypes = ['sma','ema','wma','dema','tema','t3','zltema','tma','lsma','hma','jma','vama','mf','edsma','kijun',
-                             'atr','alma','kalman'];  // V44: добавлены ATR, ALMA, Kalman; V228: T3, ZL-TEMA
+                             'atr','alma','kalman',
+                             'vwma','linreg'];  // V44: ATR, ALMA, Kalman; V228: T3, ZL-TEMA; V370: VWMA, LinReg
     for (const spec of MA_SPECS) {
         assert('MA spec ' + spec.type + ' has type', typeof spec.type === 'string');
         assert('MA spec ' + spec.type + ' has label', typeof spec.label === 'string');
@@ -107613,16 +109133,107 @@ window.CE.runTests = function () {
         assert('createMABrick generates valid class', false, 'threw: ' + e.message);
     }
 
+    // ── 23.1 V371: Per-coin parameter overrides ──
+    // Normalization, core-param heuristic, badge suffix, resolution on a real
+    // brick (merge / switch / removal) + the compute() hook integration.
+    assert('_ceCoinKeyFromSymbol is function', typeof _ceCoinKeyFromSymbol === 'function');
+    assert('_ceCoinKeyFromSymbol BTCUSDT → BTC', _ceCoinKeyFromSymbol('BTCUSDT') === 'BTC',
+        'got ' + _ceCoinKeyFromSymbol('BTCUSDT'));
+    assert('_ceCoinKeyFromSymbol btcusdt (lowercase) → BTC', _ceCoinKeyFromSymbol('btcusdt') === 'BTC');
+    assert('_ceCoinKeyFromSymbol BTC/USDT:USDT → BTC', _ceCoinKeyFromSymbol('BTC/USDT:USDT') === 'BTC');
+    assert('_ceCoinKeyFromSymbol DOGE/ETH → DOGE', _ceCoinKeyFromSymbol('DOGE/ETH') === 'DOGE');
+    assert('_ceCoinKeyFromSymbol BTCUSDT.P → BTC', _ceCoinKeyFromSymbol('BTCUSDT.P') === 'BTC');
+    assert('_ceCoinKeyFromSymbol BTC.D → BTC', _ceCoinKeyFromSymbol('BTC.D') === 'BTC');
+    assert('_ceCoinKeyFromSymbol 1000PEPEUSDT → 1000PEPE', _ceCoinKeyFromSymbol('1000PEPEUSDT') === '1000PEPE',
+        'got ' + _ceCoinKeyFromSymbol('1000PEPEUSDT'));
+    assert('_ceCoinKeyFromSymbol empty → ""', _ceCoinKeyFromSymbol('') === '');
+    assert('_ceCoreParamOfMeta is function', typeof _ceCoreParamOfMeta === 'function');
+    assert('_ceCoreParamOfMeta picks period', (() => {
+        const p = _ceCoreParamOfMeta({ params: [{ name: 'fast', label: 'Fast', default: 12, min: 1, max: 200, step: 1 }, { name: 'period', label: 'Period', default: 14, min: 1, max: 100, step: 1 }] });
+        return p && p.name === 'period';
+    })());
+    assert('_ceCoreParamOfMeta falls back to first numeric', (() => {
+        const p = _ceCoreParamOfMeta({ params: [{ name: 'mult', label: 'Multiplier', default: 2, min: 0, max: 10, step: 0.1 }] });
+        return p && p.name === 'mult';
+    })());
+    assert('_ceCoreParamOfMeta skips bool/select', (() => {
+        const p = _ceCoreParamOfMeta({ params: [{ name: 'mode', label: 'Mode', type: 'select', default: 'a' }, { name: 'flag', label: 'Flag', type: 'bool', default: true }, { name: 'len', label: 'Length', default: 21, min: 1, max: 100, step: 1 }] });
+        return p && p.name === 'len';
+    })());
+    assert('_ceCoreParamOfMeta null for no numeric params', _ceCoreParamOfMeta({ params: [{ name: 'flag', label: 'Flag', type: 'bool', default: true }] }) === null);
+    assert('_ceOvrBadgeSuffix is function', typeof _ceOvrBadgeSuffix === 'function');
+    assert('_ceOvrBadgeSuffix empty for plain ind', _ceOvrBadgeSuffix({}) === '');
+    assert('_ceOvrBadgeSuffix marks active coin',
+        _ceOvrBadgeSuffix({ _activeOverrideCoin: 'BTC', symbolOverrides: { BTC: { period: 9 } } }) === '·BTC');
+    assert('_ceOvrBadgeSuffix empty when coin has no entry',
+        _ceOvrBadgeSuffix({ _activeOverrideCoin: 'ETH', symbolOverrides: { BTC: { period: 9 } } }) === '');
+
+    try {
+        const _SmaCls = brickRegistry.get('sma');
+        const _ovInd = new _SmaCls({ type: 'sma', period: 20 });
+        assert('override: constructor snapshots base params',
+            _ovInd._baseParams && _ovInd._baseParams.period === 20 && _ovInd.params.period === 20);
+        assert('override: no overrides by default', _ovInd.symbolOverrides === null && _ovInd._activeOverrideCoin === null);
+        _ovInd.symbolOverrides = { BTC: { period: 9 } };
+        const _fakeMgrBTC = { _lastDataStore: { symbol: 'BTCUSDT' }, multiTf: { _adapter: { symbol: 'BTCUSDT' } } };
+        _ovInd._resolveSymbolOverride(_fakeMgrBTC);
+        assert('override: BTC merges period=9',
+            _ovInd.params.period === 9 && _ovInd._activeOverrideCoin === 'BTC' && _ovInd._ovAppliedSym === 'BTC',
+            'got ' + _ovInd.params.period);
+        assert('override: base params untouched', _ovInd._baseParams.period === 20);
+        assert('override: compute caches invalidated on merge', _ovInd._computed === null && _ovInd._computeVersion === -1);
+        _ovInd._computed = { count: 1 };   // simulate a cached result
+        _ovInd._resolveSymbolOverride(_fakeMgrBTC);
+        assert('override: same coin → fast-path untouched',
+            _ovInd._computed && _ovInd._computed.count === 1);
+        const _fakeMgrETH = { _lastDataStore: { symbol: 'ETHUSDT' }, multiTf: { _adapter: { symbol: 'ETHUSDT' } } };
+        _ovInd._resolveSymbolOverride(_fakeMgrETH);
+        assert('override: coin without entry → base params',
+            _ovInd.params.period === 20 && _ovInd._activeOverrideCoin === null && _ovInd._ovAppliedSym === 'ETH');
+        _ovInd.symbolOverrides = null;
+        _ovInd._resolveSymbolOverride(_fakeMgrETH);
+        assert('override: overrides removed → base restored',
+            _ovInd.params.period === 20 && _ovInd._ovAppliedSym === null && _ovInd._activeOverrideCoin === null);
+        // compute() hook: overrides applied BEFORE the fast-path during compute.
+        // Local 60-point ramp (fakeSource/fakeEmaPool are declared below — TDZ).
+        const _ovSrc = new Float64Array(Array.from({ length: 60 }, (_, i) => 10 + i * 0.5));
+        _ovInd.symbolOverrides = { BTC: { period: 5 } };
+        const _ovMgr = { _lastDataStore: { symbol: 'BTCUSDT' }, multiTf: { _adapter: { symbol: 'BTCUSDT' } } };
+        _ovInd.compute(_ovSrc, 60, 999, [0, 59], null, 'bulk', null, _ovMgr);
+        assert('override: compute() merged BTC=5', _ovInd.params.period === 5, 'got ' + _ovInd.params.period);
+        const _ovRes = _ovInd._computed;
+        assert('override: SMA(5) computed with overridden period',
+            _ovRes && _ovRes.line && isFinite(_ovRes.line[4]) && !isFinite(_ovRes.line[3]),
+            'line[4]=' + (_ovRes && _ovRes.line ? String(_ovRes.line[4]) : 'null'));
+        // perp-symbol normalization inside the manager context: hop through
+        // ETH first (base), then 'BTCUSDT.P' must resolve to the SAME coin
+        // key BTC (`.P` stripped) and re-apply its override.
+        const _ovMgrETH2 = { _lastDataStore: { symbol: 'ETHUSDT' }, multiTf: { _adapter: { symbol: 'ETHUSDT' } } };
+        _ovInd.compute(_ovSrc, 60, 1001, [0, 59], null, 'bulk', null, _ovMgrETH2);
+        assert('override: ETH hop → base', _ovInd.params.period === 20);
+        _ovInd.symbolOverrides = { BTC: { period: 7 } };
+        const _ovMgrPerp = { _lastDataStore: { symbol: 'BTCUSDT.P' }, multiTf: { _adapter: { symbol: 'BTCUSDT.P' } } };
+        _ovInd.compute(_ovSrc, 60, 1002, [0, 59], null, 'bulk', null, _ovMgrPerp);
+        assert('override: perp symbol normalizes to the same coin key', _ovInd.params.period === 7,
+            'got ' + _ovInd.params.period);
+    } catch (e) {
+        assert('per-coin override resolution on brick', false, 'threw: ' + e.message);
+    }
+
     // End-to-end: создать экземпляр каждого MA и вызвать _computeRaw
     // V43.1: используем 60 точек — достаточно для всех default period (max = 26 для Kijun)
+    // V370: 120 точек — LinReg имеет дефолтный период 100 (TradingView convention)
     const fakeSourceArr = [];
-    for (let i = 0; i < 60; i++) fakeSourceArr.push(10 + i * 0.5);
+    for (let i = 0; i < 120; i++) fakeSourceArr.push(10 + i * 0.5);
     const fakeSource = new Float64Array(fakeSourceArr);
     const fakeOhlc = {
         open: new Float64Array(fakeSource),
         high: new Float64Array(fakeSource.map(v => v + 1)),
         low: new Float64Array(fakeSource.map(v => v - 1)),
         close: new Float64Array(fakeSource),
+        // V370: volume — VWMA exercised on its REAL volume path (not the SMA
+        // degradation fallback) in the self-test loop below.
+        vol: new Float64Array(fakeSource.map((_, i) => 10 + (i % 7) * 3)),
     };
     const fakeEmaPool = {
         getEMA: function(key, n, src, count, version, mutation) {
@@ -107683,7 +109294,8 @@ window.CE.runTests = function () {
     const maLegacyNames = ['SMABrick','EMABrick','WMABrick','DEMABrick','TEMABrick',
                            'TMABrick','LSMABrick','HMABrick','JMABrick','VAMABrick',
                            'MFBrick','EDSMABrick','KijunBrick',
-                           'ATRBrick','ALMABrick','KalmanBrick'];
+                           'ATRBrick','ALMABrick','KalmanBrick',
+                           'VWMABrick','LinRegBrick'];  // V370
     for (const name of maLegacyNames) {
         assert('window.' + name + ' is defined (compat)',
             typeof window[name] === 'function', 'typeof=' + typeof window[name]);
@@ -118791,7 +120403,8 @@ function panoGrowthMetrics(candles) {
 // on the price pane.
 const PANO_MA_TYPES = new Set(['sma', 'ema', 'wma', 'dema', 'tema', 't3', 'zltema', 'tma',
                                'lsma', 'hma', 'vama', 'alma', 'kijun',
-                               'jma', 'mf', 'edsma', 'kalman']);
+                               'jma', 'mf', 'edsma', 'kalman',
+                               'vwma', 'linreg']);   // V370: tile parity (ohlv passed to _maFnDirect)
 const PANO_OSC_ORDER = ['rsi', 'macd', 'stochastic', 'ao', 'mfi', 'cci',
                         'williamsr', 'dpo', 'trix', 'atr', 'obv', 'cmf', 'zscore'];
 const PANO_OSC_HIST_KEYS = new Set(['histogram', 'ao']);
@@ -119880,13 +121493,13 @@ function computeCellIndicators(c) {
                                 const v = src[q];
                                 logSrc[q] = (isFinite(v) && v > 0) ? Math.log(v) : NaN;
                             }
-                            const larr = inst._maFnDirect(logSrc, n);
+                            const larr = inst._maFnDirect(logSrc, n, ohlc);   // V370: tile vol parity
                             if (larr) {
                                 for (let q = 0; q < larr.length; q++) if (isFinite(larr[q])) larr[q] = Math.exp(larr[q]);
                                 arr = larr;
                             }
                         } else {
-                            arr = inst._maFnDirect(src, n);
+                            arr = inst._maFnDirect(src, n, ohlc);   // V370: tile vol parity
                         }
                     }
                 }
